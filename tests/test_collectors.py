@@ -1,0 +1,553 @@
+import io
+import json
+from unittest import mock
+
+import pytest
+
+
+# ─── ProcessCollector ─────────────────────────────────────────────────────────
+
+def _open_proc(path, *args, **kwargs):
+    mode = args[0] if args else kwargs.get("mode", "r")
+    if path == "/proc/123/status":
+        return io.StringIO("Name:\tpython3\nUid:\t1000\t1000\t1000\t1000\n")
+    if path == "/proc/123/cmdline":
+        return io.BytesIO(b"python3\x00script.py\x00")
+    raise FileNotFoundError(path)
+
+
+def test_process_collector_parses_status():
+    from ubuntils.collectors.processes import ProcessCollector
+
+    with mock.patch("glob.glob", return_value=["/proc/123/status"]), \
+         mock.patch("os.readlink", return_value="/usr/bin/python3"), \
+         mock.patch("builtins.open", side_effect=_open_proc):
+        result = ProcessCollector().collect()
+
+    assert "processes" in result
+    assert len(result["processes"]) == 1
+    p = result["processes"][0]
+    assert p["pid"] == 123
+    assert p["name"] == "python3"
+    assert p["uid"] == 1000
+    assert p["exe"] == "/usr/bin/python3"
+
+
+def test_process_collector_skips_missing_pid():
+    from ubuntils.collectors.processes import ProcessCollector
+
+    def vanishing_open(path, *args, **kwargs):
+        raise FileNotFoundError(path)
+
+    with mock.patch("glob.glob", return_value=["/proc/999/status"]), \
+         mock.patch("os.readlink", side_effect=FileNotFoundError), \
+         mock.patch("builtins.open", side_effect=vanishing_open):
+        result = ProcessCollector().collect()
+
+    assert "processes" in result
+    assert result["processes"] == []
+
+
+def test_process_collector_returns_empty_on_glob_failure():
+    from ubuntils.collectors.processes import ProcessCollector
+
+    with mock.patch("glob.glob", side_effect=OSError("permission denied")):
+        result = ProcessCollector().collect()
+
+    assert result == {}
+
+
+# ─── NetworkCollector ─────────────────────────────────────────────────────────
+
+SS_OUTPUT = (
+    "Netid  State   Recv-Q  Send-Q  Local Address:Port  Peer Address:Port  Process\n"
+    "tcp    LISTEN  0       128     0.0.0.0:22           0.0.0.0:*          "
+    "users:((\"sshd\",pid=1234,fd=3))\n"
+)
+
+NETSTAT_OUTPUT = (
+    "Active Internet connections (servers and established)\n"
+    "Proto Recv-Q Send-Q Local Address           Foreign Address         State"
+    "       PID/Program name\n"
+    "tcp        0      0 0.0.0.0:22              0.0.0.0:*               LISTEN"
+    "      1234/sshd\n"
+)
+
+
+def test_network_collector_parses_ss_output():
+    from ubuntils.collectors.network import NetworkCollector
+
+    with mock.patch("ubuntils.collectors.network.run_command",
+                    return_value=(SS_OUTPUT, "", 0)):
+        result = NetworkCollector().collect()
+
+    assert "connections" in result
+    assert len(result["connections"]) >= 1
+    c = result["connections"][0]
+    assert c["proto"] == "tcp"
+    assert c["local_port"] == "22"
+    assert c["state"] == "LISTEN"
+
+
+def test_network_collector_falls_back_to_netstat():
+    from ubuntils.collectors.network import NetworkCollector
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "ss":
+            return ("", "not found", 1)
+        return (NETSTAT_OUTPUT, "", 0)
+
+    with mock.patch("ubuntils.collectors.network.run_command", side_effect=fake_run):
+        result = NetworkCollector().collect()
+
+    assert "connections" in result
+    assert len(result["connections"]) >= 1
+    assert result["connections"][0]["proto"] == "tcp"
+
+
+def test_network_collector_both_fail():
+    from ubuntils.collectors.network import NetworkCollector
+
+    with mock.patch("ubuntils.collectors.network.run_command",
+                    return_value=("", "error", 1)):
+        result = NetworkCollector().collect()
+
+    assert result == {}
+
+
+# ─── UserCollector ────────────────────────────────────────────────────────────
+
+PASSWD_CONTENT = (
+    "root:x:0:0:root:/root:/bin/bash\n"
+    "alice:x:1000:1000:Alice:/home/alice:/bin/bash\n"
+    "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n"
+)
+
+GROUP_CONTENT = (
+    "sudo:x:27:alice\n"
+    "docker:x:999:alice\n"
+)
+
+
+def _open_users(path, *args, **kwargs):
+    if path == "/etc/passwd":
+        return io.StringIO(PASSWD_CONTENT)
+    if path == "/etc/group":
+        return io.StringIO(GROUP_CONTENT)
+    if path == "/etc/shadow":
+        return io.StringIO("root:!:19000:0:99999:7:::\nalice:$6$hash:19000:0:99999:7:::\n")
+    raise FileNotFoundError(path)
+
+
+def test_user_collector_parses_passwd():
+    from ubuntils.collectors.users import UserCollector
+
+    with mock.patch("builtins.open", side_effect=_open_users):
+        result = UserCollector().collect()
+
+    assert "users" in result
+    users = {u["username"]: u for u in result["users"]}
+    assert "alice" in users
+    assert users["alice"]["uid"] == 1000
+    assert users["alice"]["shell"] == "/bin/bash"
+    assert users["alice"]["home"] == "/home/alice"
+
+
+def test_user_collector_marks_nologin():
+    from ubuntils.collectors.users import UserCollector
+
+    with mock.patch("builtins.open", side_effect=_open_users):
+        result = UserCollector().collect()
+
+    users = {u["username"]: u for u in result["users"]}
+    assert users["daemon"]["is_login_shell"] is False
+    assert users["alice"]["is_login_shell"] is True
+
+
+def test_user_collector_shadow_permission_error():
+    from ubuntils.collectors.users import UserCollector
+
+    def open_no_shadow(path, *args, **kwargs):
+        if path == "/etc/shadow":
+            raise PermissionError("permission denied")
+        return _open_users(path, *args, **kwargs)
+
+    with mock.patch("builtins.open", side_effect=open_no_shadow):
+        result = UserCollector().collect()
+
+    assert "users" in result
+    for user in result["users"]:
+        assert user["password_locked"] is None
+
+
+# ─── CronCollector ────────────────────────────────────────────────────────────
+
+SYSTEM_CRONTAB = (
+    "# system cron\n"
+    "SHELL=/bin/sh\n"
+    "17 * * * * root    cd / && run-parts --report /etc/cron.hourly\n"
+    "* * * * * root /tmp/evil.sh\n"
+)
+
+USER_CRONTAB_ALICE = (
+    "# alice's cron\n"
+    "0 9 * * 1 /home/alice/backup.sh\n"
+)
+
+
+def _open_cron(path, *args, **kwargs):
+    if path == "/etc/crontab":
+        return io.StringIO(SYSTEM_CRONTAB)
+    if path == "/var/spool/cron/crontabs/alice":
+        return io.StringIO(USER_CRONTAB_ALICE)
+    raise FileNotFoundError(path)
+
+
+def _glob_cron(pattern):
+    if "/etc/cron.d" in pattern:
+        return []
+    if "/var/spool/cron/crontabs" in pattern:
+        return ["/var/spool/cron/crontabs/alice"]
+    return []
+
+
+def test_cron_collector_parses_system_crontab():
+    from ubuntils.collectors.cron import CronCollector
+
+    with mock.patch("builtins.open", side_effect=_open_cron), \
+         mock.patch("glob.glob", side_effect=_glob_cron):
+        result = CronCollector().collect()
+
+    assert "cron_entries" in result
+    system_entries = [e for e in result["cron_entries"] if e["source"] == "/etc/crontab"]
+    assert len(system_entries) >= 1
+    commands = [e["command"] for e in system_entries]
+    assert any("/tmp/evil.sh" in c for c in commands)
+
+
+def test_cron_collector_parses_user_crontab():
+    from ubuntils.collectors.cron import CronCollector
+
+    with mock.patch("builtins.open", side_effect=_open_cron), \
+         mock.patch("glob.glob", side_effect=_glob_cron):
+        result = CronCollector().collect()
+
+    user_entries = [e for e in result["cron_entries"] if e["owner"] == "alice"]
+    assert len(user_entries) == 1
+    assert "/home/alice/backup.sh" in user_entries[0]["command"]
+
+
+def test_cron_collector_skips_comments():
+    from ubuntils.collectors.cron import CronCollector
+
+    with mock.patch("builtins.open", side_effect=_open_cron), \
+         mock.patch("glob.glob", side_effect=_glob_cron):
+        result = CronCollector().collect()
+
+    for entry in result["cron_entries"]:
+        assert not entry["command"].startswith("#")
+        assert not entry.get("raw_line", "").lstrip().startswith("#")
+
+
+# ─── SystemdCollector ─────────────────────────────────────────────────────────
+
+TIMERS_JSON = json.dumps([
+    {"unit": "apt-daily.timer", "activates": "apt-daily.service"},
+])
+
+EXEC_START_OUTPUT = "ExecStart=/usr/lib/apt/apt.systemd.daily install\n"
+
+TIMERS_TEXT = (
+    "NEXT                          LEFT          LAST                          "
+    "PASSED       UNIT                    ACTIVATES\n"
+    "Thu 2024-01-18 06:00:00 UTC   4h left       Wed 2024-01-17 06:00:00 UTC   "
+    "17h ago      apt-daily.timer         apt-daily.service\n"
+    "\n1 timers listed.\n"
+)
+
+
+def _run_systemd(cmd, **kwargs):
+    if "--output" in cmd and "json" in cmd:
+        return (TIMERS_JSON, "", 0)
+    if "show" in cmd and "--property=ExecStart" in cmd:
+        return (EXEC_START_OUTPUT, "", 0)
+    return ("", "error", 1)
+
+
+def test_systemd_collector_parses_json_output():
+    from ubuntils.collectors.systemd import SystemdCollector
+
+    with mock.patch("ubuntils.collectors.systemd.run_command", side_effect=_run_systemd):
+        result = SystemdCollector().collect()
+
+    assert "timers" in result
+    assert len(result["timers"]) == 1
+    assert result["timers"][0]["unit"] == "apt-daily.timer"
+    assert result["timers"][0]["exec_start"] == "/usr/lib/apt/apt.systemd.daily install"
+
+
+def test_systemd_collector_parses_text_output():
+    from ubuntils.collectors.systemd import SystemdCollector
+
+    def run_text(cmd, **kwargs):
+        if "--output" in cmd and "json" in cmd:
+            return ("", "unknown option", 1)
+        if "list-timers" in cmd:
+            return (TIMERS_TEXT, "", 0)
+        if "show" in cmd and "--property=ExecStart" in cmd:
+            return (EXEC_START_OUTPUT, "", 0)
+        return ("", "error", 1)
+
+    with mock.patch("ubuntils.collectors.systemd.run_command", side_effect=run_text):
+        result = SystemdCollector().collect()
+
+    assert "timers" in result
+    assert len(result["timers"]) >= 1
+    assert result["timers"][0]["unit"] == "apt-daily.timer"
+
+
+def test_systemd_collector_handles_missing_exec_start():
+    from ubuntils.collectors.systemd import SystemdCollector
+
+    def run_no_exec(cmd, **kwargs):
+        if "--output" in cmd and "json" in cmd:
+            return (TIMERS_JSON, "", 0)
+        if "show" in cmd and "--property=ExecStart" in cmd:
+            return ("", "not found", 1)
+        return ("", "error", 1)
+
+    with mock.patch("ubuntils.collectors.systemd.run_command", side_effect=run_no_exec):
+        result = SystemdCollector().collect()
+
+    assert "timers" in result
+    assert result["timers"][0]["exec_start"] == ""
+
+
+# ─── SSHCollector ─────────────────────────────────────────────────────────────
+
+AUTH_KEYS_CONTENT = (
+    "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQ alice@laptop\n"
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI work-key\n"
+)
+
+PASSWD_SSH = "alice:x:1000:1000::/home/alice:/bin/bash\nnobody:x:65534:65534:::/usr/sbin/nologin\n"
+
+
+def _open_ssh(path, *args, **kwargs):
+    if path == "/etc/passwd":
+        return io.StringIO(PASSWD_SSH)
+    if path == "/home/alice/.ssh/authorized_keys":
+        return io.StringIO(AUTH_KEYS_CONTENT)
+    raise FileNotFoundError(path)
+
+
+def _stat_ssh(path):
+    s = mock.MagicMock()
+    s.st_mtime = 1705000000.0
+    return s
+
+
+def test_ssh_collector_parses_authorized_keys():
+    from ubuntils.collectors.ssh import SSHCollector
+
+    with mock.patch("builtins.open", side_effect=_open_ssh), \
+         mock.patch("os.path.exists", return_value=True), \
+         mock.patch("os.stat", side_effect=_stat_ssh):
+        result = SSHCollector().collect()
+
+    assert "authorized_keys" in result
+    assert len(result["authorized_keys"]) == 2
+    first = result["authorized_keys"][0]
+    assert first["username"] == "alice"
+    assert first["key_type"] == "ssh-rsa"
+    assert first["comment"] == "alice@laptop"
+    assert first["file_mtime"] == 1705000000.0
+
+
+def test_ssh_collector_skips_missing_file():
+    from ubuntils.collectors.ssh import SSHCollector
+
+    with mock.patch("builtins.open", side_effect=lambda p, *a, **k: io.StringIO(PASSWD_SSH) if p == "/etc/passwd" else (_ for _ in ()).throw(FileNotFoundError(p))), \
+         mock.patch("os.path.exists", return_value=False):
+        result = SSHCollector().collect()
+
+    assert "authorized_keys" in result
+    assert result["authorized_keys"] == []
+
+
+def test_ssh_collector_records_mtime():
+    from ubuntils.collectors.ssh import SSHCollector
+
+    with mock.patch("builtins.open", side_effect=_open_ssh), \
+         mock.patch("os.path.exists", return_value=True), \
+         mock.patch("os.stat", side_effect=_stat_ssh):
+        result = SSHCollector().collect()
+
+    assert isinstance(result["authorized_keys"][0]["file_mtime"], float)
+
+
+# ─── SudoersCollector ─────────────────────────────────────────────────────────
+
+SUDOERS_CONTENT = (
+    "# sudoers file\n"
+    "#include /etc/sudoers.d/\n"
+    "root    ALL=(ALL:ALL) ALL\n"
+    "alice   ALL=(ALL:ALL) NOPASSWD: ALL\n"
+    "%sudo   ALL=(ALL:ALL) ALL\n"
+)
+
+SUDOERS_D_CONTENT = "bob ALL=(ALL) NOPASSWD: /usr/bin/apt\n"
+
+
+def _open_sudoers(path, *args, **kwargs):
+    if path == "/etc/sudoers":
+        return io.StringIO(SUDOERS_CONTENT)
+    if path == "/etc/sudoers.d/bob":
+        return io.StringIO(SUDOERS_D_CONTENT)
+    raise FileNotFoundError(path)
+
+
+def _glob_sudoers(pattern):
+    if "/etc/sudoers.d" in pattern:
+        return ["/etc/sudoers.d/bob"]
+    return []
+
+
+def test_sudoers_collector_parses_nopasswd_rule():
+    from ubuntils.collectors.sudoers import SudoersCollector
+
+    with mock.patch("builtins.open", side_effect=_open_sudoers), \
+         mock.patch("glob.glob", side_effect=_glob_sudoers):
+        result = SudoersCollector().collect()
+
+    assert "sudoers_rules" in result
+    rules = result["sudoers_rules"]
+    nopasswd_rules = [r for r in rules if "NOPASSWD" in r["options"]]
+    assert len(nopasswd_rules) >= 1
+
+
+def test_sudoers_collector_skips_includes():
+    from ubuntils.collectors.sudoers import SudoersCollector
+
+    with mock.patch("builtins.open", side_effect=_open_sudoers), \
+         mock.patch("glob.glob", side_effect=_glob_sudoers):
+        result = SudoersCollector().collect()
+
+    for rule in result["sudoers_rules"]:
+        assert not rule["raw_line"].startswith("#include")
+        assert not rule["raw_line"].startswith("@include")
+
+
+def test_sudoers_collector_reads_sudoers_d():
+    from ubuntils.collectors.sudoers import SudoersCollector
+
+    with mock.patch("builtins.open", side_effect=_open_sudoers), \
+         mock.patch("glob.glob", side_effect=_glob_sudoers):
+        result = SudoersCollector().collect()
+
+    sources = {r["source"] for r in result["sudoers_rules"]}
+    assert "/etc/sudoers.d/bob" in sources
+
+
+# ─── EnvironmentCollector ─────────────────────────────────────────────────────
+
+ETC_ENVIRONMENT = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin\nLANG=en_US.UTF-8\n"
+BASHRC_MALICIOUS = "export LD_PRELOAD=/tmp/evil.so\nexport EDITOR=vim\n"
+PASSWD_ENV = "alice:x:1000:1000::/home/alice:/bin/bash\n"
+
+
+def _open_env(path, *args, **kwargs):
+    if path == "/etc/environment":
+        return io.StringIO(ETC_ENVIRONMENT)
+    if path == "/etc/profile":
+        return io.StringIO("")
+    if path == "/home/alice/.bashrc":
+        return io.StringIO(BASHRC_MALICIOUS)
+    raise FileNotFoundError(path)
+
+
+def _glob_env(pattern):
+    if "/etc/profile.d" in pattern:
+        return []
+    return []
+
+
+def test_env_collector_parses_ld_preload():
+    from ubuntils.collectors.environment import EnvironmentCollector
+
+    def open_all(path, *args, **kwargs):
+        if path == "/etc/passwd":
+            return io.StringIO(PASSWD_ENV)
+        if path == "/etc/environment":
+            return io.StringIO("")
+        if path == "/etc/profile":
+            return io.StringIO("")
+        if path == "/home/alice/.bashrc":
+            return io.StringIO(BASHRC_MALICIOUS)
+        raise FileNotFoundError(path)
+
+    with mock.patch("builtins.open", side_effect=open_all), \
+         mock.patch("glob.glob", side_effect=_glob_env), \
+         mock.patch("os.path.exists", side_effect=lambda p: p == "/home/alice/.bashrc"):
+        result = EnvironmentCollector().collect()
+
+    assert "env_definitions" in result
+    variables = [e["variable"] for e in result["env_definitions"]]
+    assert "LD_PRELOAD" in variables
+
+
+def test_env_collector_reads_etc_environment():
+    from ubuntils.collectors.environment import EnvironmentCollector
+
+    def open_minimal(path, *args, **kwargs):
+        if path == "/etc/passwd":
+            return io.StringIO("")
+        if path == "/etc/environment":
+            return io.StringIO(ETC_ENVIRONMENT)
+        if path == "/etc/profile":
+            return io.StringIO("")
+        raise FileNotFoundError(path)
+
+    with mock.patch("builtins.open", side_effect=open_minimal), \
+         mock.patch("glob.glob", side_effect=_glob_env):
+        result = EnvironmentCollector().collect()
+
+    assert "env_definitions" in result
+    system_entries = [e for e in result["env_definitions"] if e["owner"] == "system"]
+    assert len(system_entries) >= 1
+    variables = [e["variable"] for e in system_entries]
+    assert "PATH" in variables
+
+
+def test_env_collector_skips_nonexistent_rc_files():
+    from ubuntils.collectors.environment import EnvironmentCollector
+
+    def open_no_rc(path, *args, **kwargs):
+        if path == "/etc/passwd":
+            return io.StringIO(PASSWD_ENV)
+        if path == "/etc/environment":
+            return io.StringIO("")
+        if path == "/etc/profile":
+            return io.StringIO("")
+        raise FileNotFoundError(path)
+
+    with mock.patch("builtins.open", side_effect=open_no_rc), \
+         mock.patch("glob.glob", side_effect=_glob_env), \
+         mock.patch("os.path.exists", return_value=False):
+        result = EnvironmentCollector().collect()  # must not raise
+
+    assert "env_definitions" in result
+
+
+# ─── Collector registry ───────────────────────────────────────────────────────
+
+def test_all_collectors_registered():
+    from ubuntils.collectors import ALL_COLLECTORS
+    assert len(ALL_COLLECTORS) == 8
+
+
+def test_all_collectors_are_base_collector_subclasses():
+    from ubuntils.collectors import ALL_COLLECTORS
+    from ubuntils.collectors.base import BaseCollector
+    for cls in ALL_COLLECTORS:
+        assert issubclass(cls, BaseCollector), f"{cls} is not a BaseCollector subclass"
