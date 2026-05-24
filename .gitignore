@@ -52,3 +52,4 @@ Thumbs.db
 # Project-specific
 CLAUDE.md
 /var/backups/ubuntils/
+.claude/
