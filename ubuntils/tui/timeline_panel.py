@@ -1,0 +1,23 @@
+from textual.app import ComposeResult
+from textual.widget import Widget
+from textual.widgets import Label, ListItem, ListView
+
+from ubuntils.timeline.builder import TimelineEvent
+
+
+class TimelinePanel(Widget):
+    def __init__(self, timeline: list[TimelineEvent], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._timeline = timeline
+
+    def compose(self) -> ComposeResult:
+        items = [
+            ListItem(
+                Label(
+                    f"{e.timestamp.strftime('%H:%M:%S')}  "
+                    f"{e.source:<12}  {e.description}"
+                )
+            )
+            for e in self._timeline
+        ]
+        yield ListView(*items)
