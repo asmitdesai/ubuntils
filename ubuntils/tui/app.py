@@ -23,10 +23,11 @@ logger = structlog.get_logger()
 
 
 class CollectorProgress(Message):
-    def __init__(self, name: str, index: int, total: int) -> None:
+    def __init__(self, name: str, index: int, total: int, success: bool = True) -> None:
         self.name = name
         self.index = index
         self.total = total
+        self.success = success
         super().__init__()
 
 
@@ -57,18 +58,20 @@ class LoadingScreen(Screen):
     }
     """
 
-    def __init__(self) -> None:
+    def __init__(self, total: int = 8) -> None:
         super().__init__()
+        self._total = total
         self._log_lines: list[str] = []
 
     def compose(self) -> ComposeResult:
         yield Label("Scanning system...", id="status")
-        yield ProgressBar(total=8, show_eta=False, id="progress")
+        yield ProgressBar(total=self._total, show_eta=False, id="progress")
         yield Static("", id="checklist")
 
-    def update_progress(self, name: str, index: int, total: int) -> None:
+    def update_progress(self, name: str, index: int, total: int, success: bool = True) -> None:
         self.query_one("#progress", ProgressBar).advance(1)
-        self._log_lines.append(f"✓ {name}")
+        prefix = "✓" if success else "✗"
+        self._log_lines.append(f"{prefix} {name}")
         self.query_one("#checklist", Static).update("\n".join(self._log_lines))
         self.query_one("#status", Label).update(
             f"Scanning system... [{index}/{total}]"
@@ -125,7 +128,7 @@ class UbuntilsApp(App):
         self._scan_override = _scan_override
 
     def on_mount(self) -> None:
-        self.push_screen(LoadingScreen())
+        self.push_screen(LoadingScreen(total=len(ALL_COLLECTORS)))
         self._run_scan()
 
     @work(thread=True)
@@ -142,18 +145,26 @@ class UbuntilsApp(App):
 
         for i, collector in enumerate(collectors):
             name = type(collector).__name__
+            success = True
             try:
                 result = collector.collect()
                 artifacts.update(result)
             except Exception as exc:
                 logger.error("collector_failed", name=name, error=str(exc))
                 failures += 1
+                success = False
             self.post_message(
-                CollectorProgress(name=name, index=i + 1, total=len(collectors))
+                CollectorProgress(name=name, index=i + 1, total=len(collectors), success=success)
             )
 
-        findings = DetectionEngine().run(artifacts)
-        timeline = TimelineBuilder().build()
+        try:
+            findings = DetectionEngine().run(artifacts)
+            timeline = TimelineBuilder().build()
+        except Exception as exc:
+            logger.error("scan_engine_failed", error=str(exc))
+            findings = []
+            timeline = []
+
         duration = time.monotonic() - start
 
         stats = {
@@ -176,7 +187,7 @@ class UbuntilsApp(App):
     def on_collector_progress(self, message: CollectorProgress) -> None:
         screen = self.screen
         if isinstance(screen, LoadingScreen):
-            screen.update_progress(message.name, message.index, message.total)
+            screen.update_progress(message.name, message.index, message.total, message.success)
 
     def on_scan_complete(self, message: ScanComplete) -> None:
         self.switch_screen(

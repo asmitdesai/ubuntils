@@ -14,7 +14,7 @@ class TimelinePanel(Widget):
         items = [
             ListItem(
                 Label(
-                    f"{e.timestamp.strftime('%H:%M:%S')}  "
+                    f"{e.timestamp.strftime('%m-%d %H:%M:%S')}  "
                     f"{e.source:<12}  {e.description}"
                 )
             )

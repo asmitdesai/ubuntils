@@ -249,6 +249,12 @@ def test_collector_progress_fields():
     assert msg.name == "CronCollector"
     assert msg.index == 3
     assert msg.total == 8
+    assert msg.success is True
+
+
+def test_collector_progress_failed():
+    msg = CollectorProgress(name="CronCollector", index=3, total=8, success=False)
+    assert msg.success is False
 
 
 def test_scan_complete_fields():
