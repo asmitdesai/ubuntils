@@ -1,3 +1,4 @@
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.widget import Widget
 from textual.widgets import Label, ListItem, ListView
@@ -14,8 +15,10 @@ class TimelinePanel(Widget):
         items = [
             ListItem(
                 Label(
-                    f"{e.timestamp.strftime('%m-%d %H:%M:%S')}  "
-                    f"{e.source:<12}  {e.description}"
+                    Text(
+                        f"{e.timestamp.strftime('%m-%d %H:%M:%S')}  "
+                        f"{e.source:<12}  {e.description}"
+                    )
                 )
             )
             for e in self._timeline

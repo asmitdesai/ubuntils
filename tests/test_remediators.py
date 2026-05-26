@@ -354,6 +354,91 @@ class TestSudoersRemediator:
 
 
 # ---------------------------------------------------------------------------
+# Security: symlink rejection and backup collision prevention
+# ---------------------------------------------------------------------------
+
+class TestSecurityHardenings:
+    def test_symlink_rejected_before_remediation(self, tmp_path):
+        """BaseRemediator.remediate() must refuse to act on a symlink artifact."""
+        real_file = tmp_path / "real_authorized_keys"
+        real_file.write_text("ssh-rsa AAAA...\n")
+        link = tmp_path / "authorized_keys"
+        link.symlink_to(real_file)
+
+        finding = _finding("SSH_UNAUTHORIZED_KEY", str(link), "ssh-rsa AAAA...")
+        remediator = SSHRemediator(backup_base=str(tmp_path / "backups"))
+        result = remediator.remediate(finding, dry_run=False)
+
+        assert result.status == RemediationStatus.FAILED
+        assert "symlink" in result.message.lower()
+        # Real file must be untouched
+        assert real_file.read_text() == "ssh-rsa AAAA...\n"
+
+    def test_backup_uses_flattened_full_path(self, tmp_path):
+        """Backup filename must encode the full artifact path, not just the basename."""
+        alice_keys = tmp_path / "alice" / "authorized_keys"
+        alice_keys.parent.mkdir()
+        alice_keys.write_text("ssh-rsa AAAA...\n")
+        bob_keys = tmp_path / "bob" / "authorized_keys"
+        bob_keys.parent.mkdir()
+        bob_keys.write_text("ssh-rsa BBBB...\n")
+
+        backup_base = tmp_path / "backups"
+        remediator_a = SSHRemediator(backup_base=str(backup_base))
+        remediator_b = SSHRemediator(backup_base=str(backup_base))
+
+        finding_a = _finding("SSH_UNAUTHORIZED_KEY", str(alice_keys), "ssh-rsa AAAA...")
+        finding_b = _finding("SSH_UNAUTHORIZED_KEY", str(bob_keys), "ssh-rsa BBBB...")
+
+        backup_a = remediator_a.backup(finding_a)
+        backup_b = remediator_b.backup(finding_b)
+
+        assert backup_a != backup_b
+        assert os.path.exists(backup_a)
+        assert os.path.exists(backup_b)
+
+    def test_backup_dir_created_with_restricted_permissions(self, tmp_path):
+        """Backup directory must be created with mode 0o700."""
+        artifact = tmp_path / "crontab"
+        artifact.write_text("* * * * * root /tmp/evil.sh\n")
+
+        backup_base = tmp_path / "backups"
+        remediator = CronRemediator(backup_base=str(backup_base))
+        finding = _finding("CRON_TMP_PATH", str(artifact), "* * * * * root /tmp/evil.sh")
+        backup_path = remediator.backup(finding)
+
+        backup_dir = os.path.dirname(backup_path)
+        mode = stat.S_IMODE(os.stat(backup_dir).st_mode)
+        assert mode == 0o700
+
+    def test_backup_collision_raises_if_dest_exists(self, tmp_path):
+        """backup() must raise FileExistsError rather than silently overwrite."""
+        artifact = tmp_path / "authorized_keys"
+        artifact.write_text("ssh-rsa AAAA...\n")
+
+        backup_base = tmp_path / "backups"
+        remediator = SSHRemediator(backup_base=str(backup_base))
+        finding = _finding("SSH_UNAUTHORIZED_KEY", str(artifact), "ssh-rsa AAAA...")
+
+        remediator.backup(finding)
+
+        # Pre-create the destination that a second backup would target
+        import glob
+        backup_dirs = list((backup_base).iterdir())
+        dest_dir = backup_dirs[0]
+        safe_name = str(artifact).lstrip("/").replace("/", "_")
+        dest = dest_dir / safe_name
+        assert dest.exists()
+
+        # Second backup to the same dest_dir should fail
+        dest.unlink()
+        dest.write_text("already here")
+        remediator2 = SSHRemediator(backup_base=str(backup_base))
+        with pytest.raises(FileExistsError):
+            remediator2.backup(finding)
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 

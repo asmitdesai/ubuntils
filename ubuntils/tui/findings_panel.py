@@ -1,3 +1,5 @@
+from rich.markup import escape
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.widget import Widget
 from textual.widgets import Label, ListItem, ListView, Static
@@ -67,15 +69,15 @@ class FindingsPanel(Widget):
             rule = f"{f.rule_id[:20]:<20}"
             path = f.artifact_path[:35]
             items.append(
-                ListItem(Label(f"[{color} bold]{sev}[/{color} bold]  {rule}  {path}"))
+                ListItem(Label(f"[{color} bold]{sev}[/{color} bold]  {rule}  {escape(path)}"))
             )
         yield ListView(*items)
         initial = format_detail(self._findings[0]) if self._findings else "No findings."
-        yield Static(initial, id="detail")
+        yield Static(Text(initial), id="detail")
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         idx = event.list_view.index
         if idx is not None and 0 <= idx < len(self._findings):
             self.query_one("#detail", Static).update(
-                format_detail(self._findings[idx])
+                Text(format_detail(self._findings[idx]))
             )

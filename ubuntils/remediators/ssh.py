@@ -16,8 +16,11 @@ class SSHRemediator(BaseRemediator):
             raise FileNotFoundError(f"Artifact not found: {artifact}")
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         dest_dir = os.path.join(self._backup_base, ts)
-        os.makedirs(dest_dir, exist_ok=True)
-        dest = os.path.join(dest_dir, os.path.basename(artifact))
+        os.makedirs(dest_dir, mode=0o700, exist_ok=True)
+        safe_name = artifact.lstrip("/").replace("/", "_")
+        dest = os.path.join(dest_dir, safe_name)
+        if os.path.exists(dest):
+            raise FileExistsError(f"Backup destination already exists: {dest}")
         shutil.copy2(artifact, dest)
         return dest
 
