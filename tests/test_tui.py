@@ -309,6 +309,47 @@ async def test_scan_screen_ticker_marks_failed():
         assert "✗" in ticker_text
 
 
+async def test_scan_screen_lists_all_collectors_on_mount():
+    class _App(App):
+        def compose(self) -> ComposeResult:
+            yield ScanScreen(collector_names=["ProcessCollector", "CronCollector", "SSHCollector"])
+
+    async with _App().run_test() as pilot:
+        await pilot.pause()
+        body = str(pilot.app.query_one("#checklist", Static).content)
+        assert "Process" in body
+        assert "Cron" in body
+        assert "SSH" in body
+
+
+async def test_scan_screen_mark_done_shows_check():
+    class _App(App):
+        def compose(self) -> ComposeResult:
+            yield ScanScreen(collector_names=["ProcessCollector", "CronCollector"])
+
+    async with _App().run_test() as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(ScanScreen)
+        screen.mark("ProcessCollector", success=True)
+        await pilot.pause()
+        body = str(pilot.app.query_one("#checklist", Static).content)
+        assert "✓" in body
+
+
+async def test_scan_screen_mark_failed_shows_cross():
+    class _App(App):
+        def compose(self) -> ComposeResult:
+            yield ScanScreen(collector_names=["ProcessCollector", "CronCollector"])
+
+    async with _App().run_test() as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(ScanScreen)
+        screen.mark("CronCollector", success=False)
+        await pilot.pause()
+        body = str(pilot.app.query_one("#checklist", Static).content)
+        assert "✗" in body
+
+
 # ---------------------------------------------------------------------------
 # MainScreen — panel switching
 # ---------------------------------------------------------------------------
