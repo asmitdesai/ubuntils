@@ -240,7 +240,9 @@ async def test_stats_panel_renders_all_fields():
 # Textual messages
 # ---------------------------------------------------------------------------
 
-from ubuntils.tui.app import CollectorProgress, LoadingScreen, MainScreen, ScanComplete, UbuntilsApp
+from ubuntils.tui.app import CollectorProgress, MainScreen, ScanComplete, UbuntilsApp
+from ubuntils.tui.scan_screen import ScanScreen
+from ubuntils.tui.summary_screen import SummaryScreen
 from textual.widgets import ContentSwitcher
 
 
@@ -265,22 +267,46 @@ def test_scan_complete_fields():
 
 
 # ---------------------------------------------------------------------------
-# LoadingScreen
+# ScanScreen
 # ---------------------------------------------------------------------------
 
 
-async def test_loading_screen_updates_progress():
+async def test_scan_screen_renders():
     class _App(App):
         def compose(self) -> ComposeResult:
-            yield LoadingScreen()
+            yield ScanScreen()
 
     async with _App().run_test() as pilot:
         await pilot.pause()
-        screen = pilot.app.query_one(LoadingScreen)
-        screen.update_progress("CronCollector", 1, 8)
+        assert pilot.app.query_one(ScanScreen) is not None
+
+
+async def test_scan_screen_ticker_updates():
+    class _App(App):
+        def compose(self) -> ComposeResult:
+            yield ScanScreen()
+
+    async with _App().run_test() as pilot:
         await pilot.pause()
-        label_text = pilot.app.query_one("#status", Label).content
-        assert "1/8" in label_text
+        screen = pilot.app.query_one(ScanScreen)
+        screen.add_to_ticker("ProcessCollector", success=True)
+        await pilot.pause()
+        ticker_text = pilot.app.query_one("#ticker", Static).content
+        assert "ProcessCollector" in str(ticker_text)
+
+
+async def test_scan_screen_ticker_marks_failed():
+    class _App(App):
+        def compose(self) -> ComposeResult:
+            yield ScanScreen()
+
+    async with _App().run_test() as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(ScanScreen)
+        screen.add_to_ticker("CronCollector", success=False)
+        await pilot.pause()
+        ticker_text = str(pilot.app.query_one("#ticker", Static).content)
+        assert "✗" in ticker_text
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +371,7 @@ async def test_main_screen_key_1_switches_back_to_findings():
 # ---------------------------------------------------------------------------
 
 
-async def test_ubuntils_app_shows_loading_screen_on_mount():
+async def test_ubuntils_app_shows_scan_screen_on_mount():
     import threading
     proceed = threading.Event()
 
@@ -354,21 +380,21 @@ async def test_ubuntils_app_shows_loading_screen_on_mount():
         return ([], [], _stats())
 
     async with UbuntilsApp(_scan_override=_override).run_test() as pilot:
-        assert isinstance(pilot.app.screen, LoadingScreen)
+        assert isinstance(pilot.app.screen, ScanScreen)
         proceed.set()
         await pilot.pause(delay=0.2)
 
 
-async def test_ubuntils_app_transitions_to_main_screen_after_scan():
+async def test_ubuntils_app_transitions_to_summary_screen_after_scan():
     def _override():
         return ([], [], _stats())
 
     async with UbuntilsApp(_scan_override=_override).run_test() as pilot:
         await pilot.pause(delay=0.5)
-        assert isinstance(pilot.app.screen, MainScreen)
+        assert isinstance(pilot.app.screen, SummaryScreen)
 
 
-async def test_ubuntils_app_passes_findings_to_main_screen():
+async def test_ubuntils_app_passes_findings_to_summary_screen():
     findings = [_finding("CRON_TMP_PATH", Severity.HIGH)]
 
     def _override():
@@ -376,10 +402,9 @@ async def test_ubuntils_app_passes_findings_to_main_screen():
 
     async with UbuntilsApp(_scan_override=_override).run_test() as pilot:
         await pilot.pause(delay=0.5)
-        screen = pilot.app.screen
-        assert isinstance(screen, MainScreen)
-        lv = pilot.app.screen.query_one(ListView)
-        assert len(lv.children) == 1
+        assert isinstance(pilot.app.screen, SummaryScreen)
+        content = str(pilot.app.screen.query_one("#summary-body", Static).content)
+        assert "CRON_TMP_PATH" in content
 
 
 async def test_ubuntils_app_q_exits():
@@ -399,3 +424,114 @@ async def test_ubuntils_app_q_exits():
 def test_ubuntils_app_importable_from_tui_package():
     from ubuntils.tui import UbuntilsApp as _UbuntilsApp
     assert _UbuntilsApp is UbuntilsApp
+
+
+def test_scan_screen_importable_from_tui_package():
+    from ubuntils.tui import ScanScreen as _ScanScreen
+    assert _ScanScreen is ScanScreen
+
+
+def test_summary_screen_importable_from_tui_package():
+    from ubuntils.tui import SummaryScreen as _SummaryScreen
+    assert _SummaryScreen is SummaryScreen
+
+
+# ---------------------------------------------------------------------------
+# SummaryScreen
+# ---------------------------------------------------------------------------
+
+
+async def test_summary_screen_renders_stats():
+    class _App(App):
+        def on_mount(self) -> None:
+            self.push_screen(SummaryScreen(
+                findings=[],
+                timeline=[],
+                stats=_stats(high=0, medium=0, low=0, timeline_count=42),
+            ))
+
+    async with _App().run_test() as pilot:
+        await pilot.pause()
+        content = pilot.app.screen.query_one("#summary-body", Static).content
+        assert "8 run" in str(content)
+        assert "42" in str(content)
+
+
+async def test_summary_screen_clean_system_message():
+    class _App(App):
+        def on_mount(self) -> None:
+            self.push_screen(SummaryScreen(findings=[], timeline=[], stats=_stats(high=0, medium=0, low=0)))
+
+    async with _App().run_test() as pilot:
+        await pilot.pause()
+        content = str(pilot.app.screen.query_one("#summary-body", Static).content)
+        assert "System appears clean" in content
+
+
+async def test_summary_screen_shows_findings_list_when_not_empty():
+    findings = [_finding("CRON_TMP_PATH", Severity.HIGH)]
+
+    class _App(App):
+        def on_mount(self) -> None:
+            self.push_screen(SummaryScreen(
+                findings=findings,
+                timeline=[],
+                stats=_stats(high=1, medium=0, low=0),
+            ))
+
+    async with _App().run_test() as pilot:
+        await pilot.pause()
+        content = str(pilot.app.screen.query_one("#summary-body", Static).content)
+        assert "CRON_TMP_PATH" in content
+
+
+async def test_summary_screen_no_clean_message_when_findings_exist():
+    findings = [_finding("CRON_TMP_PATH", Severity.HIGH)]
+
+    class _App(App):
+        def on_mount(self) -> None:
+            self.push_screen(SummaryScreen(
+                findings=findings,
+                timeline=[],
+                stats=_stats(high=1, medium=0, low=0),
+            ))
+
+    async with _App().run_test() as pilot:
+        await pilot.pause()
+        content = str(pilot.app.screen.query_one("#summary-body", Static).content)
+        assert "System appears clean" not in content
+
+
+# ---------------------------------------------------------------------------
+# MainScreen — initial panel + back navigation
+# ---------------------------------------------------------------------------
+
+
+async def test_main_screen_initial_panel_timeline():
+    class _App(App):
+        def on_mount(self) -> None:
+            self.push_screen(
+                MainScreen(findings=[], timeline=[], stats=_stats(), initial_panel="timeline")
+            )
+
+    async with _App().run_test() as pilot:
+        await pilot.pause()
+        switcher = pilot.app.screen.query_one(ContentSwitcher)
+        assert switcher.current == "timeline"
+
+
+async def test_main_screen_escape_pops_to_summary():
+    class _App(App):
+        def on_mount(self) -> None:
+            self.push_screen(SummaryScreen(findings=[], timeline=[], stats=_stats()))
+
+    async with _App().run_test() as pilot:
+        await pilot.pause()
+        await pilot.app.push_screen(
+            MainScreen(findings=[], timeline=[], stats=_stats(), initial_panel="findings")
+        )
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, MainScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, SummaryScreen)
