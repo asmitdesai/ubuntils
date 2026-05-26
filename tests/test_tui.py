@@ -478,6 +478,11 @@ def test_results_screen_importable_from_tui_package():
     assert _ResultsScreen is ResultsScreen
 
 
+def test_confirm_modal_importable_from_tui_package():
+    from ubuntils.tui import ConfirmModal as _ConfirmModal
+    assert _ConfirmModal is ConfirmModal
+
+
 # ---------------------------------------------------------------------------
 # ResultsScreen — tabbed navigation
 # ---------------------------------------------------------------------------
