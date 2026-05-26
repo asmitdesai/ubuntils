@@ -174,15 +174,136 @@ async def test_findings_panel_first_row_is_high():
         assert "HIGH" in first_label_text
 
 
-async def test_findings_panel_detail_pane_shows_first_finding_on_mount():
+async def test_findings_panel_detail_pane_empty_on_mount():
     class _App(App):
         def compose(self) -> ComposeResult:
             yield FindingsPanel(_findings_fixture())
 
     async with _App().run_test() as pilot:
         await pilot.pause()
-        detail = pilot.app.query_one("#detail", Static).content
+        detail = str(pilot.app.query_one("#detail", Static).content)
+        assert "Select a finding" in detail
+
+
+from ubuntils.tui.findings_panel import FindingDetail
+
+
+async def test_findings_panel_enter_shows_detail():
+    class _App(App):
+        def compose(self) -> ComposeResult:
+            yield FindingsPanel(_findings_fixture())
+
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        detail = str(pilot.app.query_one(FindingDetail).content)
         assert "High severity finding" in detail
+
+
+async def test_findings_panel_enter_shows_r_hint_for_remediable():
+    class _App(App):
+        def compose(self) -> ComposeResult:
+            yield FindingsPanel(_findings_fixture())
+
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        detail = str(pilot.app.query_one(FindingDetail).content)
+        assert "R: remediate" in detail
+
+
+async def test_findings_panel_enter_shows_no_remediation_for_flag_only():
+    flag_only = _finding(
+        rule_id="SHELL_RC_MODIFICATION",
+        severity=Severity.LOW,
+        description="Shell rc modified",
+        remediation_available=False,
+    )
+
+    class _App(App):
+        def compose(self) -> ComposeResult:
+            yield FindingsPanel([flag_only])
+
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        detail = str(pilot.app.query_one(FindingDetail).content)
+        assert "No automated remediation available" in detail
+
+
+async def test_findings_panel_mark_fixed_updates_list_item():
+    findings = _findings_fixture()
+    high_finding = next(f for f in findings if f.severity == Severity.HIGH)
+    result = RemediationResult(
+        finding_rule_id=high_finding.rule_id,
+        status=RemediationStatus.SUCCESS,
+        message="Done",
+        backup_path="/var/backups/ubuntils/20260526/cron",
+    )
+
+    class _App(App):
+        def compose(self) -> ComposeResult:
+            yield FindingsPanel(findings)
+
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        panel = pilot.app.query_one(FindingsPanel)
+        panel.mark_fixed(high_finding, result)
+        await pilot.pause()
+        lv = pilot.app.query_one(ListView)
+        first_label = str(lv.children[0].query_one(Label).content)
+        assert "fixed" in first_label.lower()
+
+
+async def test_findings_panel_mark_fixed_shows_backup_in_detail():
+    findings = _findings_fixture()
+    high_finding = next(f for f in findings if f.severity == Severity.HIGH)
+    result = RemediationResult(
+        finding_rule_id=high_finding.rule_id,
+        status=RemediationStatus.SUCCESS,
+        message="Done",
+        backup_path="/var/backups/ubuntils/20260526/cron",
+        rollback_command="sudo cp /var/backups/ubuntils/20260526/cron /etc/cron.d/evil",
+    )
+
+    class _App(App):
+        def compose(self) -> ComposeResult:
+            yield FindingsPanel(findings)
+
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        panel = pilot.app.query_one(FindingsPanel)
+        panel.mark_fixed(high_finding, result)
+        await pilot.pause()
+        detail = str(pilot.app.query_one(FindingDetail).content)
+        assert "Remediated" in detail
+        assert "/var/backups/ubuntils/20260526/cron" in detail
+
+
+async def test_findings_panel_mark_fixed_failed_shows_error():
+    findings = _findings_fixture()
+    high_finding = next(f for f in findings if f.severity == Severity.HIGH)
+    result = RemediationResult(
+        finding_rule_id=high_finding.rule_id,
+        status=RemediationStatus.FAILED,
+        message="Permission denied",
+    )
+
+    class _App(App):
+        def compose(self) -> ComposeResult:
+            yield FindingsPanel(findings)
+
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        panel = pilot.app.query_one(FindingsPanel)
+        panel.mark_fixed(high_finding, result)
+        await pilot.pause()
+        detail = str(pilot.app.query_one(FindingDetail).content)
+        assert "Failed" in detail
+        assert "Permission denied" in detail
 
 
 # ---------------------------------------------------------------------------
