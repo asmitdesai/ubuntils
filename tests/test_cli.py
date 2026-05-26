@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 from unittest.mock import MagicMock, patch
 
@@ -5,6 +6,7 @@ import pytest
 from click.testing import CliRunner
 
 from ubuntils.cli import main, _run_pipeline
+from ubuntils.utils.since_parser import parse_since
 
 
 @pytest.fixture
@@ -197,3 +199,48 @@ def test_run_pipeline_remediation_dry_run():
 
     assert len(remed) == 1
     assert remed[0].status == RemediationStatus.SKIPPED
+
+
+def test_parse_since_hours():
+    before = dt.datetime.now(tz=dt.timezone.utc)
+    result = parse_since("24h")
+    expected = before - dt.timedelta(hours=24)
+    assert abs((result - expected).total_seconds()) < 2
+    assert result.tzinfo == dt.timezone.utc
+
+
+def test_parse_since_days():
+    result = parse_since("7d")
+    expected = dt.datetime.now(tz=dt.timezone.utc) - dt.timedelta(days=7)
+    assert abs((result - expected).total_seconds()) < 2
+    assert result.tzinfo == dt.timezone.utc
+
+
+def test_parse_since_minutes():
+    result = parse_since("30m")
+    assert result.tzinfo == dt.timezone.utc
+
+
+def test_parse_since_weeks():
+    result = parse_since("2w")
+    expected = dt.datetime.now(tz=dt.timezone.utc) - dt.timedelta(weeks=2)
+    assert abs((result - expected).total_seconds()) < 2
+
+
+def test_parse_since_absolute_date():
+    result = parse_since("2026-05-20")
+    assert result.year == 2026
+    assert result.month == 5
+    assert result.day == 20
+    assert result.tzinfo is not None
+
+
+def test_parse_since_absolute_datetime():
+    result = parse_since("2026-05-20 14:00")
+    assert result.hour == 14
+    assert result.tzinfo is not None
+
+
+def test_parse_since_invalid_raises():
+    with pytest.raises(ValueError, match="Invalid --since"):
+        parse_since("foo")
