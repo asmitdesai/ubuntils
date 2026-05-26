@@ -189,9 +189,9 @@ The default output is a full-terminal TUI with three panels:
 
 **Timeline (key: `2`)** — A scrollable chronological list of correlated log events from syslog, journald, and auditd. Each row shows timestamp, source, and description.
 
-**Stats (key: `3`)** — A summary view: detected Ubuntu version, hostname, kernel, scan duration, artifact counts per collector, and finding counts per severity.
+**Stats (key: `3`)** — A summary view: detected Ubuntu version, architecture, scan duration, collector count and failures, and finding counts per severity alongside total timeline events.
 
-Switch panels with `1`, `2`, `3`, or `Tab`. Exit with `q` or `Ctrl+C`.
+Switch panels with `1`, `2`, or `3`. Exit with `q` or `Ctrl+C`.
 
 ---
 
@@ -202,23 +202,20 @@ Switch panels with `1`, `2`, `3`, or `Tab`. Exit with `q` or `Ctrl+C`.
 ```json
 {
   "scan_metadata": {
-    "ubuntils_version": "1.0.0",
-    "scan_start": "2024-01-15T14:30:00Z",
-    "scan_end": "2024-01-15T14:31:22Z",
-    "duration_seconds": 82.4,
-    "ubuntu_version": "22.04",
-    "hostname": "prod-web-01",
-    "kernel": "5.15.0-91-generic"
+    "ubuntu_version": "Ubuntu 22.04.3 LTS",
+    "architecture": "x86_64",
+    "duration_s": 2.84,
+    "collector_failures": 0
   },
   "artifact_counts": {
-    "processes": 142,
-    "connections": 23,
-    "users": 4,
-    "cron_entries": 7,
-    "timers": 12,
-    "authorized_keys": 3,
-    "sudoers_rules": 5,
-    "env_definitions": 18
+    "ProcessCollector": 142,
+    "NetworkCollector": 23,
+    "UserCollector": 4,
+    "CronCollector": 7,
+    "SystemdCollector": 12,
+    "SSHCollector": 3,
+    "SudoersCollector": 5,
+    "EnvironmentCollector": 18
   },
   "findings": [
     {
@@ -234,8 +231,8 @@ Switch panels with `1`, `2`, `3`, or `Tab`. Exit with `q` or `Ctrl+C`.
   ],
   "timeline": [
     {
-      "timestamp": "2024-01-15T08:22:01Z",
-      "source": "auth.log",
+      "timestamp": "2024-01-15T08:22:01+00:00",
+      "source": "syslog",
       "description": "sshd: Accepted publickey for alice from 10.0.0.42 port 52341"
     }
   ]
