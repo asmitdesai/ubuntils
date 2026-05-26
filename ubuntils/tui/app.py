@@ -9,14 +9,16 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.message import Message
 from textual.screen import Screen
-from textual.widgets import ContentSwitcher, Footer, Header, Label, ProgressBar, Static
+from textual.widgets import ContentSwitcher, Footer, Header
 
 from ubuntils.collectors import ALL_COLLECTORS
 from ubuntils.detectors.engine import DetectionEngine
 from ubuntils.detectors.finding import Finding, Severity
 from ubuntils.timeline.builder import TimelineBuilder, TimelineEvent
 from ubuntils.tui.findings_panel import FindingsPanel
+from ubuntils.tui.scan_screen import ScanScreen
 from ubuntils.tui.stats_panel import StatsPanel, get_ubuntu_version
+from ubuntils.tui.summary_screen import SummaryScreen
 from ubuntils.tui.timeline_panel import TimelinePanel
 
 logger = structlog.get_logger()
@@ -44,45 +46,12 @@ class ScanComplete(Message):
         super().__init__()
 
 
-class LoadingScreen(Screen):
-    DEFAULT_CSS = """
-    LoadingScreen {
-        align: center middle;
-        layout: vertical;
-    }
-    LoadingScreen Label {
-        margin-bottom: 1;
-    }
-    LoadingScreen ProgressBar {
-        margin-bottom: 1;
-    }
-    """
-
-    def __init__(self, total: int = 8) -> None:
-        super().__init__()
-        self._total = total
-        self._log_lines: list[str] = []
-
-    def compose(self) -> ComposeResult:
-        yield Label("Scanning system...", id="status")
-        yield ProgressBar(total=self._total, show_eta=False, id="progress")
-        yield Static("", id="checklist")
-
-    def update_progress(self, name: str, index: int, total: int, success: bool = True) -> None:
-        self.query_one("#progress", ProgressBar).advance(1)
-        prefix = "✓" if success else "✗"
-        self._log_lines.append(f"{prefix} {name}")
-        self.query_one("#checklist", Static).update("\n".join(self._log_lines))
-        self.query_one("#status", Label).update(
-            f"Scanning system... [{index}/{total}]"
-        )
-
-
 class MainScreen(Screen):
     BINDINGS = [
         Binding("1", "switch_to_findings", "Findings"),
         Binding("2", "switch_to_timeline", "Timeline"),
         Binding("3", "switch_to_stats", "Stats"),
+        Binding("escape", "go_back", "Back"),
         Binding("q", "quit_app", "Quit"),
     ]
 
@@ -91,15 +60,17 @@ class MainScreen(Screen):
         findings: list[Finding],
         timeline: list[TimelineEvent],
         stats: dict,
+        initial_panel: str = "findings",
     ) -> None:
         super().__init__()
         self._findings = findings
         self._timeline = timeline
         self._stats = stats
+        self._initial_panel = initial_panel
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with ContentSwitcher(initial="findings"):
+        with ContentSwitcher(initial=self._initial_panel):
             yield FindingsPanel(self._findings, id="findings")
             yield TimelinePanel(self._timeline, id="timeline")
             yield StatsPanel(self._stats, id="stats")
@@ -114,13 +85,15 @@ class MainScreen(Screen):
     def action_switch_to_stats(self) -> None:
         self.query_one(ContentSwitcher).current = "stats"
 
+    def action_go_back(self) -> None:
+        self.app.pop_screen()
+
     def action_quit_app(self) -> None:
         self.app.exit()
 
 
 class UbuntilsApp(App):
     TITLE = "ubuntils"
-    BINDINGS = [Binding("q", "quit", "Quit")]
 
     def __init__(self, verbose: bool = False, _scan_override=None) -> None:
         super().__init__()
@@ -128,7 +101,7 @@ class UbuntilsApp(App):
         self._scan_override = _scan_override
 
     def on_mount(self) -> None:
-        self.push_screen(LoadingScreen(total=len(ALL_COLLECTORS)))
+        self.push_screen(ScanScreen())
         self._run_scan()
 
     @work(thread=True)
@@ -186,12 +159,12 @@ class UbuntilsApp(App):
 
     def on_collector_progress(self, message: CollectorProgress) -> None:
         screen = self.screen
-        if isinstance(screen, LoadingScreen):
-            screen.update_progress(message.name, message.index, message.total, message.success)
+        if isinstance(screen, ScanScreen):
+            screen.add_to_ticker(message.name, message.success)
 
     def on_scan_complete(self, message: ScanComplete) -> None:
         self.switch_screen(
-            MainScreen(
+            SummaryScreen(
                 findings=message.findings,
                 timeline=message.timeline,
                 stats=message.stats,
