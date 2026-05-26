@@ -1,9 +1,3 @@
-from rich.text import Text
-from textual.app import ComposeResult
-from textual.binding import Binding
-from textual.screen import Screen
-from textual.widgets import Footer, Header, Static
-
 from ubuntils.detectors.finding import Finding, Severity
 from ubuntils.timeline.builder import TimelineEvent
 
@@ -45,61 +39,3 @@ def _build_summary(
         lines.append("  System appears clean.")
 
     return "\n".join(lines)
-
-
-class SummaryScreen(Screen):
-    BINDINGS = [
-        Binding("1", "open_findings", "Findings"),
-        Binding("2", "open_timeline", "Timeline"),
-        Binding("3", "open_stats", "Stats"),
-        Binding("q", "quit_app", "Quit"),
-    ]
-
-    DEFAULT_CSS = """
-    SummaryScreen {
-        layout: vertical;
-    }
-    SummaryScreen #summary-body {
-        margin: 2 4;
-    }
-    """
-
-    def __init__(
-        self,
-        findings: list[Finding],
-        timeline: list[TimelineEvent],
-        stats: dict,
-    ) -> None:
-        super().__init__()
-        self._findings = findings
-        self._timeline = timeline
-        self._stats = stats
-
-    def compose(self) -> ComposeResult:
-        yield Header()
-        yield Static(
-            Text(_build_summary(self._findings, self._timeline, self._stats)),
-            id="summary-body",
-        )
-        yield Footer()
-
-    def action_open_findings(self) -> None:
-        from ubuntils.tui.app import MainScreen
-        self.app.push_screen(
-            MainScreen(self._findings, self._timeline, self._stats, initial_panel="findings")
-        )
-
-    def action_open_timeline(self) -> None:
-        from ubuntils.tui.app import MainScreen
-        self.app.push_screen(
-            MainScreen(self._findings, self._timeline, self._stats, initial_panel="timeline")
-        )
-
-    def action_open_stats(self) -> None:
-        from ubuntils.tui.app import MainScreen
-        self.app.push_screen(
-            MainScreen(self._findings, self._timeline, self._stats, initial_panel="stats")
-        )
-
-    def action_quit_app(self) -> None:
-        self.app.exit()
