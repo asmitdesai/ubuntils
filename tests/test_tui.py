@@ -240,10 +240,8 @@ async def test_stats_panel_renders_all_fields():
 # Textual messages
 # ---------------------------------------------------------------------------
 
-from ubuntils.tui.app import CollectorProgress, MainScreen, ScanComplete, UbuntilsApp
+from ubuntils.tui.app import CollectorProgress, ScanComplete, UbuntilsApp
 from ubuntils.tui.scan_screen import ScanScreen
-from ubuntils.tui.summary_screen import SummaryScreen
-from textual.widgets import ContentSwitcher
 
 
 def test_collector_progress_fields():
@@ -600,3 +598,61 @@ async def test_main_screen_escape_pops_to_summary():
         await pilot.press("escape")
         await pilot.pause()
         assert isinstance(pilot.app.screen, SummaryScreen)
+
+
+# ---------------------------------------------------------------------------
+# ResultsScreen — tabbed navigation
+# ---------------------------------------------------------------------------
+
+from ubuntils.tui.results_screen import ResultsScreen
+from textual.widgets import TabbedContent
+
+
+async def test_results_screen_default_tab_is_summary():
+    class _App(App):
+        def on_mount(self) -> None:
+            self.push_screen(ResultsScreen(findings=[], timeline=[], stats=_stats()))
+
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        tc = pilot.app.screen.query_one(TabbedContent)
+        assert tc.active == "summary"
+
+
+async def test_results_screen_summary_shows_clean_message():
+    class _App(App):
+        def on_mount(self) -> None:
+            self.push_screen(ResultsScreen(findings=[], timeline=[], stats=_stats(high=0, medium=0, low=0)))
+
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        body = str(pilot.app.screen.query_one("#summary-body", Static).content)
+        assert "System appears clean" in body
+
+
+async def test_results_screen_key_3_switches_to_timeline():
+    class _App(App):
+        def on_mount(self) -> None:
+            self.push_screen(ResultsScreen(findings=[], timeline=[], stats=_stats()))
+
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("3")
+        await pilot.pause()
+        tc = pilot.app.screen.query_one(TabbedContent)
+        assert tc.active == "timeline"
+
+
+async def test_results_screen_panes_fill_height():
+    events = [_event(description=f"e{i}") for i in range(10)]
+
+    class _App(App):
+        def on_mount(self) -> None:
+            self.push_screen(ResultsScreen(findings=[], timeline=events, stats=_stats()))
+
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("3")
+        await pilot.pause()
+        tl = pilot.app.screen.query_one(TimelinePanel)
+        assert tl.region.height > 1, f"timeline pane collapsed: {tl.region}"

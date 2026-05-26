@@ -6,20 +6,15 @@ import time
 import structlog
 from textual import work
 from textual.app import App, ComposeResult
-from textual.binding import Binding
 from textual.message import Message
-from textual.screen import Screen
-from textual.widgets import ContentSwitcher, Footer, Header
 
 from ubuntils.collectors import ALL_COLLECTORS
 from ubuntils.detectors.engine import DetectionEngine
 from ubuntils.detectors.finding import Finding, Severity
 from ubuntils.timeline.builder import TimelineBuilder, TimelineEvent
-from ubuntils.tui.findings_panel import FindingsPanel
+from ubuntils.tui.results_screen import ResultsScreen
 from ubuntils.tui.scan_screen import ScanScreen
-from ubuntils.tui.stats_panel import StatsPanel, get_ubuntu_version
-from ubuntils.tui.summary_screen import SummaryScreen
-from ubuntils.tui.timeline_panel import TimelinePanel
+from ubuntils.tui.stats_panel import get_ubuntu_version
 
 logger = structlog.get_logger()
 
@@ -46,61 +41,6 @@ class ScanComplete(Message):
         super().__init__()
 
 
-class MainScreen(Screen):
-    BINDINGS = [
-        Binding("1", "switch_to_findings", "Findings"),
-        Binding("2", "switch_to_timeline", "Timeline"),
-        Binding("3", "switch_to_stats", "Stats"),
-        Binding("escape", "go_back", "Back"),
-        Binding("q", "quit_app", "Quit"),
-    ]
-
-    DEFAULT_CSS = """
-    MainScreen ContentSwitcher {
-        height: 1fr;
-    }
-    MainScreen ContentSwitcher > * {
-        height: 100%;
-    }
-    """
-
-    def __init__(
-        self,
-        findings: list[Finding],
-        timeline: list[TimelineEvent],
-        stats: dict,
-        initial_panel: str = "findings",
-    ) -> None:
-        super().__init__()
-        self._findings = findings
-        self._timeline = timeline
-        self._stats = stats
-        self._initial_panel = initial_panel
-
-    def compose(self) -> ComposeResult:
-        yield Header()
-        with ContentSwitcher(initial=self._initial_panel):
-            yield FindingsPanel(self._findings, id="findings")
-            yield TimelinePanel(self._timeline, id="timeline")
-            yield StatsPanel(self._stats, id="stats")
-        yield Footer()
-
-    def action_switch_to_findings(self) -> None:
-        self.query_one(ContentSwitcher).current = "findings"
-
-    def action_switch_to_timeline(self) -> None:
-        self.query_one(ContentSwitcher).current = "timeline"
-
-    def action_switch_to_stats(self) -> None:
-        self.query_one(ContentSwitcher).current = "stats"
-
-    def action_go_back(self) -> None:
-        self.app.pop_screen()
-
-    def action_quit_app(self) -> None:
-        self.app.exit()
-
-
 class UbuntilsApp(App):
     TITLE = "ubuntils"
 
@@ -110,7 +50,9 @@ class UbuntilsApp(App):
         self._scan_override = _scan_override
 
     def on_mount(self) -> None:
-        self.push_screen(ScanScreen())
+        self.push_screen(
+            ScanScreen(collector_names=[C.__name__ for C in ALL_COLLECTORS])
+        )
         self._run_scan()
 
     @work(thread=True)
@@ -169,11 +111,11 @@ class UbuntilsApp(App):
     def on_collector_progress(self, message: CollectorProgress) -> None:
         screen = self.screen
         if isinstance(screen, ScanScreen):
-            screen.add_to_ticker(message.name, message.success)
+            screen.mark(message.name, message.success)
 
     def on_scan_complete(self, message: ScanComplete) -> None:
         self.switch_screen(
-            SummaryScreen(
+            ResultsScreen(
                 findings=message.findings,
                 timeline=message.timeline,
                 stats=message.stats,
