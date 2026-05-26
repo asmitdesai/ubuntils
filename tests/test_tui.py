@@ -364,6 +364,71 @@ def test_results_screen_importable_from_tui_package():
 from ubuntils.tui.results_screen import ResultsScreen
 from textual.widgets import TabbedContent
 
+from ubuntils.tui.confirm_modal import ConfirmModal, RemediateRequest
+
+
+async def test_confirm_modal_renders_rule_id():
+    finding = _finding(rule_id="CRON_TMP_PATH", remediation_description="Remove cron entry")
+
+    class _App(App):
+        def on_mount(self) -> None:
+            self.push_screen(ConfirmModal(finding))
+
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        content = str(pilot.app.screen.query_one("#rule-id", Static).content)
+        assert "CRON_TMP_PATH" in content
+
+
+async def test_confirm_modal_renders_fix_description():
+    finding = _finding(rule_id="CRON_TMP_PATH", remediation_description="Remove the cron entry")
+
+    class _App(App):
+        def on_mount(self) -> None:
+            self.push_screen(ConfirmModal(finding))
+
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        content = str(pilot.app.screen.query_one("#fix-desc", Static).content)
+        assert "Remove the cron entry" in content
+
+
+async def test_confirm_modal_y_posts_remediate_request():
+    finding = _finding(rule_id="CRON_TMP_PATH")
+    received: list[RemediateRequest] = []
+
+    class _App(App):
+        def on_mount(self) -> None:
+            self.push_screen(ConfirmModal(finding))
+
+        def on_remediate_request(self, msg: RemediateRequest) -> None:
+            received.append(msg)
+
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+        assert len(received) == 1
+        assert received[0].finding.rule_id == "CRON_TMP_PATH"
+
+
+async def test_confirm_modal_esc_dismisses_without_posting():
+    finding = _finding()
+    received: list[RemediateRequest] = []
+
+    class _App(App):
+        def on_mount(self) -> None:
+            self.push_screen(ConfirmModal(finding))
+
+        def on_remediate_request(self, msg: RemediateRequest) -> None:
+            received.append(msg)
+
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert len(received) == 0
+
 
 async def test_results_screen_default_tab_is_summary():
     class _App(App):
