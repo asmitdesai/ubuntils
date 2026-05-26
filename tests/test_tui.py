@@ -478,3 +478,67 @@ async def test_results_screen_panes_fill_height():
         await pilot.pause()
         tl = pilot.app.screen.query_one(TimelinePanel)
         assert tl.region.height > 1, f"timeline pane collapsed: {tl.region}"
+
+
+# ---------------------------------------------------------------------------
+# ResultsScreen — remediation worker
+# ---------------------------------------------------------------------------
+
+from unittest.mock import MagicMock, patch
+
+from ubuntils.detectors.finding import RemediationResult, RemediationStatus
+from ubuntils.tui.results_screen import RemediationDone
+
+
+async def test_remediate_request_triggers_worker_and_posts_done_on_success():
+    finding = _finding(rule_id="CRON_TMP_PATH")
+    mock_result = RemediationResult(
+        finding_rule_id="CRON_TMP_PATH",
+        status=RemediationStatus.SUCCESS,
+        message="Done",
+        backup_path="/var/backups/ubuntils/20260526/cron",
+        rollback_command="sudo cp /var/backups/ubuntils/20260526/cron /var/spool/cron/crontabs/parallels",
+    )
+    received: list[RemediationDone] = []
+
+    class _App(App):
+        def on_mount(self) -> None:
+            self.push_screen(ResultsScreen(findings=[finding], timeline=[], stats=_stats()))
+
+        def on_remediation_done(self, msg: RemediationDone) -> None:
+            received.append(msg)
+
+    with patch("ubuntils.tui.results_screen.REMEDIATOR_REGISTRY") as mock_reg:
+        mock_remediator = MagicMock()
+        mock_remediator.remediate.return_value = mock_result
+        mock_reg.get.return_value = mock_remediator
+
+        async with _App().run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            pilot.app.screen.post_message(RemediateRequest(finding))
+            await pilot.pause(delay=0.5)
+            assert len(received) == 1
+            assert received[0].result.status == RemediationStatus.SUCCESS
+            assert received[0].result.backup_path == "/var/backups/ubuntils/20260526/cron"
+
+
+async def test_remediate_request_posts_failed_when_no_remediator():
+    finding = _finding(rule_id="UNKNOWN_RULE")
+    received: list[RemediationDone] = []
+
+    class _App(App):
+        def on_mount(self) -> None:
+            self.push_screen(ResultsScreen(findings=[finding], timeline=[], stats=_stats()))
+
+        def on_remediation_done(self, msg: RemediationDone) -> None:
+            received.append(msg)
+
+    with patch("ubuntils.tui.results_screen.REMEDIATOR_REGISTRY") as mock_reg:
+        mock_reg.get.return_value = None
+
+        async with _App().run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            pilot.app.screen.post_message(RemediateRequest(finding))
+            await pilot.pause(delay=0.5)
+            assert len(received) == 1
+            assert received[0].result.status == RemediationStatus.FAILED
