@@ -38,16 +38,16 @@ class ScanScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Label("Scanning system…", id="title")
-        yield Static(Text(self._render()), id="checklist")
+        yield Static(Text(self._checklist_text()), id="checklist")
 
     def on_mount(self) -> None:
         self.set_interval(0.1, self._tick)
 
     def _tick(self) -> None:
         self._frame = (self._frame + 1) % len(_SPINNER_FRAMES)
-        self.query_one("#checklist", Static).update(Text(self._render()))
+        self.query_one("#checklist", Static).update(Text(self._checklist_text()))
 
-    def _render(self) -> str:
+    def _checklist_text(self) -> str:
         spinner = _SPINNER_FRAMES[self._frame]
         lines = []
         for row in self._rows:
@@ -72,4 +72,4 @@ class ScanScreen(Screen):
                         nxt["status"] = "running"
                         break
                 break
-        self.query_one("#checklist", Static).update(Text(self._render()))
+        self.query_one("#checklist", Static).update(Text(self._checklist_text()))
