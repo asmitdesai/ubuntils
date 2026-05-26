@@ -248,7 +248,7 @@ Switch panels with `1`, `2`, `3`, or `Tab`. Exit with `q` or `Ctrl+C`.
 
 ## Remediation
 
-ubuntils can remediate four of the eight rules: `CRON_ROOT_EXEC`, `CRON_TMP_PATH`, `LD_PRELOAD_INJECT`, `SSH_UNAUTHORIZED_KEY`, and `SUDOERS_NOPASSWD`. The remaining two (`PROCESS_MASQUERADE` and `SHELL_RC_MODIFICATION`) are flag-only and will never be auto-remediated.
+ubuntils can remediate five of the eight rules: `CRON_ROOT_EXEC`, `CRON_TMP_PATH`, `LD_PRELOAD_INJECT`, `SSH_UNAUTHORIZED_KEY`, and `SUDOERS_NOPASSWD`. The remaining two (`PROCESS_MASQUERADE` and `SHELL_RC_MODIFICATION`) are flag-only and will never be auto-remediated.
 
 Every remediation follows the same pattern: create a timestamped backup at `/var/backups/ubuntils/YYYYMMDD_HHMMSS/`, validate the current state, apply the minimum change, verify the result. If any step fails, remediation stops immediately, the system is left unchanged, and the full error is logged with the backup path and rollback command.
 
@@ -274,13 +274,13 @@ Running without root produces a partial scan with warnings. Critical paths like 
 ## Roadmap
 
 **v1.0.0**
-- [ ] All 8 collectors
-- [ ] All 8 detection rules
-- [ ] Timeline builder (syslog, journald, auditd)
-- [ ] Textual TUI with three panels
-- [ ] JSON output mode
-- [ ] Remediation for 4 rules with backup and rollback
-- [ ] Ubuntu 20.04/22.04/24.04 support
+- [x] All 8 collectors
+- [x] All 8 detection rules
+- [x] Timeline builder (syslog, journald, auditd)
+- [x] Textual TUI with three panels
+- [x] JSON output mode
+- [x] Remediation for 5 rules with backup and rollback
+- [x] Ubuntu 20.04/22.04/24.04 support
 
 **v1.5.0**
 - VirusTotal hash lookups for suspicious process executables
