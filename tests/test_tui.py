@@ -520,6 +520,30 @@ async def test_main_screen_initial_panel_timeline():
         assert switcher.current == "timeline"
 
 
+async def test_main_screen_panels_fill_height():
+    """Regression: ContentSwitcher panels must not collapse to zero height."""
+    events = [_event(description=f"e{i}") for i in range(10)]
+
+    class _App(App):
+        def on_mount(self) -> None:
+            self.push_screen(
+                MainScreen(findings=[], timeline=events, stats=_stats(), initial_panel="timeline")
+            )
+
+    async with _App().run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        scr = pilot.app.screen
+        tl = scr.query_one(TimelinePanel)
+        assert tl.region.height > 1, f"timeline panel collapsed: {tl.region}"
+        lv = tl.query_one(ListView)
+        assert lv.region.height > 1, f"timeline listview collapsed: {lv.region}"
+
+        scr.query_one(ContentSwitcher).current = "stats"
+        await pilot.pause()
+        sp = scr.query_one(StatsPanel)
+        assert sp.region.height > 1, f"stats panel collapsed: {sp.region}"
+
+
 async def test_main_screen_escape_pops_to_summary():
     class _App(App):
         def on_mount(self) -> None:

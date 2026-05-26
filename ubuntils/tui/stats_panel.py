@@ -29,6 +29,13 @@ def format_stats(stats: dict) -> str:
 
 
 class StatsPanel(Widget):
+    DEFAULT_CSS = """
+    StatsPanel {
+        height: 100%;
+        padding: 1 2;
+    }
+    """
+
     def __init__(self, stats: dict, **kwargs) -> None:
         super().__init__(**kwargs)
         self._stats = stats

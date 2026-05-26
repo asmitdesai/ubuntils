@@ -55,6 +55,15 @@ class MainScreen(Screen):
         Binding("q", "quit_app", "Quit"),
     ]
 
+    DEFAULT_CSS = """
+    MainScreen ContentSwitcher {
+        height: 1fr;
+    }
+    MainScreen ContentSwitcher > * {
+        height: 100%;
+    }
+    """
+
     def __init__(
         self,
         findings: list[Finding],

@@ -7,6 +7,15 @@ from ubuntils.timeline.builder import TimelineEvent
 
 
 class TimelinePanel(Widget):
+    DEFAULT_CSS = """
+    TimelinePanel {
+        height: 100%;
+    }
+    TimelinePanel ListView {
+        height: 100%;
+    }
+    """
+
     def __init__(self, timeline: list[TimelineEvent], **kwargs) -> None:
         super().__init__(**kwargs)
         self._timeline = timeline
