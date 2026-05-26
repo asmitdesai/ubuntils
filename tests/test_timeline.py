@@ -91,6 +91,102 @@ def test_build_deduplicates():
     assert len(merged) == 1
 
 
+def test_parse_syslog_skips_empty_lines():
+    builder = TimelineBuilder()
+    content = "\n\n" + SYSLOG_SNIPPET + "\n\n"
+    events = builder._parse_syslog(content)
+    assert len(events) == 3
+
+
+def test_parse_syslog_skips_non_matching_lines():
+    builder = TimelineBuilder()
+    events = builder._parse_syslog("this line does not match the regex\n" + SYSLOG_NO_YEAR_LINE)
+    assert len(events) == 1
+
+
+def test_parse_syslog_skips_bad_timestamp():
+    builder = TimelineBuilder()
+    bad_line = "Xxx 99 99:99:99 myhost sshd[1]: connected"
+    events = builder._parse_syslog(bad_line)
+    assert events == []
+
+
+def test_parse_journald_skips_empty_lines():
+    builder = TimelineBuilder()
+    content = "\n" + JOURNALD_JSON_OUTPUT + "\n"
+    with patch("ubuntils.timeline.builder.run_command") as mock_cmd:
+        mock_cmd.return_value = (content, "", 0)
+        events = builder._parse_journald(since_days=7)
+    assert len(events) == 2
+
+
+def test_parse_journald_skips_bad_json():
+    builder = TimelineBuilder()
+    bad_json = "not-json\n" + JOURNALD_JSON_OUTPUT
+    with patch("ubuntils.timeline.builder.run_command") as mock_cmd:
+        mock_cmd.return_value = (bad_json, "", 0)
+        events = builder._parse_journald(since_days=7)
+    assert len(events) == 2
+
+
+def test_parse_auditd_skips_empty_lines():
+    builder = TimelineBuilder()
+    content = "\n\n" + AUDITD_SNIPPET
+    events = builder._parse_auditd(content)
+    assert len(events) == 2
+
+
+def test_parse_auditd_skips_non_matching_lines():
+    builder = TimelineBuilder()
+    content = "this line does not match\n" + AUDITD_SNIPPET
+    events = builder._parse_auditd(content)
+    assert len(events) == 2
+
+
+def test_parse_auditd_skips_bad_timestamp():
+    builder = TimelineBuilder()
+    bad_line = "type=EXECVE msg=audit(not_a_float:456): argc=1 a0=ls"
+    events = builder._parse_auditd(bad_line)
+    assert events == []
+
+
+def test_build_reads_syslog_and_auditd():
+    builder = TimelineBuilder()
+    syslog_content = SYSLOG_SNIPPET
+    auditd_content = AUDITD_SNIPPET
+
+    def fake_open(path, *args, **kwargs):
+        import io
+        if "syslog" in path:
+            return io.StringIO(syslog_content)
+        if "audit" in path:
+            return io.StringIO(auditd_content)
+        raise OSError("not found")
+
+    with (
+        patch("builtins.open", side_effect=fake_open),
+        patch("ubuntils.timeline.builder.run_command") as mock_cmd,
+    ):
+        mock_cmd.return_value = (JOURNALD_JSON_OUTPUT, "", 0)
+        events = builder.build()
+
+    assert len(events) > 0
+    sources = {e.source for e in events}
+    assert "syslog" in sources
+
+
+def test_build_handles_missing_log_files():
+    builder = TimelineBuilder()
+    with (
+        patch("builtins.open", side_effect=OSError("not found")),
+        patch("ubuntils.timeline.builder.run_command") as mock_cmd,
+    ):
+        mock_cmd.return_value = ("", "", -1)
+        events = builder.build()
+
+    assert events == []
+
+
 def test_build_sorted_ascending():
     builder = TimelineBuilder()
     t1 = datetime.datetime(2024, 5, 24, 10, 0, 0, tzinfo=datetime.timezone.utc)

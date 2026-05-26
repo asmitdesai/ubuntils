@@ -1,3 +1,6 @@
+import structlog
+
+from ubuntils.utils.logging import configure_logging
 from ubuntils.utils.shell import run_command
 from ubuntils.utils.validators import (
     is_login_shell,
@@ -95,3 +98,24 @@ def test_path_in_writable_tmp_dev_shm():
 
 def test_path_in_writable_tmp_usr_lib():
     assert path_in_writable_tmp("/usr/lib/foo.so") is False
+
+
+def test_configure_logging_json_mode():
+    configure_logging(json_mode=True, verbose=False)
+    logger = structlog.get_logger()
+    assert logger is not None
+
+
+def test_configure_logging_console_mode():
+    configure_logging(json_mode=False, verbose=False)
+    logger = structlog.get_logger()
+    assert logger is not None
+
+
+def test_configure_logging_verbose():
+    import logging
+    # Clear existing handlers so basicConfig can update the root level
+    root = logging.getLogger()
+    root.handlers.clear()
+    configure_logging(json_mode=False, verbose=True)
+    assert root.level == logging.DEBUG
