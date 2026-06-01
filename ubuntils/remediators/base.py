@@ -45,6 +45,8 @@ class BaseRemediator(ABC):
                 message=str(e),
             )
 
+        rollback_command = f"cp {backup_path} {finding.artifact_path}"
+
         try:
             self.validate(finding)
         except Exception as e:
@@ -80,4 +82,5 @@ class BaseRemediator(ABC):
             status=RemediationStatus.SUCCESS,
             message=message,
             backup_path=backup_path,
+            rollback_command=rollback_command,
         )

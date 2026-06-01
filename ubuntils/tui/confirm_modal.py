@@ -57,8 +57,7 @@ class ConfirmModal(ModalScreen):
                 yield Static("Y: confirm    Esc: cancel", id="hint")
 
     def action_confirm(self) -> None:
-        self.post_message(RemediateRequest(self._finding))
-        self.dismiss()
+        self.dismiss(True)
 
     def action_cancel(self) -> None:
-        self.dismiss()
+        self.dismiss(False)

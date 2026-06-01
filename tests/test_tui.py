@@ -519,41 +519,34 @@ async def test_confirm_modal_renders_fix_description():
         assert "Remove the cron entry" in content
 
 
-async def test_confirm_modal_y_posts_remediate_request():
+async def test_confirm_modal_y_calls_callback_with_true():
     finding = _finding(rule_id="CRON_TMP_PATH")
-    received: list[RemediateRequest] = []
+    results: list[bool] = []
 
     class _App(App):
         def on_mount(self) -> None:
-            self.push_screen(ConfirmModal(finding))
-
-        def on_remediate_request(self, msg: RemediateRequest) -> None:
-            received.append(msg)
+            self.push_screen(ConfirmModal(finding), results.append)
 
     async with _App().run_test(size=(100, 30)) as pilot:
         await pilot.pause()
         await pilot.press("y")
         await pilot.pause()
-        assert len(received) == 1
-        assert received[0].finding.rule_id == "CRON_TMP_PATH"
+        assert results == [True]
 
 
-async def test_confirm_modal_esc_dismisses_without_posting():
+async def test_confirm_modal_esc_calls_callback_with_false():
     finding = _finding()
-    received: list[RemediateRequest] = []
+    results: list[bool] = []
 
     class _App(App):
         def on_mount(self) -> None:
-            self.push_screen(ConfirmModal(finding))
-
-        def on_remediate_request(self, msg: RemediateRequest) -> None:
-            received.append(msg)
+            self.push_screen(ConfirmModal(finding), results.append)
 
     async with _App().run_test(size=(100, 30)) as pilot:
         await pilot.pause()
         await pilot.press("escape")
         await pilot.pause()
-        assert len(received) == 0
+        assert results == [False]
 
 
 async def test_results_screen_default_tab_is_summary():

@@ -139,8 +139,14 @@ class FindingsPanel(Widget):
 
     def action_remediate(self) -> None:
         if self._selected is not None and self._selected.remediation_available:
-            from ubuntils.tui.confirm_modal import ConfirmModal
-            self.app.push_screen(ConfirmModal(self._selected))
+            from ubuntils.tui.confirm_modal import ConfirmModal, RemediateRequest
+            finding = self._selected
+
+            def _on_confirmed(confirmed: bool) -> None:
+                if confirmed:
+                    self.post_message(RemediateRequest(finding))
+
+            self.app.push_screen(ConfirmModal(finding), _on_confirmed)
 
     def action_collapse(self) -> None:
         self._selected = None
