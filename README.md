@@ -4,6 +4,8 @@ Forensic triage for live Ubuntu systems — automated artifact collection, persi
 
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
+![Tests](https://img.shields.io/badge/tests-213%20passing-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-90%25-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Arch](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-lightgrey)
 ![Ubuntu](https://img.shields.io/badge/ubuntu-20.04%20%7C%2022.04%20%7C%2024.04-orange)
@@ -22,19 +24,18 @@ The gap is a tool that runs on the live system right now, covers the most common
 
 ## What ubuntils does
 
-ubuntils runs in four sequential stages. First, eight collectors gather forensic artifacts concurrently from `/proc`, cron tables, systemd units, SSH keys, sudoers files, and environment definitions — this takes roughly 2.5 seconds on a typical system. Second, a detection engine runs all eight rules over the collected artifacts, producing a ranked findings list in about one second. Third, a timeline builder reads syslog, journald, and auditd in parallel and correlates events chronologically, adding roughly 0.3 seconds. Finally, results are presented either in an interactive three-panel TUI (default) or as structured JSON on stdout (`--json`). If `--remediate` is passed, a remediation engine runs after detection with full backup and rollback support before any output is shown.
+ubuntils runs in four sequential stages:
+
+1. **Collection** — Eight collectors gather forensic artifacts concurrently from `/proc`, cron tables, systemd units, SSH keys, sudoers files, and environment definitions. Takes roughly 2.5 seconds on a typical system.
+2. **Detection** — A detection engine runs all eight rules over the collected artifacts, producing a ranked findings list in about one second.
+3. **Timeline** — A timeline builder reads syslog, journald, and auditd in parallel and correlates events chronologically, adding roughly 0.3 seconds.
+4. **Output** — Results appear either in an interactive four-tab TUI (default) or as structured JSON on stdout (`--json`).
 
 No network calls are made. No data leaves the system.
 
 ---
 
 ## Installation
-
-**From PyPI** (once published):
-
-```bash
-pip install ubuntils
-```
 
 **From source:**
 
@@ -62,32 +63,150 @@ sudo ubuntils scan
 sudo ubuntils scan --json > /tmp/triage-$(hostname)-$(date +%Y%m%d).json
 ```
 
-**Detection with remediation preview (dry run — no changes applied):**
+**Detection with CLI remediation preview (dry run — no changes applied):**
 
 ```bash
 sudo ubuntils scan --remediate
 ```
 
-**Detection with remediation applied:**
+**Detection with CLI remediation applied:**
 
 ```bash
 sudo ubuntils scan --remediate --confirm
 ```
 
+**Print version:**
+
+```bash
+ubuntils version
+```
+
+---
+
+## The TUI
+
+Running `sudo ubuntils scan` (without `--json`) launches a full-terminal interactive TUI.
+
+### Scan screen
+
+While collectors run, ubuntils shows a live checklist — one row per collector. Each row updates in real time as the collector finishes:
+
+```
+Scanning system…
+
+  ✓  Process
+  ✓  Network
+  ✓  Users
+  ⠹  Cron
+     Systemd
+     SSH
+     Sudoers
+     Environment
+```
+
+`✓` marks success, `✗` marks failure, the spinner marks the active collector, and blank rows are pending. Once all collectors finish and detection + timeline complete, the TUI switches automatically to the results screen.
+
+### Results screen
+
+The results screen has four tabs navigated by number keys:
+
+| Key | Tab | Contents |
+|-----|-----|----------|
+| `1` | Summary | Scan stats + top findings at a glance |
+| `2` | Findings | Full findings list with inline detail and remediation |
+| `3` | Timeline | Chronological correlated log events |
+| `4` | Stats | Ubuntu version, architecture, duration, collector counts |
+
+Press `q` or `Ctrl+C` to exit.
+
+### Summary tab (key `1`)
+
+Shows scan metadata and the top findings on a single screen:
+
+```
+Collectors:  8 run · 0 failed
+Findings:    2 HIGH · 1 MEDIUM · 0 LOW
+Timeline:    47 events
+Duration:    2.8s
+
+  ● HIGH  CRON_TMP_PATH           /etc/cron.d/cleanup
+  ● HIGH  LD_PRELOAD_INJECT       /home/alice/.bashrc
+  ○ MED   SSH_UNAUTHORIZED_KEY    /home/bob/.ssh/authorized_keys
+```
+
+On a clean system, this tab shows `System appears clean.`
+
+### Findings tab (key `2`)
+
+A scrollable list of all findings, sorted HIGH → MEDIUM → LOW. Selecting a finding (Enter or arrow keys) expands a detail pane at the bottom showing the full description, artifact path, raw triggering value, and remediation information.
+
+```
+HIGH  CRON_TMP_PATH           /etc/cron.d/cleanup
+HIGH  LD_PRELOAD_INJECT       /home/alice/.bashrc
+MED   SSH_UNAUTHORIZED_KEY    /home/bob/.ssh/authorized_keys
+───────────────────────────────────────────────────────
+A cron job was found referencing /tmp, /var/tmp, or /dev/shm.
+These directories are world-writable and commonly used as
+attacker staging grounds.
+
+Artifact:  /etc/cron.d/cleanup
+Raw:       0 * * * * root /tmp/.update
+Fix:       Will remove the offending cron entry from
+           /etc/cron.d/cleanup after creating a timestamped backup.
+
+R: remediate
+```
+
+### In-TUI remediation
+
+For findings that have automated remediation available, press `R` while the finding is selected. A confirmation modal appears:
+
+```
+┌─────────────────────────────────────────────────┐
+│ Remediate CRON_TMP_PATH?                        │
+│                                                 │
+│ Will remove the offending cron entry from       │
+│ /etc/cron.d/cleanup after creating a backup.   │
+│ Backup will be created at /var/backups/ubuntils/…│
+│                                                 │
+│ Y: confirm    Esc: cancel                       │
+└─────────────────────────────────────────────────┘
+```
+
+Press `Y` to confirm. The remediator runs in a background thread. When it completes, the finding row in the list is updated to `[fixed]` and the detail pane shows the outcome:
+
+```
+✓ Remediated
+Backup:    /var/backups/ubuntils/20240115_142201/etc_cron.d_cleanup
+Rollback:  cp /var/backups/ubuntils/20240115_142201/etc_cron.d_cleanup /etc/cron.d/cleanup
+```
+
+On failure, the detail pane shows the error. The backup is always created before any change is attempted.
+
+Press `Esc` to collapse the detail pane.
+
+### Timeline tab (key `3`)
+
+A scrollable chronological list of correlated log events. Each row shows timestamp, source, and description. Events are pulled from syslog, journald, and auditd and deduplicated.
+
+### Stats tab (key `4`)
+
+A summary view of the scan: detected Ubuntu version, architecture, scan duration, collector count and failures, and finding counts per severity alongside total timeline events.
+
 ---
 
 ## What it detects
 
-| Rule ID | Severity | What it checks |
-|---|---|---|
-| CRON_ROOT_EXEC | HIGH | Non-root user crontabs running commands in root-owned paths or inlining sudo |
-| CRON_TMP_PATH | HIGH | Any cron job referencing /tmp, /var/tmp, or /dev/shm |
-| LD_PRELOAD_INJECT | HIGH | LD_PRELOAD defined in /etc/ld.so.preload or any shell init file pointing outside /lib, /usr/lib, /lib64, /usr/lib64 |
-| SUSPICIOUS_SYSTEMD_TIMER | HIGH | Systemd timers whose service ExecStart points to a world-writable directory or a path not owned by root |
-| SSH_UNAUTHORIZED_KEY | MEDIUM | authorized_keys files modified within the last 7 days |
-| SUDOERS_NOPASSWD | MEDIUM | NOPASSWD sudoers grants for users with UID ≥ 1000 and a login shell |
-| PROCESS_MASQUERADE | MEDIUM | Processes whose name matches a known system binary but whose executable path is outside /usr/bin, /usr/sbin, /bin, /sbin |
-| SHELL_RC_MODIFICATION | LOW | Shell init files (bashrc, profile, zshrc, etc.) modified within the last 48 hours for any user with a login shell |
+| Rule ID | Severity | Remediable | What it checks |
+|---|---|---|---|
+| CRON_ROOT_EXEC | HIGH | Yes | Non-root user crontabs running commands in root-owned paths or inlining sudo |
+| CRON_TMP_PATH | HIGH | Yes | Any cron job referencing /tmp, /var/tmp, or /dev/shm |
+| LD_PRELOAD_INJECT | HIGH | Yes | LD_PRELOAD defined in /etc/ld.so.preload or any shell init file pointing outside /lib, /usr/lib, /lib64, /usr/lib64 |
+| SUSPICIOUS_SYSTEMD_TIMER | HIGH | No | Systemd timers whose service ExecStart points to a world-writable directory or a path not owned by root |
+| SSH_UNAUTHORIZED_KEY | MEDIUM | Yes | authorized_keys files modified within the last 7 days |
+| SUDOERS_NOPASSWD | MEDIUM | Yes | NOPASSWD sudoers grants for users with UID ≥ 1000 and a login shell |
+| PROCESS_MASQUERADE | MEDIUM | No | Processes whose name matches a known system binary but whose executable path is outside /usr/bin, /usr/sbin, /bin, /sbin |
+| SHELL_RC_MODIFICATION | LOW | No | Shell init files (bashrc, profile, zshrc, etc.) modified within the last 48 hours for any user with a login shell |
 
 ### Why each rule exists
 
@@ -124,7 +243,7 @@ Raw value:     export LD_PRELOAD=/tmp/.libssl.so
 Remediation:   available
 ```
 
-**SUSPICIOUS_SYSTEMD_TIMER** — Systemd timers are more persistent and less visible than cron jobs to most responders. A timer whose service unit executes from a temp directory or a user-owned path is a sign of attacker-created persistence.
+**SUSPICIOUS_SYSTEMD_TIMER** — Systemd timers are more persistent and less visible than cron jobs to most responders. A timer whose service unit executes from a temp directory or a user-owned path is a sign of attacker-created persistence. Flag-only — systemd unit removal requires human judgment.
 
 *Example finding:*
 ```
@@ -132,7 +251,7 @@ Remediation:   available
 Title:         Systemd timer ExecStart points to suspicious path
 Artifact:      /etc/systemd/system/update-check.timer
 Raw value:     ExecStart=/tmp/.sys/update
-Remediation:   available
+Remediation:   not available
 ```
 
 **SSH_UNAUTHORIZED_KEY** — A newly added SSH key grants persistent remote access independent of passwords. The 7-day window catches recent additions while avoiding noise from initial provisioning on older systems. Note: the rule uses file mtime, which reflects the last write to the authorized_keys file, not the insertion timestamp of each individual key.
@@ -178,20 +297,6 @@ Artifact:      /root/.bashrc
 Raw value:     mtime=2024-01-15 14:22:01 (6 hours ago)
 Remediation:   not available
 ```
-
----
-
-## TUI overview
-
-The default output is a full-terminal TUI with three panels:
-
-**Findings (key: `1`)** — A table of all findings sorted HIGH → MEDIUM → LOW. Columns: severity badge, rule ID, title, artifact path, and whether remediation is available.
-
-**Timeline (key: `2`)** — A scrollable chronological list of correlated log events from syslog, journald, and auditd. Each row shows timestamp, source, and description.
-
-**Stats (key: `3`)** — A summary view: detected Ubuntu version, architecture, scan duration, collector count and failures, and finding counts per severity alongside total timeline events.
-
-Switch panels with `1`, `2`, or `3`. Exit with `q` or `Ctrl+C`.
 
 ---
 
@@ -245,13 +350,47 @@ Switch panels with `1`, `2`, or `3`. Exit with `q` or `Ctrl+C`.
 
 ## Remediation
 
-ubuntils can remediate five of the eight rules: `CRON_ROOT_EXEC`, `CRON_TMP_PATH`, `LD_PRELOAD_INJECT`, `SSH_UNAUTHORIZED_KEY`, and `SUDOERS_NOPASSWD`. The remaining two (`PROCESS_MASQUERADE` and `SHELL_RC_MODIFICATION`) are flag-only and will never be auto-remediated.
+Five of the eight detection rules have automated remediation: `CRON_ROOT_EXEC`, `CRON_TMP_PATH`, `LD_PRELOAD_INJECT`, `SSH_UNAUTHORIZED_KEY`, and `SUDOERS_NOPASSWD`. The remaining three (`SUSPICIOUS_SYSTEMD_TIMER`, `PROCESS_MASQUERADE`, and `SHELL_RC_MODIFICATION`) are flag-only and will never be auto-remediated.
 
-Every remediation follows the same pattern: create a timestamped backup at `/var/backups/ubuntils/YYYYMMDD_HHMMSS/`, validate the current state, apply the minimum change, verify the result. If any step fails, remediation stops immediately, the system is left unchanged, and the full error is logged with the backup path and rollback command.
+### In the TUI
 
-Changes are always minimal — offending cron entries are removed line by line, LD_PRELOAD lines are commented out rather than deleted, sudoers changes are validated with `visudo -cf` before and after. The sudoers remediator refuses to proceed if removing the entry would leave the system with no sudo rules.
+Select any finding with a remediation in the Findings tab, then press `R`. A confirmation modal previews the planned action. Press `Y` to apply it — the remediator runs in a background thread so the TUI stays responsive. The finding row updates to `[fixed]` when done, with the backup path and exact rollback command shown inline.
 
-Running `--remediate` without `--confirm` is a safe dry run: backups are created and validation runs, but `apply()` is never called. Pass both flags to actually make changes.
+### From the CLI
+
+`--remediate` without `--confirm` is a safe dry run: backups are created and validation runs, but no changes are applied. Pass both flags to actually make changes. The pipeline runs before the TUI launches in this mode.
+
+```bash
+sudo ubuntils scan --remediate          # dry run
+sudo ubuntils scan --remediate --confirm # apply changes, then open TUI
+```
+
+### Safeguards
+
+Every remediation follows the same pattern regardless of how it is triggered:
+
+1. Detect if the artifact path is a symlink — refuse if so (prevents root writing through attacker-controlled symlinks)
+2. Create a timestamped backup at `/var/backups/ubuntils/YYYYMMDD_HHMMSS/` with mode `0700`
+3. Validate current state (sudoers: `visudo -cf`)
+4. Apply the minimum possible change — cron entries removed line by line, LD_PRELOAD lines commented out rather than deleted, sudoers entries validated with `visudo -cf` before and after
+5. Verify the result
+
+If any step fails, remediation stops immediately, the system is left unchanged, and the full error is reported with the backup path and rollback command. The sudoers remediator refuses to proceed if removing the entry would leave the system with no sudo rules.
+
+---
+
+## Collectors
+
+| Collector | Artifacts gathered |
+|---|---|
+| ProcessCollector | Running processes from `/proc` and `ps` output |
+| NetworkCollector | Open connections and listeners from `ss`/`netstat` |
+| UserCollector | `/etc/passwd`, `/etc/shadow`, `/etc/group` |
+| CronCollector | `/etc/cron*` directories and `/var/spool/cron/crontabs/*` |
+| SystemdCollector | `systemctl list-timers` and `list-units` output |
+| SSHCollector | `~/.ssh/authorized_keys` for all users |
+| SudoersCollector | `/etc/sudoers` and all files under `/etc/sudoers.d/` |
+| EnvironmentCollector | `/etc/environment`, `/etc/profile.d/*`, user shell init files |
 
 ---
 
@@ -274,10 +413,13 @@ Running without root produces a partial scan with warnings. Critical paths like 
 - [x] All 8 collectors
 - [x] All 8 detection rules
 - [x] Timeline builder (syslog, journald, auditd)
-- [x] Textual TUI with three panels
+- [x] Live scan progress screen with per-collector ✓/✗
+- [x] Interactive four-tab TUI (Summary / Findings / Timeline / Stats)
+- [x] In-TUI remediation with confirmation modal and background worker
 - [x] JSON output mode
-- [x] Remediation for 5 rules with backup and rollback
+- [x] CLI remediation for 5 rules with backup, rollback, and symlink guard
 - [x] Ubuntu 20.04/22.04/24.04 support
+- [x] 213 tests at 90% coverage
 
 **v1.5.0**
 - VirusTotal hash lookups for suspicious process executables
@@ -294,7 +436,7 @@ Running without root produces a partial scan with warnings. Critical paths like 
 
 ## Contributing
 
-The most useful contributions right now are new detection rules (added as standalone functions in `detectors/rules.py` with a matching test), additional collectors for artifact types not yet covered, remediation modules for `PROCESS_MASQUERADE` and `SHELL_RC_MODIFICATION` (both currently flag-only by design, but safe auto-remediation paths may exist), test cases for edge cases on specific Ubuntu configurations, and documentation improvements.
+The most useful contributions right now are new detection rules (added as standalone functions in `detectors/rules.py` with a matching test), additional collectors for artifact types not yet covered, remediation modules for `SUSPICIOUS_SYSTEMD_TIMER` and `SHELL_RC_MODIFICATION` (both currently flag-only by design, but safe auto-remediation paths may exist), test cases for edge cases on specific Ubuntu configurations, and documentation improvements.
 
 Open an issue before starting a large contribution to avoid duplicate work.
 
