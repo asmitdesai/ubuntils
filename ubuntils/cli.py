@@ -1,4 +1,6 @@
+import os
 import platform
+import sys
 import time
 
 import click
@@ -16,6 +18,21 @@ from ubuntils.tui.stats_panel import get_ubuntu_version
 from ubuntils.utils.logging import configure_logging
 
 logger = structlog.get_logger()
+
+
+def _ensure_root() -> None:
+    """Re-exec under sudo if not running as root, preserving the active venv/conda PATH."""
+    if os.geteuid() == 0:
+        return
+    current_path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+    # Pass PATH through so sudo finds this venv's Python and ubuntils script.
+    args = ["sudo", "env", f"PATH={current_path}", sys.argv[0]] + sys.argv[1:]
+    print("ubuntils requires root — re-invoking with sudo…", file=sys.stderr)
+    try:
+        os.execvp("sudo", args)
+    except FileNotFoundError:
+        print("Error: sudo not found. Please run as root.", file=sys.stderr)
+        sys.exit(1)
 
 
 def _run_pipeline(remediate: bool, confirm: bool) -> tuple:
@@ -107,6 +124,7 @@ def main():
 @click.option("--verbose", is_flag=True, help="Enable verbose logging")
 def scan(output_json, remediate, confirm, verbose):
     """Scan the system for forensic artifacts and suspicious activity."""
+    _ensure_root()
     configure_logging(json_mode=output_json, verbose=verbose)
 
     if output_json or remediate:

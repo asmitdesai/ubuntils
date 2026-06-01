@@ -9,6 +9,11 @@ from ubuntils.cli import main, _run_pipeline
 from ubuntils.utils.since_parser import parse_since
 
 
+@pytest.fixture(autouse=True)
+def mock_root(monkeypatch):
+    monkeypatch.setattr("os.geteuid", lambda: 0)
+
+
 @pytest.fixture
 def runner():
     return CliRunner()
