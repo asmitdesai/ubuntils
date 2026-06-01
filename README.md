@@ -37,15 +37,27 @@ No network calls are made. No data leaves the system.
 
 ## Installation
 
-**From source:**
+**Ubuntu 22.04+ and any system with PEP 668 (recommended):**
+
+Ubuntu 22.04+ blocks system-wide `pip install`. Use `pipx` — it handles the environment transparently so you never think about it:
+
+```bash
+sudo apt install pipx -y
+cd ubuntils
+pipx install -e .
+ubuntils scan
+```
+
+**Older systems / manual install:**
 
 ```bash
 git clone https://github.com/asmitdesai/ubuntils.git
 cd ubuntils
-pip install -e .
+pip install -r requirements.txt -e .
+ubuntils scan
 ```
 
-ubuntils requires root for full artifact access. Running without root will skip `/etc/shadow`, some `/proc` entries, and protected cron files, and will log warnings for each.
+ubuntils requires root for full artifact access. If you run `ubuntils scan` as a non-root user it will automatically re-invoke itself with `sudo`, preserving your PATH so the correct Python environment is used. Running without root will skip `/etc/shadow`, some `/proc` entries, and protected cron files, and will log warnings for each.
 
 ---
 
