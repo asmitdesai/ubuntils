@@ -1,7 +1,9 @@
 import os
 import platform
+import socket
 import sys
 import time
+from datetime import datetime, timezone
 
 import click
 import structlog
@@ -15,7 +17,9 @@ from ubuntils.remediators import REMEDIATOR_REGISTRY
 from ubuntils.timeline.builder import TimelineBuilder
 from ubuntils.tui.app import UbuntilsApp
 from ubuntils.tui.stats_panel import get_ubuntu_version
+from ubuntils.utils.config import load_allowlist
 from ubuntils.utils.logging import configure_logging
+from ubuntils.utils.since_parser import parse_since
 
 logger = structlog.get_logger()
 
@@ -35,7 +39,7 @@ def _ensure_root() -> None:
         sys.exit(1)
 
 
-def _run_pipeline(remediate: bool, confirm: bool) -> tuple:
+def _run_pipeline(remediate: bool, confirm: bool, allowlist=None, since=None) -> tuple:
     """Run collectors → detection → timeline → optional remediation.
 
     Returns (findings, timeline, stats, scan_metadata, artifact_counts, remediation_results).
@@ -60,8 +64,10 @@ def _run_pipeline(remediate: bool, confirm: bool) -> tuple:
             failures += 1
 
     try:
-        findings = DetectionEngine().run(artifacts)
+        findings = DetectionEngine(allowlist=allowlist).run(artifacts)
         timeline = TimelineBuilder().build()
+        if since is not None:
+            timeline = [e for e in timeline if e.timestamp >= since]
     except Exception as exc:
         logger.error("scan_engine_failed", error=str(exc))
         findings = []
@@ -102,6 +108,9 @@ def _run_pipeline(remediate: bool, confirm: bool) -> tuple:
     }
 
     scan_metadata = {
+        "tool_version": __version__,
+        "hostname": socket.gethostname(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "ubuntu_version": ubuntu_version,
         "architecture": arch,
         "duration_s": duration,
@@ -121,22 +130,48 @@ def main():
 @click.option("--json", "output_json", is_flag=True, help="Output JSON instead of launching TUI")
 @click.option("--remediate", is_flag=True, help="Run remediation engine after detection")
 @click.option("--confirm", is_flag=True, help="Required with --remediate to apply changes")
+@click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False),
+              help="YAML config with false-positive allowlist (rules/paths to suppress)")
+@click.option("--output", "output_path", type=click.Path(dir_okay=False),
+              help="Write JSON report to FILE instead of stdout (implies --json)")
+@click.option("--since", "since_value",
+              help="Limit timeline to events since this time (e.g. '24h', '7d', '2026-05-20')")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging")
-def scan(output_json, remediate, confirm, verbose):
+def scan(output_json, remediate, confirm, config_path, output_path, since_value, verbose):
     """Scan the system for forensic artifacts and suspicious activity."""
     _ensure_root()
+    if output_path:
+        output_json = True
     configure_logging(json_mode=output_json, verbose=verbose)
+
+    since = None
+    if since_value:
+        try:
+            since = parse_since(since_value)
+        except ValueError as exc:
+            raise click.ClickException(str(exc))
+
+    allowlist = None
+    if config_path:
+        try:
+            allowlist = load_allowlist(config_path)
+        except (ValueError, OSError) as exc:
+            raise click.ClickException(f"Invalid config {config_path}: {exc}")
 
     if output_json or remediate:
         findings, timeline, stats, scan_metadata, artifact_counts, remediation_results = \
-            _run_pipeline(remediate=remediate, confirm=confirm)
+            _run_pipeline(remediate=remediate, confirm=confirm, allowlist=allowlist, since=since)
 
         if output_json:
-            click.echo(
-                JSONFormatter().format(
-                    scan_metadata, artifact_counts, findings, timeline, remediation_results
-                )
+            report = JSONFormatter().format(
+                scan_metadata, artifact_counts, findings, timeline, remediation_results
             )
+            if output_path:
+                with open(output_path, "w") as f:
+                    f.write(report + "\n")
+                click.echo(f"Report written to {output_path}", err=True)
+            else:
+                click.echo(report)
             return
 
         # --remediate without --json: launch TUI with pre-computed results
@@ -147,7 +182,7 @@ def scan(output_json, remediate, confirm, verbose):
         return
 
     # Plain TUI mode: let the app run its own scan with live progress
-    UbuntilsApp(verbose=verbose).run()
+    UbuntilsApp(verbose=verbose, allowlist=allowlist, since=since).run()
 
 
 @main.command()

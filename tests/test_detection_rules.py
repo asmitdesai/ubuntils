@@ -15,6 +15,7 @@ from ubuntils.detectors.rules import (
     rule_ssh_unauthorized_key,
     rule_sudoers_nopasswd,
     rule_suspicious_systemd_timer,
+    rule_uid_zero_account,
 )
 
 # ---------------------------------------------------------------------------
@@ -445,5 +446,29 @@ def test_engine_empty_artifacts():
     assert results == []
 
 
+def test_uid_zero_flags_non_root_account():
+    artifacts = {"users": [
+        {"username": "root", "uid": 0, "gid": 0, "shell": "/bin/bash"},
+        {"username": "backdoor", "uid": 0, "gid": 0, "shell": "/bin/bash"},
+    ]}
+    findings = rule_uid_zero_account(artifacts)
+    assert len(findings) == 1
+    assert findings[0].rule_id == "USER_UID_ZERO"
+    assert findings[0].severity == Severity.HIGH
+    assert "backdoor" in findings[0].description
+
+
+def test_uid_zero_clean_when_only_root():
+    artifacts = {"users": [
+        {"username": "root", "uid": 0, "gid": 0, "shell": "/bin/bash"},
+        {"username": "alice", "uid": 1000, "gid": 1000, "shell": "/bin/bash"},
+    ]}
+    assert rule_uid_zero_account(artifacts) == []
+
+
+def test_uid_zero_no_users_key():
+    assert rule_uid_zero_account({}) == []
+
+
 def test_engine_all_rules_registered():
-    assert len(ALL_RULES) == 8
+    assert len(ALL_RULES) == 9

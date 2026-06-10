@@ -44,10 +44,13 @@ class ScanComplete(Message):
 class UbuntilsApp(App):
     TITLE = "ubuntils"
 
-    def __init__(self, verbose: bool = False, _scan_override=None) -> None:
+    def __init__(self, verbose: bool = False, _scan_override=None,
+                 allowlist=None, since=None) -> None:
         super().__init__()
         self._verbose = verbose
         self._scan_override = _scan_override
+        self._allowlist = allowlist
+        self._since = since
 
     def on_mount(self) -> None:
         self.push_screen(
@@ -82,8 +85,10 @@ class UbuntilsApp(App):
             )
 
         try:
-            findings = DetectionEngine().run(artifacts)
+            findings = DetectionEngine(allowlist=self._allowlist).run(artifacts)
             timeline = TimelineBuilder().build()
+            if self._since is not None:
+                timeline = [e for e in timeline if e.timestamp >= self._since]
         except Exception as exc:
             logger.error("scan_engine_failed", error=str(exc))
             findings = []

@@ -1,3 +1,4 @@
+import hashlib
 import json
 from datetime import datetime, timezone
 
@@ -22,6 +23,13 @@ class JSONFormatter:
         }
         if remediation_results:
             output["remediation_results"] = [self._remediation(r) for r in remediation_results]
+        # Tamper-evidence: a SHA-256 over the canonical report content, so a
+        # collected triage artifact can be verified later. Computed over the
+        # report with the digest field absent, then injected.
+        digest = hashlib.sha256(
+            json.dumps(output, indent=2, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        output["report_sha256"] = digest
         return json.dumps(output, indent=2)
 
     def _finding(self, f: Finding) -> dict:

@@ -84,6 +84,64 @@ def test_scan_json_output(runner):
     assert "timeline" in data
 
 
+def test_scan_json_includes_report_hash(runner):
+    with patch("ubuntils.cli._run_pipeline", return_value=_fake_pipeline()):
+        result = runner.invoke(main, ["scan", "--json"])
+    data = json.loads(result.output)
+    assert "report_sha256" in data
+    assert len(data["report_sha256"]) == 64
+
+
+def test_scan_output_writes_file(runner, tmp_path):
+    out = tmp_path / "report.json"
+    with patch("ubuntils.cli._run_pipeline", return_value=_fake_pipeline()):
+        result = runner.invoke(main, ["scan", "--output", str(out)])
+    assert result.exit_code == 0
+    data = json.loads(out.read_text())
+    assert "findings" in data
+    assert "report_sha256" in data
+
+
+def test_scan_config_invalid_errors(runner, tmp_path):
+    cfg = tmp_path / "bad.yaml"
+    cfg.write_text("- not a mapping\n")
+    with patch("ubuntils.cli._run_pipeline", return_value=_fake_pipeline()):
+        result = runner.invoke(main, ["scan", "--json", "--config", str(cfg)])
+    assert result.exit_code != 0
+    assert "Invalid config" in result.output
+
+
+def test_scan_since_invalid_errors(runner):
+    with patch("ubuntils.cli._run_pipeline", return_value=_fake_pipeline()):
+        result = runner.invoke(main, ["scan", "--json", "--since", "garbage"])
+    assert result.exit_code != 0
+    assert "Invalid --since" in result.output
+
+
+def test_pipeline_since_filters_timeline():
+    from ubuntils.collectors import ALL_COLLECTORS
+    from ubuntils.timeline.builder import TimelineEvent
+
+    old = TimelineEvent(
+        timestamp=dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc),
+        source="syslog", description="ancient",
+    )
+    recent = TimelineEvent(
+        timestamp=dt.datetime(2099, 1, 1, tzinfo=dt.timezone.utc),
+        source="syslog", description="future",
+    )
+    cutoff = dt.datetime(2050, 1, 1, tzinfo=dt.timezone.utc)
+    with (
+        patch("ubuntils.cli.ALL_COLLECTORS", []),
+        patch("ubuntils.cli.DetectionEngine") as eng,
+        patch("ubuntils.cli.TimelineBuilder") as tb,
+    ):
+        eng.return_value.run.return_value = []
+        tb.return_value.build.return_value = [old, recent]
+        _, timeline, *_ = _run_pipeline(remediate=False, confirm=False, since=cutoff)
+    assert [e.description for e in timeline] == ["future"]
+
+
 def test_scan_json_with_verbose(runner):
     with patch("ubuntils.cli._run_pipeline", return_value=_fake_pipeline()):
         result = runner.invoke(main, ["scan", "--json", "--verbose"])

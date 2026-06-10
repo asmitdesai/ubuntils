@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ubuntils"
+description = "Ubuntu incident response tool for forensic artifact collection, detection, and guided remediation"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Asmit Desai", email = "asmitdesai02@gmail.com" }]
+requires-python = ">=3.9"
+keywords = ["incident-response", "forensics", "ubuntu", "security", "dfir"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: System :: Monitoring",
+]
+dynamic = ["version"]
+dependencies = [
+    "click>=8.1.0",
+    "textual>=0.50.0",
+    "structlog>=24.0.0",
+    "pyyaml>=6.0",
+    "python-dateutil>=2.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-asyncio>=0.21",
+]
+
+[project.urls]
+Homepage = "https://github.com/asmitdesai/ubuntils"
+Repository = "https://github.com/asmitdesai/ubuntils"
+Issues = "https://github.com/asmitdesai/ubuntils/issues"
+
+[project.scripts]
+ubuntils = "ubuntils.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "ubuntils.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["ubuntils*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "--cov=ubuntils --cov-fail-under=80 --cov-report=term-missing"

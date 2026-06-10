@@ -661,3 +661,92 @@ async def test_remediate_request_posts_failed_when_no_remediator():
             await pilot.pause(delay=0.5)
             assert len(received) == 1
             assert received[0].result.status == RemediationStatus.FAILED
+
+
+# ---------------------------------------------------------------------------
+# Full UbuntilsApp end-to-end (scan -> results -> tab navigation)
+# ---------------------------------------------------------------------------
+
+from ubuntils.tui.app import UbuntilsApp
+from ubuntils.tui.results_screen import ResultsScreen as _ResultsScreen
+from ubuntils.tui.scan_screen import ScanScreen as _ScanScreen
+
+
+def _override_factory():
+    findings = _findings_fixture()
+    timeline = [
+        TimelineEvent(
+            timestamp=datetime.datetime(2024, 5, 24, 10, 0, 0, tzinfo=datetime.timezone.utc),
+            source="syslog", description="cron job ran",
+        )
+    ]
+    def _ov():
+        return (findings, timeline, _stats())
+    return _ov
+
+
+async def test_app_scan_transitions_to_results():
+    app = UbuntilsApp(_scan_override=_override_factory())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.pause(delay=0.3)
+        assert isinstance(pilot.app.screen, _ResultsScreen)
+
+
+async def test_app_tab_navigation_keys_do_not_crash():
+    app = UbuntilsApp(_scan_override=_override_factory())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.pause(delay=0.3)
+        for key in ("2", "3", "4", "1"):
+            await pilot.press(key)
+            await pilot.pause()
+        assert isinstance(pilot.app.screen, _ResultsScreen)
+
+
+async def test_app_findings_tab_enter_and_remediate_modal():
+    app = UbuntilsApp(_scan_override=_override_factory())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.pause(delay=0.3)
+        await pilot.press("2")          # Findings tab
+        await pilot.pause()
+        await pilot.press("enter")      # expand detail
+        await pilot.pause()
+        await pilot.press("r")          # open confirm modal
+        await pilot.pause()
+        await pilot.press("escape")     # cancel modal
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, _ResultsScreen)
+
+
+async def test_app_applies_allowlist_in_own_scan():
+    """allowlist passed to UbuntilsApp must filter the app's own scan findings."""
+    from ubuntils.utils.config import Allowlist
+    al = Allowlist(rules=["USER_UID_ZERO"])
+    captured = {}
+
+    app = UbuntilsApp(allowlist=al)
+
+    def fake_engine_run(self, artifacts):
+        # engine receives the allowlist; emulate a UID-0 finding being suppressed
+        from ubuntils.detectors.engine import DetectionEngine
+        captured["allowlist"] = self.allowlist
+        return self.allowlist.filter([
+            _finding(rule_id="USER_UID_ZERO", remediation_available=False),
+            _finding(rule_id="CRON_TMP_PATH"),
+        ])
+
+    with (
+        patch("ubuntils.tui.app.ALL_COLLECTORS", []),
+        patch("ubuntils.detectors.engine.DetectionEngine.run", fake_engine_run),
+        patch("ubuntils.tui.app.TimelineBuilder") as tb,
+    ):
+        tb.return_value.build.return_value = []
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.pause(delay=0.3)
+            screen = pilot.app.screen
+            assert isinstance(screen, _ResultsScreen)
+            assert captured["allowlist"] is al
+            assert all(f.rule_id != "USER_UID_ZERO" for f in screen._findings)

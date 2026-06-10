@@ -2,9 +2,9 @@
 
 Forensic triage for live Ubuntu systems — automated artifact collection, persistence detection, and guided remediation in under 5 seconds.
 
-![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
+[![CI](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml/badge.svg)](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
-![Tests](https://img.shields.io/badge/tests-213%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-240%20passing-brightgreen)
 ![Coverage](https://img.shields.io/badge/coverage-90%25-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Arch](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-lightgrey)
@@ -92,6 +92,44 @@ sudo ubuntils scan --remediate --confirm
 ```bash
 ubuntils version
 ```
+
+---
+
+## Flags and configuration
+
+```
+ubuntils scan [OPTIONS]
+  --json              Output JSON to stdout instead of launching the TUI
+  --output FILE       Write the JSON report to FILE (implies --json)
+  --remediate         Run the remediation engine after detection
+  --confirm           Required with --remediate to actually apply changes (else dry-run)
+  --config FILE       YAML allowlist of findings to suppress (see below)
+  --since TIME        Limit the timeline to events since TIME (e.g. '24h', '7d', '2026-05-20')
+  --verbose           Verbose structlog output
+```
+
+### False-positive allowlisting (`--config`)
+
+A freshly provisioned or CI-managed host generates expected noise — deploy keys, provisioning crontabs, baked-in shell init. Instead of teaching responders to mentally filter it, suppress it explicitly with a YAML allowlist:
+
+```yaml
+# allowlist.yaml
+allowlist:
+  rules:
+    - SHELL_RC_MODIFICATION          # suppress this rule entirely
+  paths:
+    - /home/ci/.ssh/authorized_keys  # suppress any finding on this exact path
+```
+
+```bash
+sudo ubuntils scan --json --config allowlist.yaml
+```
+
+Suppression is always explicit — by rule id and/or exact artifact path. There is no blanket "ignore everything" switch. A sample lives at [`examples/allowlist.yaml`](examples/allowlist.yaml).
+
+### Report integrity
+
+Every `--json` report ends with a `report_sha256` field — a SHA-256 over the canonical report content. This makes a collected triage artifact tamper-evident and lets you reference a specific scan by digest in a case file. The report also records `tool_version`, `hostname`, and a UTC `generated_at` timestamp under `scan_metadata`.
 
 ---
 
@@ -216,6 +254,7 @@ A summary view of the scan: detected Ubuntu version, architecture, scan duration
 | LD_PRELOAD_INJECT | HIGH | Yes | LD_PRELOAD defined in /etc/ld.so.preload or any shell init file pointing outside /lib, /usr/lib, /lib64, /usr/lib64 |
 | SUSPICIOUS_SYSTEMD_TIMER | HIGH | No | Systemd timers whose service ExecStart points to a world-writable directory or a path not owned by root |
 | SSH_UNAUTHORIZED_KEY | MEDIUM | Yes | authorized_keys files modified within the last 7 days |
+| USER_UID_ZERO | HIGH | No | Any account other than `root` with UID 0 (a hidden second superuser) |
 | SUDOERS_NOPASSWD | MEDIUM | Yes | NOPASSWD sudoers grants for users with UID ≥ 1000 and a login shell |
 | PROCESS_MASQUERADE | MEDIUM | No | Processes whose name matches a known system binary but whose executable path is outside /usr/bin, /usr/sbin, /bin, /sbin |
 | SHELL_RC_MODIFICATION | LOW | No | Shell init files (bashrc, profile, zshrc, etc.) modified within the last 48 hours for any user with a login shell |
@@ -299,6 +338,17 @@ Raw value:     name=sshd, exe=/tmp/.sshd
 Remediation:   not available
 ```
 
+**USER_UID_ZERO** — Only `root` should hold UID 0. A second account mapped to UID 0 (CIS Ubuntu Benchmark 6.2.x) is a high-confidence backdoor: it grants full superuser rights without altering root's own credentials, and survives a root password reset. Near-zero false-positive rate. Flag-only — removing a UID-0 account requires human judgment.
+
+*Example finding:*
+```
+[HIGH] USER_UID_ZERO
+Title:         Non-root account with UID 0
+Artifact:      /etc/passwd
+Raw value:     toor:x:0:0:...:/bin/bash
+Remediation:   not available
+```
+
 **SHELL_RC_MODIFICATION** — Shell init files are a reliable persistence vector because they execute on every user login. This rule surfaces recent modifications for human review. Flag-only — shell RC content requires reading before acting on it.
 
 *Example finding:*
@@ -319,6 +369,9 @@ Remediation:   not available
 ```json
 {
   "scan_metadata": {
+    "tool_version": "1.1.0",
+    "hostname": "web-01",
+    "generated_at": "2026-06-10T08:22:03.114523+00:00",
     "ubuntu_version": "Ubuntu 22.04.3 LTS",
     "architecture": "x86_64",
     "duration_s": 2.84,
@@ -352,11 +405,12 @@ Remediation:   not available
       "source": "syslog",
       "description": "sshd: Accepted publickey for alice from 10.0.0.42 port 52341"
     }
-  ]
+  ],
+  "report_sha256": "a3f1c9…(64 hex chars)"
 }
 ```
 
-`remediation_results` appears as an additional top-level key only when `--remediate` is passed.
+`remediation_results` appears as an additional top-level key only when `--remediate` is passed. `report_sha256` is always present and is computed over the rest of the document.
 
 ---
 
@@ -431,13 +485,19 @@ Running without root produces a partial scan with warnings. Critical paths like 
 - [x] JSON output mode
 - [x] CLI remediation for 5 rules with backup, rollback, and symlink guard
 - [x] Ubuntu 20.04/22.04/24.04 support
-- [x] 213 tests at 90% coverage
+- [x] 240 tests at 90% coverage
+
+**v1.1.0**
+- [x] False-positive allowlisting by rule id or path (`--config`)
+- [x] `--output FILE` to write reports directly
+- [x] `--since` timeline windowing
+- [x] Tamper-evident reports (`report_sha256`, hostname, timestamp)
+- [x] `USER_UID_ZERO` detection rule
 
 **v1.5.0**
 - VirusTotal hash lookups for suspicious process executables
 - MISP IOC export from findings
-- Custom detection rules via YAML
-- False positive whitelisting by path or user
+- Custom detection rules (not just allowlists) via YAML
 
 **v2.0.0**
 - Web dashboard for multi-host triage

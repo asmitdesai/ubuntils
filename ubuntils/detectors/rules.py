@@ -205,6 +205,34 @@ def rule_process_masquerade(artifacts: dict) -> List[Finding]:
     return findings
 
 
+def rule_uid_zero_account(artifacts: dict) -> List[Finding]:
+    """Any account other than 'root' with UID 0 has full superuser rights.
+
+    Only root should hold UID 0 (CIS Ubuntu Benchmark 6.2.x). A second UID-0
+    account is a classic, high-confidence persistence backdoor — it grants root
+    without touching root's own credentials. Near-zero false-positive rate.
+    """
+    findings = []
+    for user in artifacts.get("users", []):
+        username = user.get("username", "")
+        uid = user.get("uid", -1)
+        if uid == 0 and username != "root":
+            findings.append(Finding(
+                rule_id="USER_UID_ZERO",
+                severity=Severity.HIGH,
+                title="Non-root account with UID 0",
+                description=(
+                    f"Account '{username}' has UID 0, granting it full root "
+                    "privileges. Only 'root' should have UID 0."
+                ),
+                artifact_path="/etc/passwd",
+                raw_value=f"{username}:x:{uid}:{user.get('gid', '')}:...:{user.get('shell', '')}",
+                remediation_available=False,
+                remediation_description=None,
+            ))
+    return findings
+
+
 def rule_shell_rc_modification(artifacts: dict) -> List[Finding]:
     findings = []
     cutoff = time.time() - _48_HOURS_SECONDS

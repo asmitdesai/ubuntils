@@ -1,7 +1,7 @@
 .PHONY: install scan scan-json test clean
 
 install:
-	pip install -r requirements.txt -e .
+	pip install -e '.[dev]'
 
 # Run the interactive TUI scan (handles sudo automatically via cli.py)
 scan:

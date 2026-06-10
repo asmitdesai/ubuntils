@@ -1,0 +1,17 @@
+# ubuntils false-positive allowlist
+#
+# Pass with:  sudo ubuntils scan --json --config examples/allowlist.yaml
+#
+# Suppression is always explicit. There is no blanket "ignore everything"
+# switch — you list the specific rules and/or artifact paths you have already
+# reviewed and accepted as expected for this host.
+
+allowlist:
+  # Suppress entire rules by their rule_id (see the "What it detects" table).
+  rules:
+    - SHELL_RC_MODIFICATION
+
+  # Suppress any finding whose artifact_path exactly matches one of these.
+  paths:
+    - /home/ci/.ssh/authorized_keys
+    - /etc/cron.d/provisioning
