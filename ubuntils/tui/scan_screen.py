@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.screen import Screen
