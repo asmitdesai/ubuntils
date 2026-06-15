@@ -227,8 +227,8 @@ Press `Y` to confirm. The remediator runs in a background thread. When it comple
 
 ```
 ✓ Remediated
-Backup:    /var/backups/ubuntils/20240115_142201/etc_cron.d_cleanup
-Rollback:  cp /var/backups/ubuntils/20240115_142201/etc_cron.d_cleanup /etc/cron.d/cleanup
+Backup:    /var/backups/ubuntils/20260115_142201/etc_cron.d_cleanup
+Rollback:  cp /var/backups/ubuntils/20260115_142201/etc_cron.d_cleanup /etc/cron.d/cleanup
 ```
 
 On failure, the detail pane shows the error. The backup is always created before any change is attempted.
