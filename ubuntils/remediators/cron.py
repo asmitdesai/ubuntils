@@ -1,8 +1,6 @@
-import os
-import shutil
-from datetime import datetime
+from __future__ import annotations
 
-from ubuntils.detectors.finding import Finding, RemediationResult, RemediationStatus
+from ubuntils.detectors.finding import Finding
 from ubuntils.remediators.base import BaseRemediator
 
 
@@ -12,23 +10,11 @@ class CronRemediator(BaseRemediator):
         self._backup_path: str | None = None
 
     def backup(self, finding: Finding) -> str:
-        artifact = finding.artifact_path
-        if not os.path.exists(artifact):
-            raise FileNotFoundError(f"Artifact not found: {artifact}")
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        dest_dir = os.path.join(self._backup_base, ts)
-        os.makedirs(dest_dir, mode=0o700, exist_ok=True)
-        safe_name = artifact.lstrip("/").replace("/", "_")
-        dest = os.path.join(dest_dir, safe_name)
-        if os.path.exists(dest):
-            raise FileExistsError(f"Backup destination already exists: {dest}")
-        shutil.copy2(artifact, dest)
-        self._backup_path = dest
-        return dest
+        self._backup_path = self._create_backup(finding)
+        return self._backup_path
 
     def validate(self, finding: Finding) -> None:
-        with open(finding.artifact_path) as f:
-            lines = f.readlines()
+        lines = self._read_lines(finding.artifact_path)
         if not any(line.rstrip("\n") == finding.raw_value for line in lines):
             raise ValueError(f"Line not found in {finding.artifact_path}: {finding.raw_value!r}")
 
@@ -36,17 +22,13 @@ class CronRemediator(BaseRemediator):
         self._dry_run = dry_run
         if dry_run:
             return f"dry-run: would remove line from {finding.artifact_path}"
-        with open(finding.artifact_path) as f:
-            lines = f.readlines()
+        lines = self._read_lines(finding.artifact_path)
         new_lines = [l for l in lines if l.rstrip("\n") != finding.raw_value]
-        with open(finding.artifact_path, "w") as f:
-            f.writelines(new_lines)
+        self._write_lines(finding.artifact_path, new_lines)
         return f"Removed cron entry from {finding.artifact_path}"
 
     def verify(self, finding: Finding) -> None:
         if getattr(self, "_dry_run", False):
             return
-        with open(finding.artifact_path) as f:
-            content = f.read()
-        if finding.raw_value in content:
+        if finding.raw_value in self._read_text(finding.artifact_path):
             raise ValueError("Line still present after removal")

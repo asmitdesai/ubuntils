@@ -374,6 +374,39 @@ class TestSecurityHardenings:
         # Real file must be untouched
         assert real_file.read_text() == "ssh-rsa AAAA...\n"
 
+    def test_symlink_swap_in_validate_apply_window_does_not_write_through(self, tmp_path):
+        """TOCTOU: if the artifact is swapped to a symlink after validate() has
+        already read the genuine file, apply() must NOT follow the link and
+        truncate the (root-owned) target. Models an active attacker winning the
+        race between the validate read and the apply write."""
+        sensitive = tmp_path / "shadow"
+        sensitive_content = "root:$6$realhash:19000:0:99999:7:::\n"
+        sensitive.write_text(sensitive_content)
+
+        artifact = tmp_path / "authorized_keys"
+        artifact.write_text("ssh-rsa AAAA evil attacker@evil\n")
+
+        finding = _finding(
+            "SSH_UNAUTHORIZED_KEY", str(artifact), "ssh-rsa AAAA evil attacker@evil"
+        )
+        remediator = SSHRemediator(backup_base=str(tmp_path / "backups"))
+
+        # Attacker wins the race precisely in the validate->apply window.
+        orig_validate = remediator.validate
+
+        def swap_then_validate(f):
+            orig_validate(f)  # reads the genuine file and passes
+            artifact.unlink()
+            artifact.symlink_to(sensitive)  # redirect at the final component
+
+        remediator.validate = swap_then_validate
+
+        result = remediator.remediate(finding, dry_run=False)
+
+        assert result.status == RemediationStatus.FAILED
+        # The sensitive target must be byte-for-byte untouched.
+        assert sensitive.read_text() == sensitive_content
+
     def test_backup_uses_flattened_full_path(self, tmp_path):
         """Backup filename must encode the full artifact path, not just the basename."""
         alice_keys = tmp_path / "alice" / "authorized_keys"
