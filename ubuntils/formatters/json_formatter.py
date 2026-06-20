@@ -44,6 +44,10 @@ class JSONFormatter:
         }
         if f.remediation_description is not None:
             d["remediation_description"] = f.remediation_description
+        if f.related_events:
+            d["related_events"] = [self._event(e) for e in f.related_events]
+        if f.guided_remediation is not None:
+            d["guided_remediation"] = f.guided_remediation
         return d
 
     def _event(self, e: TimelineEvent) -> dict:

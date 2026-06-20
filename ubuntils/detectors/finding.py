@@ -1,6 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import List, Optional
 
 
 class Severity(Enum):
@@ -25,6 +25,8 @@ class Finding:
     raw_value: str
     remediation_available: bool
     remediation_description: Optional[str] = None
+    related_events: List = field(default_factory=list)
+    guided_remediation: Optional[str] = None
 
 
 @dataclass
