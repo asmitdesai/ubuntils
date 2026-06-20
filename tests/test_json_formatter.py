@@ -100,3 +100,38 @@ def test_json_formatter_naive_timestamp_treated_as_utc():
     parsed = json.loads(out)
     ts = parsed["timeline"][0]["timestamp"]
     assert "+00:00" in ts or ts.endswith("Z")
+
+
+def test_finding_emits_related_events_and_guided_remediation():
+    event = TimelineEvent(
+        timestamp=datetime.datetime(2026, 6, 1, 12, 0, 0, tzinfo=datetime.timezone.utc),
+        source="journald",
+        description="sshd: Accepted publickey for alice",
+    )
+    finding = Finding(
+        rule_id="SSH_UNAUTHORIZED_KEY",
+        severity=Severity.MEDIUM,
+        title="Recently added SSH key",
+        description="authorized_keys changed.",
+        artifact_path="/home/alice/.ssh/authorized_keys",
+        raw_value="ssh-rsa AAAA...",
+        remediation_available=True,
+        related_events=[event],
+        guided_remediation="systemctl disable --now foo.service",
+    )
+    out = json.loads(JSONFormatter().format({}, {}, [finding], [], []))
+    f = out["findings"][0]
+    assert f["related_events"][0]["source"] == "journald"
+    assert f["related_events"][0]["description"] == "sshd: Accepted publickey for alice"
+    assert f["guided_remediation"] == "systemctl disable --now foo.service"
+
+
+def test_finding_omits_empty_correlation_fields():
+    finding = Finding(
+        rule_id="CRON_TMP_PATH", severity=Severity.HIGH, title="t",
+        description="d", artifact_path="/etc/crontab", raw_value="x",
+        remediation_available=False,
+    )
+    f = json.loads(JSONFormatter().format({}, {}, [finding], [], []))["findings"][0]
+    assert "related_events" not in f
+    assert "guided_remediation" not in f
