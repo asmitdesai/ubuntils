@@ -53,5 +53,7 @@ Thumbs.db
 CLAUDE.md
 /var/backups/ubuntils/
 .claude/
-docs/hardening-roadmap.md
+# Keep only the debugging guide in docs/ on GitHub; ignore all other design/plan docs
+docs/*
+!docs/debugging-common-issues.md
 .superpowers/
