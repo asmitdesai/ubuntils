@@ -1,6 +1,7 @@
 import logging
 from typing import List
 
+from ubuntils.detectors.custom_rules import apply_custom_rules
 from ubuntils.detectors.finding import Finding
 from ubuntils.detectors.rules import (
     rule_cron_root_exec,
@@ -31,8 +32,9 @@ _log = logging.getLogger(__name__)
 
 
 class DetectionEngine:
-    def __init__(self, allowlist: Allowlist = None):
+    def __init__(self, allowlist: Allowlist = None, custom_rules=None):
         self.allowlist = allowlist
+        self.custom_rules = custom_rules or []
 
     def run(self, artifacts: dict) -> List[Finding]:
         findings = []
@@ -41,6 +43,11 @@ class DetectionEngine:
                 findings.extend(rule(artifacts))
             except Exception as exc:
                 _log.exception("Rule %s raised: %s", rule.__name__, exc)
+        if self.custom_rules:
+            try:
+                findings.extend(apply_custom_rules(self.custom_rules, artifacts))
+            except Exception as exc:
+                _log.exception("Custom rules raised: %s", exc)
         if self.allowlist is not None:
             findings = self.allowlist.filter(findings)
         return findings

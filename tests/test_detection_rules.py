@@ -472,3 +472,29 @@ def test_uid_zero_no_users_key():
 
 def test_engine_all_rules_registered():
     assert len(ALL_RULES) == 9
+
+
+def test_engine_runs_custom_rules_and_allowlist_suppresses_them():
+    from ubuntils.detectors.custom_rules import CustomRule
+    from ubuntils.detectors.engine import DetectionEngine
+    from ubuntils.detectors.finding import Severity
+    from ubuntils.utils.config import Allowlist
+
+    rule = CustomRule(
+        id="CUSTOM_X", severity=Severity.HIGH, title="t", description="d",
+        source="process", match="substring", pattern="evilbin",
+    )
+    artifacts = {"processes": [{"pid": 9, "name": "x", "exe": "/tmp/evilbin", "cmdline": "evilbin"}]}
+
+    findings = DetectionEngine(custom_rules=[rule]).run(artifacts)
+    assert any(f.rule_id == "CUSTOM_X" for f in findings)
+
+    suppressed = DetectionEngine(
+        custom_rules=[rule], allowlist=Allowlist(rules=["CUSTOM_X"])
+    ).run(artifacts)
+    assert not any(f.rule_id == "CUSTOM_X" for f in suppressed)
+
+
+def test_engine_without_custom_rules_unchanged():
+    from ubuntils.detectors.engine import DetectionEngine
+    assert DetectionEngine().run({}) == []
