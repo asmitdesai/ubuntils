@@ -307,3 +307,70 @@ def test_parse_since_absolute_datetime():
 def test_parse_since_invalid_raises():
     with pytest.raises(ValueError, match="Invalid --since"):
         parse_since("foo")
+
+
+def test_scan_rules_flag_invalid_file_errors(runner):
+    result = runner.invoke(main, ["scan", "--json", "--rules", "/nonexistent/rules.yaml"])
+    assert result.exit_code != 0
+
+
+def test_scan_rules_flag_loads_and_detects(runner, tmp_path):
+    """--rules findings should appear in the JSON report alongside built-in ones."""
+
+    class FakeProcessCollector:
+        def collect(self):
+            return {"processes": [
+                {"pid": 1, "name": "x", "exe": "/tmp/evilbin", "cmdline": "evilbin --x"}]}
+
+    rules = tmp_path / "rules.yaml"
+    rules.write_text(
+        "rules:\n  - id: CUSTOM_CLI\n    severity: HIGH\n    title: t\n"
+        "    description: d\n    source: process\n    match: substring\n    pattern: evilbin\n"
+    )
+
+    with (
+        patch("ubuntils.cli.ALL_COLLECTORS", [FakeProcessCollector]),
+        patch("ubuntils.cli.TimelineBuilder") as mock_tl,
+        patch("ubuntils.cli.get_ubuntu_version", return_value="22.04"),
+    ):
+        mock_tl.return_value.build.return_value = []
+        result = runner.invoke(main, ["scan", "--json", "--rules", str(rules)])
+
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert any(f["rule_id"] == "CUSTOM_CLI" for f in report["findings"])
+
+
+def test_scan_rules_flag_rejects_malformed_rules_file(runner, tmp_path):
+    rules = tmp_path / "rules.yaml"
+    rules.write_text("rules:\n  - id: X\n    severity: NOPE\n    title: t\n"
+                     "    description: d\n    source: process\n    match: substring\n"
+                     "    pattern: y\n")
+    result = runner.invoke(main, ["scan", "--json", "--rules", str(rules)])
+    assert result.exit_code != 0
+    assert "Invalid rules file" in result.output
+
+
+def test_pipeline_attaches_related_events(monkeypatch):
+    import datetime
+    from ubuntils import cli
+    from ubuntils.detectors.finding import Finding, Severity
+    from ubuntils.timeline.builder import TimelineEvent
+
+    finding = Finding(
+        rule_id="SSH_UNAUTHORIZED_KEY", severity=Severity.MEDIUM, title="t",
+        description="d", artifact_path="/home/bob/.ssh/authorized_keys",
+        raw_value="ssh-rsa AAA", remediation_available=True,
+    )
+    event = TimelineEvent(
+        timestamp=datetime.datetime(2026, 6, 1, 12, 0, 0, tzinfo=datetime.timezone.utc),
+        source="journald", description="sshd: Accepted publickey for bob",
+    )
+    monkeypatch.setattr(cli.DetectionEngine, "run", lambda self, artifacts: [finding])
+    monkeypatch.setattr(cli.TimelineBuilder, "build", lambda self: [event])
+
+    with patch("ubuntils.cli.ALL_COLLECTORS", []):
+        result = cli._run_pipeline(remediate=False, confirm=False)
+    findings = result[0]
+    assert findings[0].related_events
+    assert "bob" in findings[0].related_events[0].description

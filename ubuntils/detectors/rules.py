@@ -23,6 +23,21 @@ SHELL_INIT_FILENAMES = frozenset({
     ".bashrc", ".bash_profile", ".profile", ".zshrc", ".zprofile",
 })
 
+# Common destination ports for legitimate outbound traffic. A connection to a
+# port outside this set from a flagged process is more interesting.
+_COMMON_REMOTE_PORTS = frozenset({
+    "22", "53", "80", "123", "443", "465", "587", "853", "993", "995",
+})
+_OUTBOUND_STATES = frozenset({"ESTAB", "ESTABLISHED", "SYN-SENT", "SYN_SENT"})
+_NON_REMOTE_ADDRS = frozenset({"", "*", "0.0.0.0", "::", "127.0.0.1", "::1"})
+
+
+def _is_outbound(conn: dict) -> bool:
+    if conn.get("state", "").upper() not in _OUTBOUND_STATES:
+        return False
+    return conn.get("remote_addr", "") not in _NON_REMOTE_ADDRS
+
+
 _7_DAYS_SECONDS = 7 * 24 * 3600
 _48_HOURS_SECONDS = 48 * 3600
 
@@ -107,18 +122,24 @@ def rule_suspicious_systemd_timer(artifacts: dict) -> List[Finding]:
         if not exec_start:
             continue
         if path_in_writable_tmp(exec_start):
+            unit = timer.get("unit", "")
             findings.append(Finding(
                 rule_id="SUSPICIOUS_SYSTEMD_TIMER",
                 severity=Severity.HIGH,
                 title="Systemd timer with suspicious ExecStart path",
                 description=(
-                    f"Systemd timer '{timer.get('unit', '')}' has ExecStart "
+                    f"Systemd timer '{unit}' has ExecStart "
                     "in a world-writable temp directory"
                 ),
-                artifact_path=timer.get("unit", ""),
+                artifact_path=unit,
                 raw_value=exec_start,
                 remediation_available=False,
                 remediation_description=None,
+                guided_remediation=(
+                    f"Inspect the unit, then disable it: "
+                    f"`systemctl disable --now {unit}` "
+                    f"(review `systemctl cat {unit}` first)."
+                ),
             ))
     return findings
 
@@ -201,7 +222,57 @@ def rule_process_masquerade(artifacts: dict) -> List[Finding]:
                 raw_value=exe,
                 remediation_available=False,
                 remediation_description=None,
+                guided_remediation=(
+                    f"Confirm pid {proc.get('pid', '')} is malicious "
+                    f"(`ls -l /proc/{proc.get('pid', '')}/exe`, "
+                    f"`cat /proc/{proc.get('pid', '')}/cmdline`), "
+                    f"then terminate it: `kill -9 {proc.get('pid', '')}`."
+                ),
             ))
+    return findings
+
+
+def rule_process_suspicious_connection(artifacts: dict) -> List[Finding]:
+    """Join processes and network connections by PID.
+
+    Flags a process that holds an outbound connection when either its exe sits
+    in a suspicious path, or the connection targets a non-standard remote port.
+    Snapshot only — this is current artifact state, not behavioral monitoring.
+    """
+    findings = []
+    conns_by_pid: dict = {}
+    for conn in artifacts.get("connections", []):
+        pid = str(conn.get("pid", ""))
+        if pid:
+            conns_by_pid.setdefault(pid, []).append(conn)
+
+    for proc in artifacts.get("processes", []):
+        pid = str(proc.get("pid", ""))
+        exe = proc.get("exe", "")
+        outbound = [c for c in conns_by_pid.get(pid, []) if _is_outbound(c)]
+        if not outbound:
+            continue
+        suspicious_exe = bool(exe) and (
+            path_in_writable_tmp(exe) or not path_in_standard_bins(exe)
+        )
+        nonstandard = [c for c in outbound if c.get("remote_port", "") not in _COMMON_REMOTE_PORTS]
+        if not (suspicious_exe or nonstandard):
+            continue
+        target = outbound[0]
+        remote = f"{target.get('remote_addr', '')}:{target.get('remote_port', '')}"
+        findings.append(Finding(
+            rule_id="PROCESS_SUSPICIOUS_CONNECTION",
+            severity=Severity.HIGH if suspicious_exe else Severity.MEDIUM,
+            title="Process with suspicious outbound connection",
+            description=(
+                f"Process '{proc.get('name', '')}' (pid={pid}, exe={exe}) has an "
+                f"outbound connection to {remote}"
+            ),
+            artifact_path=f"/proc/{pid}/exe",
+            raw_value=remote,
+            remediation_available=False,
+            remediation_description=None,
+        ))
     return findings
 
 
@@ -265,5 +336,10 @@ def rule_shell_rc_modification(artifacts: dict) -> List[Finding]:
                 raw_value=source,
                 remediation_available=False,
                 remediation_description=None,
+                guided_remediation=(
+                    f"Review recent additions to {source} "
+                    f"(`diff` it against a known-good copy or `/etc/skel`), "
+                    f"then revert any malicious lines by hand."
+                ),
             ))
     return findings

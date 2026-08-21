@@ -1,0 +1,31 @@
+# Custom detection rules for `ubuntils scan --rules custom_rules.yaml`.
+# These ADD detections. They are pattern-match only (no code execution).
+# Use --config (allowlist) to SUPPRESS findings — that is a separate file.
+#
+# Each rule needs: id, severity (HIGH|MEDIUM|LOW), title, description,
+# source (cron|environment|ssh|process|network), match (regex|substring|glob),
+# pattern.
+rules:
+  - id: CUSTOM_KNOWN_MINER
+    severity: HIGH
+    title: Known cryptominer in process cmdline
+    description: A running process command line matches a known miner.
+    source: process
+    match: substring
+    pattern: xmrig
+
+  - id: CUSTOM_SUSPICIOUS_CRON_DOWNLOAD
+    severity: HIGH
+    title: Cron job pipes a download to a shell
+    description: A cron command downloads and executes code (curl|wget ... | sh).
+    source: cron
+    match: regex
+    pattern: "(curl|wget).*\\|\\s*(ba)?sh"
+
+  - id: CUSTOM_BEACON_SUBNET
+    severity: MEDIUM
+    title: Connection to known-bad subnet
+    description: An open connection targets a suspect address range.
+    source: network
+    match: glob
+    pattern: "203.0.113.*:*"

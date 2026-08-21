@@ -750,3 +750,26 @@ async def test_app_applies_allowlist_in_own_scan():
             assert isinstance(screen, _ResultsScreen)
             assert captured["allowlist"] is al
             assert all(f.rule_id != "USER_UID_ZERO" for f in screen._findings)
+
+
+def test_detail_text_includes_guided_remediation_and_related_events():
+    import datetime
+    from ubuntils.detectors.finding import Finding, Severity
+    from ubuntils.timeline.builder import TimelineEvent
+    from ubuntils.tui.findings_panel import _detail_text
+
+    event = TimelineEvent(
+        timestamp=datetime.datetime(2026, 6, 1, 12, 0, 0, tzinfo=datetime.timezone.utc),
+        source="journald", description="sshd: Accepted publickey for alice",
+    )
+    finding = Finding(
+        rule_id="PROCESS_MASQUERADE", severity=Severity.MEDIUM, title="t",
+        description="d", artifact_path="/proc/99/exe", raw_value="/tmp/sshd",
+        remediation_available=False, guided_remediation="kill -9 99",
+        related_events=[event],
+    )
+    text = _detail_text(finding)
+    assert "Guided remediation:" in text
+    assert "kill -9 99" in text
+    assert "Related events:" in text
+    assert "Accepted publickey" in text

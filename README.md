@@ -27,11 +27,11 @@ The gap is a tool that runs on the live system right now, covers the most common
 ubuntils runs in four sequential stages:
 
 1. **Collection** — Eight collectors gather forensic artifacts concurrently from `/proc`, cron tables, systemd units, SSH keys, sudoers files, and environment definitions. Takes roughly 2.5 seconds on a typical system.
-2. **Detection** — A detection engine runs all eight rules over the collected artifacts, producing a ranked findings list in about one second.
-3. **Timeline** — A timeline builder reads syslog, journald, and auditd in parallel and correlates events chronologically, adding roughly 0.3 seconds.
+2. **Detection** — A detection engine runs all ten built-in rules — plus any custom rules loaded with `--rules` — over the collected artifacts, producing a ranked findings list in about one second.
+3. **Timeline** — A timeline builder reads syslog, journald, and auditd in parallel and correlates events chronologically, adding roughly 0.3 seconds. Each finding is then auto-correlated against the timeline, so it carries the nearby events that relate to it.
 4. **Output** — Results appear either in an interactive four-tab TUI (default) or as structured JSON on stdout (`--json`).
 
-No network calls are made. No data leaves the system.
+No network calls are made. No data leaves the system. This holds for every feature, including custom rules and correlation — all of it runs against locally collected artifacts.
 
 ---
 
@@ -105,6 +105,7 @@ ubuntils scan [OPTIONS]
   --confirm           Required with --remediate to actually apply changes (else dry-run)
   --config FILE       YAML allowlist of findings to suppress (see below)
   --since TIME        Limit the timeline to events since TIME (e.g. '24h', '7d', '2026-05-20')
+  --rules FILE        YAML file of custom detection rules to add (see below)
   --verbose           Verbose structlog output
 ```
 
@@ -126,6 +127,38 @@ sudo ubuntils scan --json --config allowlist.yaml
 ```
 
 Suppression is always explicit — by rule id and/or exact artifact path. There is no blanket "ignore everything" switch. A sample lives at [`examples/allowlist.yaml`](examples/allowlist.yaml).
+
+### Custom detection rules (`--rules`)
+
+`--config` *suppresses* findings; `--rules` *adds* them. They are deliberately separate files because they are opposite concerns.
+
+A rules file is pattern-match only — no expressions, no conditionals, and no code execution, so loading one can never run attacker-supplied logic. Each rule names an artifact `source`, a `match` mode, and a `pattern`:
+
+```yaml
+# custom_rules.yaml
+rules:
+  - id: CUSTOM_KNOWN_MINER
+    severity: HIGH                     # HIGH | MEDIUM | LOW
+    title: Known cryptominer in process cmdline
+    description: A running process command line matches a known miner.
+    source: process                    # cron | environment | ssh | process | network
+    match: substring                   # regex | substring | glob
+    pattern: xmrig
+```
+
+```bash
+sudo ubuntils scan --json --rules custom_rules.yaml
+```
+
+| `source` | Matched against |
+|---|---|
+| `cron` | The cron command (path: the crontab file) |
+| `environment` | The raw environment/shell-init line (path: the defining file) |
+| `ssh` | Key type, key data, and comment (path: the `authorized_keys` file) |
+| `process` | The process cmdline (path: the exe path) |
+| `network` | The connection description (path: `remote_addr:remote_port`) |
+
+`regex` and `substring` match the text column; `glob` matches the path column — so a `network` glob such as `203.0.113.*:*` targets the remote endpoint. Custom-rule findings are flag-only (never auto-remediated) and are still subject to `--config` suppression. A sample lives at [`examples/custom_rules.yaml`](examples/custom_rules.yaml).
 
 ### Report integrity
 
@@ -257,6 +290,7 @@ A summary view of the scan: detected Ubuntu version, architecture, scan duration
 | USER_UID_ZERO | HIGH | No | Any account other than `root` with UID 0 (a hidden second superuser) |
 | SUDOERS_NOPASSWD | MEDIUM | Yes | NOPASSWD sudoers grants for users with UID ≥ 1000 and a login shell |
 | PROCESS_MASQUERADE | MEDIUM | No | Processes whose name matches a known system binary but whose executable path is outside /usr/bin, /usr/sbin, /bin, /sbin |
+| PROCESS_SUSPICIOUS_CONNECTION | HIGH / MEDIUM | No | Processes holding an outbound connection whose executable sits outside the standard binary directories (HIGH) or whose remote port is non-standard (MEDIUM) |
 | SHELL_RC_MODIFICATION | LOW | No | Shell init files (bashrc, profile, zshrc, etc.) modified within the last 48 hours for any user with a login shell |
 
 ### Why each rule exists
@@ -349,6 +383,17 @@ Raw value:     toor:x:0:0:...:/bin/bash
 Remediation:   not available
 ```
 
+**PROCESS_SUSPICIOUS_CONNECTION** — Persistence is only half the picture; a foothold that never talks to anything is rarely the one you care about. This rule joins the process and network collectors by PID so a flagged process arrives with its current connections attached. An executable staged in `/tmp` holding an established outbound socket is HIGH; a legitimate binary reaching a non-standard remote port is MEDIUM and worth a look. This is a snapshot of current state, not continuous monitoring — a beacon that is sleeping when you scan will not appear. Flag-only.
+
+*Example finding:*
+```
+[HIGH] PROCESS_SUSPICIOUS_CONNECTION
+Title:         Process with suspicious outbound connection
+Artifact:      /proc/1337/exe
+Raw value:     203.0.113.9:4444
+Remediation:   not available
+```
+
 **SHELL_RC_MODIFICATION** — Shell init files are a reliable persistence vector because they execute on every user login. This rule surfaces recent modifications for human review. Flag-only — shell RC content requires reading before acting on it.
 
 *Example finding:*
@@ -369,7 +414,7 @@ Remediation:   not available
 ```json
 {
   "scan_metadata": {
-    "tool_version": "1.1.0",
+    "tool_version": "1.5.0",
     "hostname": "web-01",
     "generated_at": "2026-06-10T08:22:03.114523+00:00",
     "ubuntu_version": "Ubuntu 22.04.3 LTS",
@@ -396,7 +441,24 @@ Remediation:   not available
       "artifact_path": "/etc/cron.d/cleanup",
       "raw_value": "0 * * * * root /tmp/.update",
       "remediation_available": true,
-      "remediation_description": "Will remove the offending cron entry from /etc/cron.d/cleanup after creating a timestamped backup."
+      "remediation_description": "Will remove the offending cron entry from /etc/cron.d/cleanup after creating a timestamped backup.",
+      "related_events": [
+        {
+          "timestamp": "2024-01-15T08:20:00+00:00",
+          "source": "syslog",
+          "description": "CRON[2841]: (root) CMD (/tmp/.update)"
+        }
+      ]
+    },
+    {
+      "rule_id": "PROCESS_MASQUERADE",
+      "severity": "MEDIUM",
+      "title": "Process masquerading as system binary",
+      "description": "Process 'sshd' (pid=1337) has exe path outside standard binary directories: /tmp/.sshd",
+      "artifact_path": "/proc/1337/exe",
+      "raw_value": "/tmp/.sshd",
+      "remediation_available": false,
+      "guided_remediation": "Confirm pid 1337 is malicious (`ls -l /proc/1337/exe`, `cat /proc/1337/cmdline`), then terminate it: `kill -9 1337`."
     }
   ],
   "timeline": [
@@ -412,11 +474,17 @@ Remediation:   not available
 
 `remediation_results` appears as an additional top-level key only when `--remediate` is passed. `report_sha256` is always present and is computed over the rest of the document.
 
+`related_events` and `guided_remediation` appear on a finding only when they have content. `related_events` holds up to five timeline events matched to the finding by artifact path and rule keywords, most recent first — a surfacing aid, not a causal claim. `guided_remediation` is a reviewed command sequence for you to run by hand; ubuntils never executes it.
+
 ---
 
 ## Remediation
 
-Five of the eight detection rules have automated remediation: `CRON_ROOT_EXEC`, `CRON_TMP_PATH`, `LD_PRELOAD_INJECT`, `SSH_UNAUTHORIZED_KEY`, and `SUDOERS_NOPASSWD`. The remaining three (`SUSPICIOUS_SYSTEMD_TIMER`, `PROCESS_MASQUERADE`, and `SHELL_RC_MODIFICATION`) are flag-only and will never be auto-remediated.
+Five of the ten detection rules have automated remediation: `CRON_ROOT_EXEC`, `CRON_TMP_PATH`, `LD_PRELOAD_INJECT`, `SSH_UNAUTHORIZED_KEY`, and `SUDOERS_NOPASSWD`. The rest are flag-only and will never be auto-remediated, because acting on them safely needs a human to look first.
+
+### Guided remediation
+
+`SUSPICIOUS_SYSTEMD_TIMER`, `PROCESS_MASQUERADE`, and `SHELL_RC_MODIFICATION` carry a `guided_remediation` string: the exact commands to run once you have confirmed the finding — `systemctl disable --now <unit>`, `kill -9 <pid>`, or the RC-file review and revert. It shows in the TUI detail pane and in JSON. ubuntils never runs it for you; these rules stay out of the `--remediate --confirm` sweep by design.
 
 ### In the TUI
 
@@ -495,9 +563,13 @@ Running without root produces a partial scan with warnings. Critical paths like 
 - [x] `USER_UID_ZERO` detection rule
 
 **v1.5.0**
-- VirusTotal hash lookups for suspicious process executables
-- MISP IOC export from findings
-- Custom detection rules (not just allowlists) via YAML
+- [x] Custom pattern-match detection rules via YAML (`--rules`)
+- [x] `PROCESS_SUSPICIOUS_CONNECTION` — process↔network correlation by PID
+- [x] Automatic finding↔timeline correlation (`related_events`)
+- [x] Guided remediation for the three judgment-required rules
+- [x] 282 tests at 92% coverage
+
+VirusTotal hash lookups and MISP IOC export were dropped from this release. VirusTotal only answers for *known* hashes — the case `rkhunter` already covers, and the opposite of the novel-technique gap ubuntils targets — and both features would have put a network call inside a tool whose value rests on making none. The offline guarantee stays absolute.
 
 **v2.0.0**
 - Web dashboard for multi-host triage

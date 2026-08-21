@@ -10,11 +10,13 @@ import structlog
 
 from ubuntils import __version__
 from ubuntils.collectors import ALL_COLLECTORS
+from ubuntils.detectors.custom_rules import load_custom_rules
 from ubuntils.detectors.engine import DetectionEngine
 from ubuntils.detectors.finding import Severity
 from ubuntils.formatters.json_formatter import JSONFormatter
 from ubuntils.remediators import REMEDIATOR_REGISTRY
 from ubuntils.timeline.builder import TimelineBuilder
+from ubuntils.timeline.correlator import correlate
 from ubuntils.tui.app import UbuntilsApp
 from ubuntils.tui.stats_panel import get_ubuntu_version
 from ubuntils.utils.config import load_allowlist
@@ -39,7 +41,8 @@ def _ensure_root() -> None:
         sys.exit(1)
 
 
-def _run_pipeline(remediate: bool, confirm: bool, allowlist=None, since=None) -> tuple:
+def _run_pipeline(remediate: bool, confirm: bool, allowlist=None, since=None,
+                  custom_rules=None) -> tuple:
     """Run collectors → detection → timeline → optional remediation.
 
     Returns (findings, timeline, stats, scan_metadata, artifact_counts, remediation_results).
@@ -64,10 +67,11 @@ def _run_pipeline(remediate: bool, confirm: bool, allowlist=None, since=None) ->
             failures += 1
 
     try:
-        findings = DetectionEngine(allowlist=allowlist).run(artifacts)
+        findings = DetectionEngine(allowlist=allowlist, custom_rules=custom_rules).run(artifacts)
         timeline = TimelineBuilder().build()
         if since is not None:
             timeline = [e for e in timeline if e.timestamp >= since]
+        correlate(findings, timeline)
     except Exception as exc:
         logger.error("scan_engine_failed", error=str(exc))
         findings = []
@@ -136,8 +140,11 @@ def main():
               help="Write JSON report to FILE instead of stdout (implies --json)")
 @click.option("--since", "since_value",
               help="Limit timeline to events since this time (e.g. '24h', '7d', '2026-05-20')")
+@click.option("--rules", "rules_path", type=click.Path(exists=True, dir_okay=False),
+              help="YAML file of custom pattern-match detection rules (adds detections)")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging")
-def scan(output_json, remediate, confirm, config_path, output_path, since_value, verbose):
+def scan(output_json, remediate, confirm, config_path, output_path, since_value,
+         rules_path, verbose):
     """Scan the system for forensic artifacts and suspicious activity."""
     _ensure_root()
     if output_path:
@@ -158,9 +165,17 @@ def scan(output_json, remediate, confirm, config_path, output_path, since_value,
         except (ValueError, OSError) as exc:
             raise click.ClickException(f"Invalid config {config_path}: {exc}")
 
+    custom_rules = None
+    if rules_path:
+        try:
+            custom_rules = load_custom_rules(rules_path)
+        except (ValueError, OSError) as exc:
+            raise click.ClickException(f"Invalid rules file {rules_path}: {exc}")
+
     if output_json or remediate:
         findings, timeline, stats, scan_metadata, artifact_counts, remediation_results = \
-            _run_pipeline(remediate=remediate, confirm=confirm, allowlist=allowlist, since=since)
+            _run_pipeline(remediate=remediate, confirm=confirm, allowlist=allowlist,
+                          since=since, custom_rules=custom_rules)
 
         if output_json:
             report = JSONFormatter().format(
@@ -182,7 +197,8 @@ def scan(output_json, remediate, confirm, config_path, output_path, since_value,
         return
 
     # Plain TUI mode: let the app run its own scan with live progress
-    UbuntilsApp(verbose=verbose, allowlist=allowlist, since=since).run()
+    UbuntilsApp(verbose=verbose, allowlist=allowlist, since=since,
+                custom_rules=custom_rules).run()
 
 
 @main.command()
