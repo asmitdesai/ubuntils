@@ -43,6 +43,15 @@ def _detail_text(finding: Finding | None, result: RemediationResult | None = Non
         f"Raw:       {finding.raw_value}",
     ]
 
+    if finding.guided_remediation:
+        lines += ["", "Guided remediation:", f"  {finding.guided_remediation}"]
+
+    if finding.related_events:
+        lines += ["", "Related events:"]
+        for e in finding.related_events[:5]:
+            ts = e.timestamp.strftime("%m-%d %H:%M:%S")
+            lines.append(f"  {ts} [{e.source}] {e.description[:60]}")
+
     if result is not None:
         if result.status == RemediationStatus.SUCCESS:
             lines += ["", "✓ Remediated"]
@@ -78,7 +87,8 @@ _SEVERITY_SHORT = {
 class FindingDetail(Static):
     DEFAULT_CSS = """
     FindingDetail {
-        height: 10;
+        /* 16 rows: base detail + up to 5 related events + guided remediation block */
+        height: 16;
         border-top: solid $primary;
         padding: 1 2;
     }
@@ -106,7 +116,8 @@ class FindingsPanel(Widget):
         height: 1fr;
     }
     FindingsPanel FindingDetail {
-        height: 10;
+        /* 16 rows: base detail + up to 5 related events + guided remediation block */
+        height: 16;
     }
     """
 
