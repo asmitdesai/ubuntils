@@ -45,12 +45,13 @@ class UbuntilsApp(App):
     TITLE = "ubuntils"
 
     def __init__(self, verbose: bool = False, _scan_override=None,
-                 allowlist=None, since=None) -> None:
+                 allowlist=None, since=None, custom_rules=None) -> None:
         super().__init__()
         self._verbose = verbose
         self._scan_override = _scan_override
         self._allowlist = allowlist
         self._since = since
+        self._custom_rules = custom_rules
 
     def on_mount(self) -> None:
         self.push_screen(
@@ -85,7 +86,9 @@ class UbuntilsApp(App):
             )
 
         try:
-            findings = DetectionEngine(allowlist=self._allowlist).run(artifacts)
+            findings = DetectionEngine(
+                allowlist=self._allowlist, custom_rules=self._custom_rules
+            ).run(artifacts)
             timeline = TimelineBuilder().build()
             if self._since is not None:
                 timeline = [e for e in timeline if e.timestamp >= self._since]
