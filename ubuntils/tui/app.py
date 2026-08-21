@@ -12,6 +12,7 @@ from ubuntils.collectors import ALL_COLLECTORS
 from ubuntils.detectors.engine import DetectionEngine
 from ubuntils.detectors.finding import Finding, Severity
 from ubuntils.timeline.builder import TimelineBuilder, TimelineEvent
+from ubuntils.timeline.correlator import correlate
 from ubuntils.tui.results_screen import ResultsScreen
 from ubuntils.tui.scan_screen import ScanScreen
 from ubuntils.tui.stats_panel import get_ubuntu_version
@@ -92,6 +93,7 @@ class UbuntilsApp(App):
             timeline = TimelineBuilder().build()
             if self._since is not None:
                 timeline = [e for e in timeline if e.timestamp >= self._since]
+            correlate(findings, timeline)
         except Exception as exc:
             logger.error("scan_engine_failed", error=str(exc))
             findings = []

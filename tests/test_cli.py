@@ -349,3 +349,28 @@ def test_scan_rules_flag_rejects_malformed_rules_file(runner, tmp_path):
     result = runner.invoke(main, ["scan", "--json", "--rules", str(rules)])
     assert result.exit_code != 0
     assert "Invalid rules file" in result.output
+
+
+def test_pipeline_attaches_related_events(monkeypatch):
+    import datetime
+    from ubuntils import cli
+    from ubuntils.detectors.finding import Finding, Severity
+    from ubuntils.timeline.builder import TimelineEvent
+
+    finding = Finding(
+        rule_id="SSH_UNAUTHORIZED_KEY", severity=Severity.MEDIUM, title="t",
+        description="d", artifact_path="/home/bob/.ssh/authorized_keys",
+        raw_value="ssh-rsa AAA", remediation_available=True,
+    )
+    event = TimelineEvent(
+        timestamp=datetime.datetime(2026, 6, 1, 12, 0, 0, tzinfo=datetime.timezone.utc),
+        source="journald", description="sshd: Accepted publickey for bob",
+    )
+    monkeypatch.setattr(cli.DetectionEngine, "run", lambda self, artifacts: [finding])
+    monkeypatch.setattr(cli.TimelineBuilder, "build", lambda self: [event])
+
+    with patch("ubuntils.cli.ALL_COLLECTORS", []):
+        result = cli._run_pipeline(remediate=False, confirm=False)
+    findings = result[0]
+    assert findings[0].related_events
+    assert "bob" in findings[0].related_events[0].description

@@ -16,6 +16,7 @@ from ubuntils.detectors.finding import Severity
 from ubuntils.formatters.json_formatter import JSONFormatter
 from ubuntils.remediators import REMEDIATOR_REGISTRY
 from ubuntils.timeline.builder import TimelineBuilder
+from ubuntils.timeline.correlator import correlate
 from ubuntils.tui.app import UbuntilsApp
 from ubuntils.tui.stats_panel import get_ubuntu_version
 from ubuntils.utils.config import load_allowlist
@@ -70,6 +71,7 @@ def _run_pipeline(remediate: bool, confirm: bool, allowlist=None, since=None,
         timeline = TimelineBuilder().build()
         if since is not None:
             timeline = [e for e in timeline if e.timestamp >= since]
+        correlate(findings, timeline)
     except Exception as exc:
         logger.error("scan_engine_failed", error=str(exc))
         findings = []
