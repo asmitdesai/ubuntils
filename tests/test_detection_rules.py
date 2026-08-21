@@ -471,7 +471,7 @@ def test_uid_zero_no_users_key():
 
 
 def test_engine_all_rules_registered():
-    assert len(ALL_RULES) == 9
+    assert len(ALL_RULES) == 10
 
 
 def test_engine_runs_custom_rules_and_allowlist_suppresses_them():
@@ -498,3 +498,62 @@ def test_engine_runs_custom_rules_and_allowlist_suppresses_them():
 def test_engine_without_custom_rules_unchanged():
     from ubuntils.detectors.engine import DetectionEngine
     assert DetectionEngine().run({}) == []
+
+
+def _conn(pid="42", remote_addr="10.0.0.5", remote_port="4444", state="ESTAB"):
+    return {"proto": "tcp", "local_addr": "192.168.1.2", "local_port": "5555",
+            "remote_addr": remote_addr, "remote_port": remote_port, "state": state, "pid": pid}
+
+
+def test_suspicious_connection_flags_tmp_exe_with_outbound():
+    from ubuntils.detectors.rules import rule_process_suspicious_connection
+    artifacts = {
+        "processes": [{"pid": 42, "name": "x", "uid": 0, "exe": "/tmp/implant", "cmdline": "x"}],
+        "connections": [_conn(pid="42")],
+    }
+    findings = rule_process_suspicious_connection(artifacts)
+    assert len(findings) == 1
+    assert findings[0].rule_id == "PROCESS_SUSPICIOUS_CONNECTION"
+    assert findings[0].severity == Severity.HIGH
+    assert findings[0].remediation_available is False
+
+
+def test_suspicious_connection_flags_nonstandard_port_standard_exe():
+    from ubuntils.detectors.rules import rule_process_suspicious_connection
+    artifacts = {
+        "processes": [{"pid": 42, "name": "bash", "uid": 0, "exe": "/bin/bash", "cmdline": "bash"}],
+        "connections": [_conn(pid="42", remote_port="4444")],
+    }
+    findings = rule_process_suspicious_connection(artifacts)
+    assert len(findings) == 1
+    assert findings[0].severity == Severity.MEDIUM
+
+
+def test_suspicious_connection_ignores_standard_exe_common_port():
+    from ubuntils.detectors.rules import rule_process_suspicious_connection
+    artifacts = {
+        "processes": [{"pid": 42, "name": "curl", "uid": 0, "exe": "/usr/bin/curl", "cmdline": "curl"}],
+        "connections": [_conn(pid="42", remote_port="443")],
+    }
+    assert rule_process_suspicious_connection(artifacts) == []
+
+
+def test_suspicious_connection_ignores_listener_no_remote():
+    from ubuntils.detectors.rules import rule_process_suspicious_connection
+    artifacts = {
+        "processes": [{"pid": 42, "name": "x", "uid": 0, "exe": "/tmp/implant", "cmdline": "x"}],
+        "connections": [{"proto": "tcp", "local_addr": "0.0.0.0", "local_port": "4444",
+                         "remote_addr": "0.0.0.0", "remote_port": "*", "state": "LISTEN", "pid": "42"}],
+    }
+    assert rule_process_suspicious_connection(artifacts) == []
+
+
+def test_suspicious_connection_empty_artifacts():
+    from ubuntils.detectors.rules import rule_process_suspicious_connection
+    assert rule_process_suspicious_connection({}) == []
+
+
+def test_engine_includes_suspicious_connection_rule():
+    from ubuntils.detectors.engine import ALL_RULES
+    from ubuntils.detectors.rules import rule_process_suspicious_connection
+    assert rule_process_suspicious_connection in ALL_RULES
