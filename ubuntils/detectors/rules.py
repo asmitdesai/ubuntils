@@ -122,18 +122,24 @@ def rule_suspicious_systemd_timer(artifacts: dict) -> List[Finding]:
         if not exec_start:
             continue
         if path_in_writable_tmp(exec_start):
+            unit = timer.get("unit", "")
             findings.append(Finding(
                 rule_id="SUSPICIOUS_SYSTEMD_TIMER",
                 severity=Severity.HIGH,
                 title="Systemd timer with suspicious ExecStart path",
                 description=(
-                    f"Systemd timer '{timer.get('unit', '')}' has ExecStart "
+                    f"Systemd timer '{unit}' has ExecStart "
                     "in a world-writable temp directory"
                 ),
-                artifact_path=timer.get("unit", ""),
+                artifact_path=unit,
                 raw_value=exec_start,
                 remediation_available=False,
                 remediation_description=None,
+                guided_remediation=(
+                    f"Inspect the unit, then disable it: "
+                    f"`systemctl disable --now {unit}` "
+                    f"(review `systemctl cat {unit}` first)."
+                ),
             ))
     return findings
 
@@ -216,6 +222,12 @@ def rule_process_masquerade(artifacts: dict) -> List[Finding]:
                 raw_value=exe,
                 remediation_available=False,
                 remediation_description=None,
+                guided_remediation=(
+                    f"Confirm pid {proc.get('pid', '')} is malicious "
+                    f"(`ls -l /proc/{proc.get('pid', '')}/exe`, "
+                    f"`cat /proc/{proc.get('pid', '')}/cmdline`), "
+                    f"then terminate it: `kill -9 {proc.get('pid', '')}`."
+                ),
             ))
     return findings
 
@@ -324,5 +336,10 @@ def rule_shell_rc_modification(artifacts: dict) -> List[Finding]:
                 raw_value=source,
                 remediation_available=False,
                 remediation_description=None,
+                guided_remediation=(
+                    f"Review recent additions to {source} "
+                    f"(`diff` it against a known-good copy or `/etc/skel`), "
+                    f"then revert any malicious lines by hand."
+                ),
             ))
     return findings

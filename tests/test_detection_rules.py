@@ -557,3 +557,32 @@ def test_engine_includes_suspicious_connection_rule():
     from ubuntils.detectors.engine import ALL_RULES
     from ubuntils.detectors.rules import rule_process_suspicious_connection
     assert rule_process_suspicious_connection in ALL_RULES
+
+
+def test_systemd_timer_has_guided_remediation():
+    from ubuntils.detectors.rules import rule_suspicious_systemd_timer
+    artifacts = {"timers": [{"unit": "evil.timer", "exec_start": "/tmp/payload.sh"}]}
+    findings = rule_suspicious_systemd_timer(artifacts)
+    assert findings[0].remediation_available is False
+    assert "evil.timer" in findings[0].guided_remediation
+    assert "systemctl" in findings[0].guided_remediation
+
+
+def test_process_masquerade_has_guided_remediation():
+    from ubuntils.detectors.rules import rule_process_masquerade
+    artifacts = {"processes": [{"pid": 99, "name": "sshd", "exe": "/tmp/sshd", "cmdline": "sshd"}]}
+    findings = rule_process_masquerade(artifacts)
+    assert findings[0].remediation_available is False
+    assert "99" in findings[0].guided_remediation
+
+
+def test_shell_rc_modification_has_guided_remediation(tmp_path):
+    from ubuntils.detectors.rules import rule_shell_rc_modification
+    rc = tmp_path / ".bashrc"
+    rc.write_text("export PATH=$PATH\n")
+    os.utime(str(rc), (time.time(), time.time()))
+    artifacts = {"env_definitions": [
+        {"owner": "alice", "source": str(rc), "variable": "PATH", "value": "x"}]}
+    findings = rule_shell_rc_modification(artifacts)
+    assert findings[0].remediation_available is False
+    assert str(rc) in findings[0].guided_remediation
