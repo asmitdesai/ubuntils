@@ -183,9 +183,9 @@ def test_scan_plain_launches_tui(runner):
     mock_app.run.assert_called_once()
 
 
-def test_tui_instantiates_collectors_with_livesource():
-    """Verify that tui/app.py line 74 instantiates collectors with LiveSource(root="/")."""
-    from ubuntils.collectors.source import LiveSource
+async def test_tui_app_scan_worker_uses_livesource():
+    """Verify that UbuntilsApp._run_scan() actually instantiates collectors with LiveSource(root="/")."""
+    from ubuntils.tui.app import UbuntilsApp
 
     # Record what source values are passed to collector __init__
     received_sources = []
@@ -197,13 +197,28 @@ def test_tui_instantiates_collectors_with_livesource():
         def collect(self):
             return {}
 
-    # Directly test the collector instantiation pattern from tui/app.py line 74:
-    # collectors = [C(source=LiveSource(root="/")) for C in ALL_COLLECTORS]
-    ALL_COLLECTORS = [RecordingCollector]
-    collectors = [C(source=LiveSource(root="/")) for C in ALL_COLLECTORS]
+    # Monkeypatch ALL_COLLECTORS to use our recording collector
+    # This must happen before creating the app so _run_scan uses it
+    with (
+        patch("ubuntils.tui.app.ALL_COLLECTORS", [RecordingCollector]),
+        patch("ubuntils.tui.app.DetectionEngine") as mock_engine,
+        patch("ubuntils.tui.app.TimelineBuilder") as mock_tl,
+        patch("ubuntils.tui.app.correlate"),
+        patch("ubuntils.tui.app.get_ubuntu_version", return_value="22.04"),
+    ):
+        mock_engine.return_value.run.return_value = []
+        mock_tl.return_value.build.return_value = []
+
+        # Create app WITHOUT _scan_override so the real _run_scan() executes
+        app = UbuntilsApp()
+
+        # Run the app with Textual's test harness
+        async with app.run_test() as pilot:
+            # Wait for the scan worker thread to complete
+            await pilot.pause(delay=0.5)
 
     # Verify the collector was instantiated with LiveSource(root="/")
-    assert len(received_sources) == 1, "Collector was not instantiated"
+    assert len(received_sources) == 1, f"Expected 1 collector instantiation, got {len(received_sources)}"
     assert isinstance(
         received_sources[0], LiveSource
     ), f"Expected LiveSource but got {type(received_sources[0])}"
