@@ -541,6 +541,26 @@ def test_env_collector_skips_nonexistent_rc_files():
 
 # ─── Collector registry ───────────────────────────────────────────────────────
 
+def test_cron_collector_reads_from_source(tmp_path):
+    from ubuntils.collectors.cron import CronCollector
+    from ubuntils.collectors.source import BundleSource
+
+    files = tmp_path / "files"
+    (files / "etc" / "cron.d").mkdir(parents=True)
+    (files / "var" / "spool" / "cron" / "crontabs").mkdir(parents=True)
+    (files / "etc" / "crontab").write_text(SYSTEM_CRONTAB)
+    (files / "var" / "spool" / "cron" / "crontabs" / "alice").write_text(USER_CRONTAB_ALICE)
+
+    src = BundleSource(root_dir=str(files), command_index={})
+    result = CronCollector(source=src).collect()
+
+    system_entries = [e for e in result["cron_entries"] if e["source"] == "/etc/crontab"]
+    assert any("/tmp/evil.sh" in e["command"] for e in system_entries)
+    user_entries = [e for e in result["cron_entries"] if e["owner"] == "alice"]
+    assert len(user_entries) == 1
+    assert "/home/alice/backup.sh" in user_entries[0]["command"]
+
+
 def test_user_collector_reads_from_source(tmp_path):
     from ubuntils.collectors.users import UserCollector
     from ubuntils.collectors.source import BundleSource
