@@ -277,7 +277,7 @@ def _run_systemd(cmd, **kwargs):
 def test_systemd_collector_parses_json_output():
     from ubuntils.collectors.systemd import SystemdCollector
 
-    with mock.patch("ubuntils.collectors.systemd.run_command", side_effect=_run_systemd):
+    with mock.patch("ubuntils.collectors.source.run_command", side_effect=_run_systemd):
         result = SystemdCollector().collect()
 
     assert "timers" in result
@@ -298,7 +298,7 @@ def test_systemd_collector_parses_text_output():
             return (EXEC_START_OUTPUT, "", 0)
         return ("", "error", 1)
 
-    with mock.patch("ubuntils.collectors.systemd.run_command", side_effect=run_text):
+    with mock.patch("ubuntils.collectors.source.run_command", side_effect=run_text):
         result = SystemdCollector().collect()
 
     assert "timers" in result
@@ -316,7 +316,7 @@ def test_systemd_collector_handles_missing_exec_start():
             return ("", "not found", 1)
         return ("", "error", 1)
 
-    with mock.patch("ubuntils.collectors.systemd.run_command", side_effect=run_no_exec):
+    with mock.patch("ubuntils.collectors.source.run_command", side_effect=run_no_exec):
         result = SystemdCollector().collect()
 
     assert "timers" in result
@@ -625,6 +625,28 @@ def test_env_collector_reads_from_source(tmp_path):
     ld_preload = next(e for e in definitions if e["variable"] == "LD_PRELOAD")
     assert ld_preload["owner"] == "alice"
     assert ld_preload["value"] == "/tmp/evil.so"
+
+
+def test_systemd_collector_reads_from_source(tmp_path):
+    from ubuntils.collectors.systemd import SystemdCollector
+    from ubuntils.collectors.source import BundleSource
+
+    captured = tmp_path / "captured"
+    captured.mkdir()
+    (captured / "list_timers_json.out").write_text(TIMERS_JSON)
+    (captured / "exec_start.out").write_text(EXEC_START_OUTPUT)
+
+    command_index = {
+        "systemctl_list_timers_json": str(captured / "list_timers_json.out"),
+        "systemctl_show_execstart": str(captured / "exec_start.out"),
+    }
+    src = BundleSource(root_dir=str(tmp_path / "files"), command_index=command_index)
+    result = SystemdCollector(source=src).collect()
+
+    assert "timers" in result
+    assert len(result["timers"]) == 1
+    assert result["timers"][0]["unit"] == "apt-daily.timer"
+    assert result["timers"][0]["exec_start"] == "/usr/lib/apt/apt.systemd.daily install"
 
 
 def test_user_collector_reads_from_source(tmp_path):

@@ -1,7 +1,6 @@
 import json
 
 from ubuntils.collectors.base import BaseCollector
-from ubuntils.utils.shell import run_command
 
 
 class SystemdCollector(BaseCollector):
@@ -26,8 +25,9 @@ class SystemdCollector(BaseCollector):
         return {"timers": result}
 
     def _list_timers_json(self):
-        stdout, _, rc = run_command(
-            ["systemctl", "list-timers", "--all", "--no-pager", "--output", "json"]
+        stdout, _, rc = self.source.run(
+            "systemctl_list_timers_json",
+            ["systemctl", "list-timers", "--all", "--no-pager", "--output", "json"],
         )
         if rc != 0:
             return None
@@ -37,7 +37,10 @@ class SystemdCollector(BaseCollector):
             return None
 
     def _list_timers_text(self):
-        stdout, _, rc = run_command(["systemctl", "list-timers", "--all", "--no-pager"])
+        stdout, _, rc = self.source.run(
+            "systemctl_list_timers_text",
+            ["systemctl", "list-timers", "--all", "--no-pager"],
+        )
         if rc != 0:
             return None
         timers = []
@@ -56,8 +59,9 @@ class SystemdCollector(BaseCollector):
         return timers if timers else None
 
     def _get_exec_start(self, service: str) -> str:
-        stdout, _, rc = run_command(
-            ["systemctl", "show", service, "--property=ExecStart", "--no-pager"]
+        stdout, _, rc = self.source.run(
+            "systemctl_show_execstart",
+            ["systemctl", "show", service, "--property=ExecStart", "--no-pager"],
         )
         if rc != 0 or not stdout.strip():
             return ""
