@@ -77,7 +77,7 @@ NETSTAT_OUTPUT = (
 def test_network_collector_parses_ss_output():
     from ubuntils.collectors.network import NetworkCollector
 
-    with mock.patch("ubuntils.collectors.network.run_command",
+    with mock.patch("ubuntils.collectors.source.run_command",
                     return_value=(SS_OUTPUT, "", 0)):
         result = NetworkCollector().collect()
 
@@ -97,7 +97,7 @@ def test_network_collector_falls_back_to_netstat():
             return ("", "not found", 1)
         return (NETSTAT_OUTPUT, "", 0)
 
-    with mock.patch("ubuntils.collectors.network.run_command", side_effect=fake_run):
+    with mock.patch("ubuntils.collectors.source.run_command", side_effect=fake_run):
         result = NetworkCollector().collect()
 
     assert "connections" in result
@@ -108,11 +108,31 @@ def test_network_collector_falls_back_to_netstat():
 def test_network_collector_both_fail():
     from ubuntils.collectors.network import NetworkCollector
 
-    with mock.patch("ubuntils.collectors.network.run_command",
+    with mock.patch("ubuntils.collectors.source.run_command",
                     return_value=("", "error", 1)):
         result = NetworkCollector().collect()
 
     assert result == {}
+
+
+def test_network_collector_reads_from_source(tmp_path):
+    from ubuntils.collectors.network import NetworkCollector
+    from ubuntils.collectors.source import BundleSource
+
+    captured = tmp_path / "captured"
+    captured.mkdir()
+    (captured / "ss.out").write_text(SS_OUTPUT)
+
+    command_index = {"ss": str(captured / "ss.out")}
+    src = BundleSource(root_dir=str(tmp_path / "files"), command_index=command_index)
+    result = NetworkCollector(source=src).collect()
+
+    assert "connections" in result
+    assert len(result["connections"]) >= 1
+    c = result["connections"][0]
+    assert c["proto"] == "tcp"
+    assert c["local_port"] == "22"
+    assert c["state"] == "LISTEN"
 
 
 # ─── UserCollector ────────────────────────────────────────────────────────────
