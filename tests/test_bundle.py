@@ -2,7 +2,7 @@ import os
 import tarfile
 import json
 from ubuntils.bundle.manifest import Manifest, FileEntry, CommandEntry
-from ubuntils.bundle import write_bundle
+from ubuntils.bundle import write_bundle, read_bundle, BundleError
 from ubuntils.collectors.source import LiveSource
 
 
@@ -141,3 +141,62 @@ def test_write_bundle_cleans_up_staging_directory(tmp_path):
     # No new staging directories should remain
     new_staging = after_staging - existing_staging
     assert len(new_staging) == 0, f"Staging directory was not cleaned up: {new_staging}"
+
+
+def test_read_bundle_round_trip(tmp_path):
+    root = tmp_path / "root"
+    (root / "etc").mkdir(parents=True)
+    (root / "etc" / "passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
+    out = tmp_path / "bundle.tar.gz"
+    write_bundle(
+        source=LiveSource(root=str(root)),
+        files_to_capture=["/etc/passwd"],
+        commands_to_capture=[("echo", ["echo", "hi"])],
+        out_path=str(out),
+        metadata={"hostname": "h1", "ubuntu_version": "U", "tool_version": "2.0.0"},
+    )
+
+    source, info = read_bundle(str(out))
+
+    assert info["bundle_integrity"] == "ok"
+    assert source.read_text("/etc/passwd").startswith("root:x:0:0")
+    stdout, _e, code = source.run("echo", ["echo", "hi"])
+    assert code == 0 and stdout.strip() == "hi"
+
+
+def test_read_bundle_detects_tampering(tmp_path):
+    out = tmp_path / "bundle.tar.gz"
+    write_bundle(
+        source=LiveSource(root=str(tmp_path)),
+        files_to_capture=[],
+        commands_to_capture=[],
+        out_path=str(out),
+        metadata={"hostname": "h", "ubuntu_version": "U", "tool_version": "2.0.0"},
+    )
+    # Corrupt the gzip payload after the fact.
+    import gzip, io, tarfile, json, os
+    extract = tmp_path / "x"
+    with tarfile.open(out, "r:gz") as tf:
+        tf.extractall(extract)
+    mpath = extract / "bundle" / "manifest.json"
+    data = json.loads(mpath.read_text())
+    data["hostname"] = "ATTACKER"          # mutate a field the digest covered
+    mpath.write_text(json.dumps(data, indent=2, sort_keys=True))
+    with tarfile.open(out, "w:gz") as tf:
+        tf.add(str(extract / "bundle"), arcname="bundle")
+
+    _source, info = read_bundle(str(out))
+    assert info["bundle_integrity"] == "mismatch"
+
+
+def test_read_bundle_without_manifest_raises(tmp_path):
+    import tarfile
+    junk = tmp_path / "junk.tar.gz"
+    (tmp_path / "empty").mkdir()
+    with tarfile.open(junk, "w:gz") as tf:
+        tf.add(str(tmp_path / "empty"), arcname="bundle")
+    try:
+        read_bundle(str(junk))
+        assert False, "expected BundleError"
+    except BundleError:
+        pass
