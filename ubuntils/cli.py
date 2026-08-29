@@ -26,6 +26,29 @@ from ubuntils.utils.since_parser import parse_since
 
 logger = structlog.get_logger()
 
+# Canonical capture lists for `ubuntils collect`. These are the files/commands
+# that can be captured as a *static* list — glob-expanded and per-PID/per-timer
+# dynamic paths cannot be represented here (see cli.py collect() docstring and
+# task-10-report.md "Known limitations" for the full list of gaps).
+COLLECT_FILES = [
+    "/etc/passwd",
+    "/etc/group",
+    "/etc/shadow",
+    "/etc/sudoers",
+    "/etc/ld.so.preload",
+    "/etc/environment",
+    "/etc/crontab",
+    "/etc/profile",
+]
+COLLECT_COMMANDS = [
+    ("ss", ["ss", "-tunap"]),
+    ("netstat", ["netstat", "-tunap"]),
+    ("systemctl_list_timers_json",
+     ["systemctl", "list-timers", "--all", "--no-pager", "--output", "json"]),
+    ("systemctl_list_timers_text",
+     ["systemctl", "list-timers", "--all", "--no-pager"]),
+]
+
 
 def _ensure_root() -> None:
     """Re-exec under sudo if not running as root, preserving the active venv/conda PATH."""
@@ -201,6 +224,42 @@ def scan(output_json, remediate, confirm, config_path, output_path, since_value,
     # Plain TUI mode: let the app run its own scan with live progress
     UbuntilsApp(verbose=verbose, allowlist=allowlist, since=since,
                 custom_rules=custom_rules).run()
+
+
+@main.command()
+@click.option("--output", "output_path", type=click.Path(dir_okay=False),
+              help="Bundle path to write (default ./ubuntils-bundle-<timestamp>.tar.gz)")
+@click.option("--verbose", is_flag=True, help="Enable verbose logging")
+def collect(output_path, verbose):
+    """Acquire a portable, tamper-evident artifact bundle from this host.
+
+    Captures the statically-listed files/commands in COLLECT_FILES/COLLECT_COMMANDS.
+    Known limitations (dynamic paths that cannot be captured as a fixed list):
+    glob-expanded paths (/etc/cron.d/*, /etc/sudoers.d/*, /etc/profile.d/*,
+    per-user ~/.ssh/authorized_keys), per-PID /proc/*/status and /proc/*/cmdline,
+    and the per-timer `systemctl show <service> --property=ExecStart` lookup.
+    """
+    _ensure_root()
+    configure_logging(json_mode=False, verbose=verbose)
+    from ubuntils.bundle.writer import write_bundle
+
+    if not output_path:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        output_path = f"ubuntils-bundle-{stamp}.tar.gz"
+
+    source = LiveSource(root="/")
+    written = write_bundle(
+        source=source,
+        files_to_capture=COLLECT_FILES,
+        commands_to_capture=COLLECT_COMMANDS,
+        out_path=output_path,
+        metadata={
+            "hostname": socket.gethostname(),
+            "ubuntu_version": get_ubuntu_version(),
+            "tool_version": __version__,
+        },
+    )
+    click.echo(f"Bundle written to {written}", err=True)
 
 
 @main.command()
