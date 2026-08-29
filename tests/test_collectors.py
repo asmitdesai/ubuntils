@@ -12,7 +12,7 @@ def _open_proc(path, *args, **kwargs):
     if path == "/proc/123/status":
         return io.StringIO("Name:\tpython3\nUid:\t1000\t1000\t1000\t1000\n")
     if path == "/proc/123/cmdline":
-        return io.BytesIO(b"python3\x00script.py\x00")
+        return io.StringIO("python3\x00script.py\x00")
     raise FileNotFoundError(path)
 
 
@@ -57,6 +57,32 @@ def test_process_collector_returns_empty_on_glob_failure():
     assert result == {}
 
 
+def test_process_collector_reads_from_source(tmp_path):
+    from ubuntils.collectors.processes import ProcessCollector
+    from ubuntils.collectors.source import BundleSource
+
+    files = tmp_path / "files"
+    (files / "proc" / "456").mkdir(parents=True)
+    (files / "proc" / "456" / "status").write_text(
+        "Name:\tsshd\nUid:\t0\t0\t0\t0\n"
+    )
+    (files / "proc" / "456" / "cmdline").write_text("sshd\x00-D\x00")
+
+    src = BundleSource(root_dir=str(files), command_index={})
+    result = ProcessCollector(source=src).collect()
+
+    assert "processes" in result
+    assert len(result["processes"]) == 1
+    p = result["processes"][0]
+    assert p["pid"] == 456
+    assert p["name"] == "sshd"
+    assert p["uid"] == 0
+    assert p["cmdline"] == "sshd -D"
+    # exe is a live /proc symlink read with no ArtifactSource primitive for it;
+    # against a bundle (no real /proc/456/exe on this host) it degrades to "".
+    assert p["exe"] == ""
+
+
 # ─── NetworkCollector ─────────────────────────────────────────────────────────
 
 SS_OUTPUT = (
@@ -77,7 +103,7 @@ NETSTAT_OUTPUT = (
 def test_network_collector_parses_ss_output():
     from ubuntils.collectors.network import NetworkCollector
 
-    with mock.patch("ubuntils.collectors.network.run_command",
+    with mock.patch("ubuntils.collectors.source.run_command",
                     return_value=(SS_OUTPUT, "", 0)):
         result = NetworkCollector().collect()
 
@@ -97,7 +123,7 @@ def test_network_collector_falls_back_to_netstat():
             return ("", "not found", 1)
         return (NETSTAT_OUTPUT, "", 0)
 
-    with mock.patch("ubuntils.collectors.network.run_command", side_effect=fake_run):
+    with mock.patch("ubuntils.collectors.source.run_command", side_effect=fake_run):
         result = NetworkCollector().collect()
 
     assert "connections" in result
@@ -108,11 +134,31 @@ def test_network_collector_falls_back_to_netstat():
 def test_network_collector_both_fail():
     from ubuntils.collectors.network import NetworkCollector
 
-    with mock.patch("ubuntils.collectors.network.run_command",
+    with mock.patch("ubuntils.collectors.source.run_command",
                     return_value=("", "error", 1)):
         result = NetworkCollector().collect()
 
     assert result == {}
+
+
+def test_network_collector_reads_from_source(tmp_path):
+    from ubuntils.collectors.network import NetworkCollector
+    from ubuntils.collectors.source import BundleSource
+
+    captured = tmp_path / "captured"
+    captured.mkdir()
+    (captured / "ss.out").write_text(SS_OUTPUT)
+
+    command_index = {"ss": str(captured / "ss.out")}
+    src = BundleSource(root_dir=str(tmp_path / "files"), command_index=command_index)
+    result = NetworkCollector(source=src).collect()
+
+    assert "connections" in result
+    assert len(result["connections"]) >= 1
+    c = result["connections"][0]
+    assert c["proto"] == "tcp"
+    assert c["local_port"] == "22"
+    assert c["state"] == "LISTEN"
 
 
 # ─── UserCollector ────────────────────────────────────────────────────────────
@@ -277,7 +323,7 @@ def _run_systemd(cmd, **kwargs):
 def test_systemd_collector_parses_json_output():
     from ubuntils.collectors.systemd import SystemdCollector
 
-    with mock.patch("ubuntils.collectors.systemd.run_command", side_effect=_run_systemd):
+    with mock.patch("ubuntils.collectors.source.run_command", side_effect=_run_systemd):
         result = SystemdCollector().collect()
 
     assert "timers" in result
@@ -298,7 +344,7 @@ def test_systemd_collector_parses_text_output():
             return (EXEC_START_OUTPUT, "", 0)
         return ("", "error", 1)
 
-    with mock.patch("ubuntils.collectors.systemd.run_command", side_effect=run_text):
+    with mock.patch("ubuntils.collectors.source.run_command", side_effect=run_text):
         result = SystemdCollector().collect()
 
     assert "timers" in result
@@ -316,7 +362,7 @@ def test_systemd_collector_handles_missing_exec_start():
             return ("", "not found", 1)
         return ("", "error", 1)
 
-    with mock.patch("ubuntils.collectors.systemd.run_command", side_effect=run_no_exec):
+    with mock.patch("ubuntils.collectors.source.run_command", side_effect=run_no_exec):
         result = SystemdCollector().collect()
 
     assert "timers" in result
@@ -352,7 +398,7 @@ def test_ssh_collector_parses_authorized_keys():
 
     with mock.patch("builtins.open", side_effect=_open_ssh), \
          mock.patch("os.path.exists", return_value=True), \
-         mock.patch("os.stat", side_effect=_stat_ssh):
+         mock.patch("os.lstat", side_effect=_stat_ssh):
         result = SSHCollector().collect()
 
     assert "authorized_keys" in result
@@ -380,7 +426,7 @@ def test_ssh_collector_records_mtime():
 
     with mock.patch("builtins.open", side_effect=_open_ssh), \
          mock.patch("os.path.exists", return_value=True), \
-         mock.patch("os.stat", side_effect=_stat_ssh):
+         mock.patch("os.lstat", side_effect=_stat_ssh):
         result = SSHCollector().collect()
 
     assert isinstance(result["authorized_keys"][0]["file_mtime"], float)
@@ -540,6 +586,136 @@ def test_env_collector_skips_nonexistent_rc_files():
 
 
 # ─── Collector registry ───────────────────────────────────────────────────────
+
+def test_cron_collector_reads_from_source(tmp_path):
+    from ubuntils.collectors.cron import CronCollector
+    from ubuntils.collectors.source import BundleSource
+
+    files = tmp_path / "files"
+    (files / "etc" / "cron.d").mkdir(parents=True)
+    (files / "var" / "spool" / "cron" / "crontabs").mkdir(parents=True)
+    (files / "etc" / "crontab").write_text(SYSTEM_CRONTAB)
+    (files / "var" / "spool" / "cron" / "crontabs" / "alice").write_text(USER_CRONTAB_ALICE)
+
+    src = BundleSource(root_dir=str(files), command_index={})
+    result = CronCollector(source=src).collect()
+
+    system_entries = [e for e in result["cron_entries"] if e["source"] == "/etc/crontab"]
+    assert any("/tmp/evil.sh" in e["command"] for e in system_entries)
+    user_entries = [e for e in result["cron_entries"] if e["owner"] == "alice"]
+    assert len(user_entries) == 1
+    assert "/home/alice/backup.sh" in user_entries[0]["command"]
+
+
+def test_ssh_collector_reads_from_source(tmp_path):
+    from ubuntils.collectors.ssh import SSHCollector
+    from ubuntils.collectors.source import BundleSource
+
+    files = tmp_path / "files"
+    (files / "home" / "alice" / ".ssh").mkdir(parents=True)
+    (files / "etc").mkdir(parents=True)
+    (files / "etc" / "passwd").write_text(PASSWD_SSH)
+    (files / "home" / "alice" / ".ssh" / "authorized_keys").write_text(AUTH_KEYS_CONTENT)
+
+    src = BundleSource(root_dir=str(files), command_index={})
+    result = SSHCollector(source=src).collect()
+
+    assert len(result["authorized_keys"]) == 2
+    first = result["authorized_keys"][0]
+    assert first["username"] == "alice"
+    assert first["key_type"] == "ssh-rsa"
+    assert first["comment"] == "alice@laptop"
+    assert isinstance(first["file_mtime"], float)
+
+
+def test_sudoers_collector_reads_from_source(tmp_path):
+    from ubuntils.collectors.sudoers import SudoersCollector
+    from ubuntils.collectors.source import BundleSource
+
+    files = tmp_path / "files"
+    (files / "etc" / "sudoers.d").mkdir(parents=True)
+    (files / "etc" / "sudoers").write_text(SUDOERS_CONTENT)
+    (files / "etc" / "sudoers.d" / "bob").write_text(SUDOERS_D_CONTENT)
+
+    src = BundleSource(root_dir=str(files), command_index={})
+    result = SudoersCollector(source=src).collect()
+
+    rules = result["sudoers_rules"]
+    nopasswd_rules = [r for r in rules if "NOPASSWD" in r["options"]]
+    assert len(nopasswd_rules) >= 2
+    sources = {r["source"] for r in rules}
+    assert "/etc/sudoers.d/bob" in sources
+    for rule in rules:
+        assert not rule["raw_line"].startswith("#include")
+
+
+def test_env_collector_reads_from_source(tmp_path):
+    from ubuntils.collectors.environment import EnvironmentCollector
+    from ubuntils.collectors.source import BundleSource
+
+    files = tmp_path / "files"
+    (files / "etc" / "profile.d").mkdir(parents=True)
+    (files / "home" / "alice").mkdir(parents=True)
+    (files / "etc" / "passwd").write_text(PASSWD_ENV)
+    (files / "etc" / "environment").write_text(ETC_ENVIRONMENT)
+    (files / "etc" / "profile").write_text("")
+    (files / "home" / "alice" / ".bashrc").write_text(BASHRC_MALICIOUS)
+
+    src = BundleSource(root_dir=str(files), command_index={})
+    result = EnvironmentCollector(source=src).collect()
+
+    definitions = result["env_definitions"]
+    variables = [e["variable"] for e in definitions]
+    assert "LD_PRELOAD" in variables
+    assert "PATH" in variables
+    ld_preload = next(e for e in definitions if e["variable"] == "LD_PRELOAD")
+    assert ld_preload["owner"] == "alice"
+    assert ld_preload["value"] == "/tmp/evil.so"
+
+
+def test_systemd_collector_reads_from_source(tmp_path):
+    from ubuntils.collectors.systemd import SystemdCollector
+    from ubuntils.collectors.source import BundleSource
+
+    captured = tmp_path / "captured"
+    captured.mkdir()
+    (captured / "list_timers_json.out").write_text(TIMERS_JSON)
+    (captured / "exec_start.out").write_text(EXEC_START_OUTPUT)
+
+    command_index = {
+        "systemctl_list_timers_json": str(captured / "list_timers_json.out"),
+        "systemctl_show_execstart": str(captured / "exec_start.out"),
+    }
+    src = BundleSource(root_dir=str(tmp_path / "files"), command_index=command_index)
+    result = SystemdCollector(source=src).collect()
+
+    assert "timers" in result
+    assert len(result["timers"]) == 1
+    assert result["timers"][0]["unit"] == "apt-daily.timer"
+    assert result["timers"][0]["exec_start"] == "/usr/lib/apt/apt.systemd.daily install"
+
+
+def test_user_collector_reads_from_source(tmp_path):
+    from ubuntils.collectors.users import UserCollector
+    from ubuntils.collectors.source import BundleSource
+
+    files = tmp_path / "files"
+    (files / "etc").mkdir(parents=True)
+    (files / "etc" / "passwd").write_text(
+        "root:x:0:0:root:/root:/bin/bash\nalice:x:1000:1000::/home/alice:/bin/bash\n"
+    )
+    (files / "etc" / "group").write_text("sudo:x:27:alice\n")
+    (files / "etc" / "shadow").write_text("root:!:0:0:::::\nalice:$6$abc:0:0:::::\n")
+
+    src = BundleSource(root_dir=str(files), command_index={})
+    result = UserCollector(source=src).collect()
+
+    usernames = [u["username"] for u in result["users"]]
+    assert usernames == ["root", "alice"]
+    alice = next(u for u in result["users"] if u["username"] == "alice")
+    assert alice["groups"] == ["sudo"]
+    assert alice["password_locked"] is False
+
 
 def test_all_collectors_registered():
     from ubuntils.collectors import ALL_COLLECTORS

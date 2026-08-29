@@ -10,6 +10,7 @@ import structlog
 
 from ubuntils import __version__
 from ubuntils.collectors import ALL_COLLECTORS
+from ubuntils.collectors.source import BundleSource, LiveSource
 from ubuntils.detectors.custom_rules import load_custom_rules
 from ubuntils.detectors.engine import DetectionEngine
 from ubuntils.detectors.finding import Severity
@@ -24,6 +25,36 @@ from ubuntils.utils.logging import configure_logging
 from ubuntils.utils.since_parser import parse_since
 
 logger = structlog.get_logger()
+
+# Canonical capture lists for `ubuntils collect`. These are the files/commands
+# that can be captured as a *static* list — glob-expanded and per-PID/per-timer
+# dynamic paths cannot be represented here (see cli.py collect() docstring and
+# task-10-report.md "Known limitations" for the full list of gaps).
+COLLECT_FILES = [
+    "/etc/passwd",
+    "/etc/group",
+    "/etc/shadow",
+    "/etc/sudoers",
+    "/etc/ld.so.preload",
+    "/etc/environment",
+    "/etc/crontab",
+    "/etc/profile",
+]
+COLLECT_COMMANDS = [
+    ("ss", ["ss", "-tunap"]),
+    ("netstat", ["netstat", "-tunap"]),
+    ("systemctl_list_timers_json",
+     ["systemctl", "list-timers", "--all", "--no-pager", "--output", "json"]),
+    ("systemctl_list_timers_text",
+     ["systemctl", "list-timers", "--all", "--no-pager"]),
+]
+
+# Collectors that acquire artifacts by shelling out to a command (as opposed
+# to reading files) — these cannot produce meaningful data against a dead,
+# mounted image (there is no live process/kernel state to query with `ss` or
+# `systemctl`), so they are skipped with a note rather than silently
+# contaminating the report with the analyst's own host's live state.
+COMMAND_BASED_COLLECTOR_NAMES = ["NetworkCollector", "SystemdCollector"]
 
 
 def _ensure_root() -> None:
@@ -41,8 +72,8 @@ def _ensure_root() -> None:
         sys.exit(1)
 
 
-def _run_pipeline(remediate: bool, confirm: bool, allowlist=None, since=None,
-                  custom_rules=None) -> tuple:
+def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=None,
+                  custom_rules=None, bundle_info=None) -> tuple:
     """Run collectors → detection → timeline → optional remediation.
 
     Returns (findings, timeline, stats, scan_metadata, artifact_counts, remediation_results).
@@ -51,7 +82,18 @@ def _run_pipeline(remediate: bool, confirm: bool, allowlist=None, since=None,
     artifacts: dict = {}
     failures = 0
     artifact_counts: dict = {}
-    collectors = [C() for C in ALL_COLLECTORS]
+    collectors = [C(source=source) for C in ALL_COLLECTORS]
+
+    # A genuinely offline analysis is either a bundle replay (BundleSource) or
+    # a `--root` mounted-image LiveSource — in both cases there is no live
+    # process/kernel state to query, so command-based collectors are known to
+    # produce nothing and the live host's own logs must not be substituted in.
+    is_offline = isinstance(source, BundleSource) or (
+        isinstance(source, LiveSource) and getattr(source, "offline", False)
+    )
+    command_collectors_skipped = (
+        list(COMMAND_BASED_COLLECTOR_NAMES) if is_offline else []
+    )
 
     for collector in collectors:
         name = type(collector).__name__
@@ -68,7 +110,14 @@ def _run_pipeline(remediate: bool, confirm: bool, allowlist=None, since=None,
 
     try:
         findings = DetectionEngine(allowlist=allowlist, custom_rules=custom_rules).run(artifacts)
-        timeline = TimelineBuilder().build()
+        if is_offline:
+            # Building the timeline reads the analyst's own /var/log/* and
+            # journald — never appropriate when analyzing a bundle or a
+            # mounted image; correlating those events onto the findings would
+            # misattribute the analyst's host activity to the target host.
+            timeline = []
+        else:
+            timeline = TimelineBuilder().build()
         if since is not None:
             timeline = [e for e in timeline if e.timestamp >= since]
         correlate(findings, timeline)
@@ -97,6 +146,21 @@ def _run_pipeline(remediate: bool, confirm: bool, allowlist=None, since=None,
     ubuntu_version = get_ubuntu_version()
     arch = platform.machine()
 
+    # A bundle's manifest already records the *collected* host's own identity
+    # (hostname/ubuntu_version/run/timestamps). When analyzing a bundle, the
+    # report must describe the host that was collected, not the analyst's own
+    # machine running `analyze` — otherwise a bundle from victim-web01
+    # analyzed on analyst-laptop would misleadingly stamp analyst-laptop's
+    # hostname on the report. `--root` (no manifest) and live `scan` keep the
+    # local-host behavior, since there is no other host identity available.
+    manifest = (bundle_info or {}).get("manifest") if bundle_info else None
+    if manifest:
+        report_hostname = manifest.get("hostname") or socket.gethostname()
+        report_ubuntu_version = manifest.get("ubuntu_version") or ubuntu_version
+    else:
+        report_hostname = socket.gethostname()
+        report_ubuntu_version = ubuntu_version
+
     stats = {
         "ubuntu_version": ubuntu_version,
         "architecture": arch,
@@ -113,13 +177,21 @@ def _run_pipeline(remediate: bool, confirm: bool, allowlist=None, since=None,
 
     scan_metadata = {
         "tool_version": __version__,
-        "hostname": socket.gethostname(),
+        "hostname": report_hostname,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "ubuntu_version": ubuntu_version,
+        "ubuntu_version": report_ubuntu_version,
         "architecture": arch,
         "duration_s": duration,
         "collector_failures": failures,
+        "bundle_integrity": (bundle_info or {}).get("bundle_integrity", "live"),
+        "command_collectors_skipped": command_collectors_skipped,
+        "timeline_skipped_offline": is_offline,
     }
+
+    if manifest:
+        scan_metadata["collection_run_id"] = manifest.get("run_id", "")
+        scan_metadata["collected_at_utc_start"] = manifest.get("collected_at_utc_start", "")
+        scan_metadata["collected_at_utc_end"] = manifest.get("collected_at_utc_end", "")
 
     return findings, timeline, stats, scan_metadata, artifact_counts, remediation_results
 
@@ -174,8 +246,8 @@ def scan(output_json, remediate, confirm, config_path, output_path, since_value,
 
     if output_json or remediate:
         findings, timeline, stats, scan_metadata, artifact_counts, remediation_results = \
-            _run_pipeline(remediate=remediate, confirm=confirm, allowlist=allowlist,
-                          since=since, custom_rules=custom_rules)
+            _run_pipeline(source=LiveSource(root="/"), remediate=remediate, confirm=confirm,
+                          allowlist=allowlist, since=since, custom_rules=custom_rules)
 
         if output_json:
             report = JSONFormatter().format(
@@ -199,6 +271,124 @@ def scan(output_json, remediate, confirm, config_path, output_path, since_value,
     # Plain TUI mode: let the app run its own scan with live progress
     UbuntilsApp(verbose=verbose, allowlist=allowlist, since=since,
                 custom_rules=custom_rules).run()
+
+
+@main.command()
+@click.option("--output", "output_path", type=click.Path(dir_okay=False),
+              help="Bundle path to write (default ./ubuntils-bundle-<timestamp>.tar.gz)")
+@click.option("--verbose", is_flag=True, help="Enable verbose logging")
+def collect(output_path, verbose):
+    """Acquire a portable, tamper-evident artifact bundle from this host.
+
+    Captures the statically-listed files/commands in COLLECT_FILES/COLLECT_COMMANDS.
+    Known limitations (dynamic paths that cannot be captured as a fixed list):
+    glob-expanded paths (/etc/cron.d/*, /etc/sudoers.d/*, /etc/profile.d/*,
+    per-user ~/.ssh/authorized_keys), per-PID /proc/*/status and /proc/*/cmdline,
+    and the per-timer `systemctl show <service> --property=ExecStart` lookup.
+    """
+    _ensure_root()
+    configure_logging(json_mode=False, verbose=verbose)
+    from ubuntils.bundle.writer import write_bundle
+
+    if not output_path:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        output_path = f"ubuntils-bundle-{stamp}.tar.gz"
+
+    source = LiveSource(root="/")
+    written = write_bundle(
+        source=source,
+        files_to_capture=COLLECT_FILES,
+        commands_to_capture=COLLECT_COMMANDS,
+        out_path=output_path,
+        metadata={
+            "hostname": socket.gethostname(),
+            "ubuntu_version": get_ubuntu_version(),
+            "tool_version": __version__,
+        },
+    )
+    click.echo(f"Bundle written to {written}", err=True)
+
+
+@main.command()
+@click.argument("bundle", required=False, type=click.Path(exists=True, dir_okay=False))
+@click.option("--root", "root_path", type=click.Path(exists=True, file_okay=False),
+              help="Analyze a mounted image / artifact tree instead of a bundle")
+@click.option("--json", "output_json", is_flag=True, help="Output JSON instead of launching TUI")
+@click.option("--output", "output_path", type=click.Path(dir_okay=False),
+              help="Write JSON report to FILE (implies --json)")
+@click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False),
+              help="YAML allowlist to suppress findings")
+@click.option("--rules", "rules_path", type=click.Path(exists=True, dir_okay=False),
+              help="YAML file of custom pattern-match detection rules (adds detections)")
+@click.option("--since", "since_value",
+              help="Limit timeline to events since this time (e.g. '24h', '7d', '2026-05-20')")
+@click.option("--verbose", is_flag=True, help="Enable verbose logging")
+def analyze(bundle, root_path, output_json, output_path, config_path, rules_path,
+            since_value, verbose):
+    """Run detection + timeline against a collected bundle or a mounted image (--root)."""
+    if not bundle and not root_path:
+        raise click.UsageError("provide a BUNDLE path or --root PATH")
+    if bundle and root_path:
+        raise click.UsageError("provide either a BUNDLE or --root, not both")
+
+    if output_path:
+        output_json = True
+    configure_logging(json_mode=output_json, verbose=verbose)
+
+    from ubuntils.bundle import read_bundle
+
+    bundle_info = None
+    if bundle:
+        source, bundle_info = read_bundle(bundle)
+    else:
+        # A --root path is a mounted/extracted image, not the live host — no
+        # command-based collector may run live against it (see
+        # LiveSource.offline / _run_pipeline's command_collectors_skipped).
+        source = LiveSource(root=root_path, offline=True)
+
+    since = None
+    if since_value:
+        try:
+            since = parse_since(since_value)
+        except ValueError as exc:
+            raise click.ClickException(str(exc))
+
+    allowlist = None
+    if config_path:
+        try:
+            allowlist = load_allowlist(config_path)
+        except (ValueError, OSError) as exc:
+            raise click.ClickException(f"Invalid config {config_path}: {exc}")
+
+    custom_rules = None
+    if rules_path:
+        try:
+            custom_rules = load_custom_rules(rules_path)
+        except (ValueError, OSError) as exc:
+            raise click.ClickException(f"Invalid rules file {rules_path}: {exc}")
+
+    findings, timeline, stats, scan_metadata, artifact_counts, remediation_results = \
+        _run_pipeline(source=source, remediate=False, confirm=False,
+                      allowlist=allowlist, since=since, custom_rules=custom_rules,
+                      bundle_info=bundle_info)
+
+    if output_json:
+        report = JSONFormatter().format(
+            scan_metadata, artifact_counts, findings, timeline, remediation_results
+        )
+        if output_path:
+            with open(output_path, "w") as f:
+                f.write(report + "\n")
+            click.echo(f"Report written to {output_path}", err=True)
+        else:
+            click.echo(report)
+        return
+
+    # Not --json: launch TUI with pre-computed results, mirroring scan --remediate's override.
+    def _override():
+        return (findings, timeline, stats)
+
+    UbuntilsApp(verbose=verbose, _scan_override=_override).run()
 
 
 @main.command()

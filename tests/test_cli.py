@@ -6,6 +6,7 @@ import pytest
 from click.testing import CliRunner
 
 from ubuntils.cli import main, _run_pipeline
+from ubuntils.collectors.source import LiveSource
 from ubuntils.utils.since_parser import parse_since
 
 
@@ -138,7 +139,9 @@ def test_pipeline_since_filters_timeline():
     ):
         eng.return_value.run.return_value = []
         tb.return_value.build.return_value = [old, recent]
-        _, timeline, *_ = _run_pipeline(remediate=False, confirm=False, since=cutoff)
+        _, timeline, *_ = _run_pipeline(
+            source=LiveSource(), remediate=False, confirm=False, since=cutoff
+        )
     assert [e.description for e in timeline] == ["future"]
 
 
@@ -180,6 +183,50 @@ def test_scan_plain_launches_tui(runner):
     mock_app.run.assert_called_once()
 
 
+async def test_tui_app_scan_worker_uses_livesource():
+    """Verify that UbuntilsApp._run_scan() actually instantiates collectors with LiveSource(root="/")."""
+    from ubuntils.tui.app import UbuntilsApp
+
+    # Record what source values are passed to collector __init__
+    received_sources = []
+
+    class RecordingCollector:
+        def __init__(self, source=None):
+            received_sources.append(source)
+
+        def collect(self):
+            return {}
+
+    # Monkeypatch ALL_COLLECTORS to use our recording collector
+    # This must happen before creating the app so _run_scan uses it
+    with (
+        patch("ubuntils.tui.app.ALL_COLLECTORS", [RecordingCollector]),
+        patch("ubuntils.tui.app.DetectionEngine") as mock_engine,
+        patch("ubuntils.tui.app.TimelineBuilder") as mock_tl,
+        patch("ubuntils.tui.app.correlate"),
+        patch("ubuntils.tui.app.get_ubuntu_version", return_value="22.04"),
+    ):
+        mock_engine.return_value.run.return_value = []
+        mock_tl.return_value.build.return_value = []
+
+        # Create app WITHOUT _scan_override so the real _run_scan() executes
+        app = UbuntilsApp()
+
+        # Run the app with Textual's test harness
+        async with app.run_test() as pilot:
+            # Wait for the scan worker thread to complete
+            await pilot.pause(delay=0.5)
+
+    # Verify the collector was instantiated with LiveSource(root="/")
+    assert len(received_sources) == 1, f"Expected 1 collector instantiation, got {len(received_sources)}"
+    assert isinstance(
+        received_sources[0], LiveSource
+    ), f"Expected LiveSource but got {type(received_sources[0])}"
+    assert received_sources[0].root == "/", (
+        f"Expected root='/' but got root='{received_sources[0].root}'"
+    )
+
+
 def test_run_pipeline_handles_collector_failure():
     """_run_pipeline should continue and count failures when a collector raises."""
     from ubuntils.collectors import ALL_COLLECTORS
@@ -198,9 +245,9 @@ def test_run_pipeline_handles_collector_failure():
         mock_tl.return_value.build.return_value = []
         type(bad_collector).return_value = bad_collector
 
-        with patch("ubuntils.cli.ALL_COLLECTORS", [lambda: bad_collector]):
+        with patch("ubuntils.cli.ALL_COLLECTORS", [lambda source=None: bad_collector]):
             findings, timeline, stats, meta, counts, remed = _run_pipeline(
-                remediate=False, confirm=False
+                source=LiveSource(), remediate=False, confirm=False
             )
 
     assert stats["collector_failures"] >= 0
@@ -218,7 +265,7 @@ def test_run_pipeline_handles_engine_failure():
         mock_tl.return_value.build.return_value = []
 
         findings, timeline, stats, meta, counts, remed = _run_pipeline(
-            remediate=False, confirm=False
+            source=LiveSource(), remediate=False, confirm=False
         )
 
     assert findings == []
@@ -257,11 +304,22 @@ def test_run_pipeline_remediation_dry_run():
         mock_tl.return_value.build.return_value = []
 
         findings, timeline, stats, meta, counts, remed = _run_pipeline(
-            remediate=True, confirm=False
+            source=LiveSource(), remediate=True, confirm=False
         )
 
     assert len(remed) == 1
     assert remed[0].status == RemediationStatus.SKIPPED
+
+
+def test_run_pipeline_accepts_source_and_records_live_integrity(tmp_path):
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
+    src = LiveSource(root=str(tmp_path))
+
+    findings, timeline, stats, meta, counts, remediation = _run_pipeline(
+        source=src, remediate=False, confirm=False
+    )
+    assert meta["bundle_integrity"] == "live"
 
 
 def test_parse_since_hours():
@@ -318,6 +376,9 @@ def test_scan_rules_flag_loads_and_detects(runner, tmp_path):
     """--rules findings should appear in the JSON report alongside built-in ones."""
 
     class FakeProcessCollector:
+        def __init__(self, source=None):
+            self.source = source
+
         def collect(self):
             return {"processes": [
                 {"pid": 1, "name": "x", "exe": "/tmp/evilbin", "cmdline": "evilbin --x"}]}
@@ -370,7 +431,7 @@ def test_pipeline_attaches_related_events(monkeypatch):
     monkeypatch.setattr(cli.TimelineBuilder, "build", lambda self: [event])
 
     with patch("ubuntils.cli.ALL_COLLECTORS", []):
-        result = cli._run_pipeline(remediate=False, confirm=False)
+        result = cli._run_pipeline(source=LiveSource(), remediate=False, confirm=False)
     findings = result[0]
     assert findings[0].related_events
     assert "bob" in findings[0].related_events[0].description

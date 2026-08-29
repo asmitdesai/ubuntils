@@ -1,0 +1,145 @@
+from __future__ import annotations
+
+import glob as _glob
+import os
+from abc import ABC, abstractmethod
+
+from ubuntils.utils.shell import run_command
+
+
+class ArtifactSource(ABC):
+    """Decouples *acquisition* (read a file / run a command) from parsing.
+
+    Collectors call these methods with absolute target paths (e.g. "/etc/passwd")
+    and never know whether they are reading a live host or a collected bundle.
+    """
+
+    @abstractmethod
+    def read_text(self, path: str) -> str:
+        ...
+
+    @abstractmethod
+    def read_bytes(self, path: str) -> bytes:
+        ...
+
+    @abstractmethod
+    def exists(self, path: str) -> bool:
+        ...
+
+    @abstractmethod
+    def lstat(self, path: str) -> os.stat_result:
+        ...
+
+    @abstractmethod
+    def glob(self, pattern: str) -> list[str]:
+        ...
+
+    @abstractmethod
+    def run(self, name: str, argv: list[str], timeout: int = 30) -> tuple[str, str, int]:
+        ...
+
+
+class SourceContainmentError(Exception):
+    """Raised when a resolved path would escape the configured root (e.g. via
+    a symlink inside a mounted --root image pointing outside the image)."""
+
+
+class LiveSource(ArtifactSource):
+    """Reads from a live filesystem tree (root="/" for the running host,
+    or a mounted image path for offline --root analysis) and runs commands live.
+
+    ``offline`` marks a genuinely offline --root analysis (a mounted/extracted
+    image, not the live host) — in that mode ``run()`` never executes a real
+    command, since there is no live process/kernel state to query against a
+    dead image. Live ``scan``/`collect`` (root="/") always leaves this False.
+    """
+
+    def __init__(self, root: str = "/", offline: bool = False):
+        self.root = root.rstrip("/") or "/"
+        self.offline = offline
+
+    def _resolve(self, path: str) -> str:
+        # path is a target-absolute path like "/etc/passwd"; join under root.
+        resolved = os.path.join(self.root, path.lstrip("/"))
+        if self.root != "/":
+            # Genuine --root (mounted image) analysis: verify a symlink inside
+            # the image can't walk us out to the analyst's real filesystem.
+            root_real = os.path.realpath(self.root)
+            resolved_real = os.path.realpath(resolved)
+            if resolved_real != root_real and not resolved_real.startswith(root_real + os.sep):
+                raise SourceContainmentError(
+                    f"path {path!r} resolves outside --root {self.root!r} "
+                    f"(resolved to {resolved_real!r}) — refusing to follow"
+                )
+        return resolved
+
+    def read_text(self, path: str) -> str:
+        with open(self._resolve(path), encoding="utf-8", errors="replace") as f:
+            return f.read()
+
+    def read_bytes(self, path: str) -> bytes:
+        with open(self._resolve(path), "rb") as f:
+            return f.read()
+
+    def exists(self, path: str) -> bool:
+        try:
+            return os.path.exists(self._resolve(path))
+        except SourceContainmentError:
+            return False
+
+    def lstat(self, path: str) -> os.stat_result:
+        return os.lstat(self._resolve(path))
+
+    def glob(self, pattern: str) -> list[str]:
+        resolved = self._resolve(pattern)
+        prefix = self.root if self.root != "/" else ""
+        results = []
+        for hit in sorted(_glob.glob(resolved)):
+            # Map back to a target-absolute path (strip the root prefix).
+            results.append(hit[len(prefix):] if prefix and hit.startswith(prefix) else hit)
+        return results
+
+    def run(self, name: str, argv: list[str], timeout: int = 30) -> tuple[str, str, int]:
+        if self.offline:
+            return "", "command execution disabled for offline --root analysis", -1
+        return run_command(argv, timeout=timeout)
+
+
+class BundleSource(ArtifactSource):
+    """Reads files captured into a bundle and replays captured command output.
+    Never touches the live host or runs a command — pure offline replay."""
+
+    def __init__(self, root_dir: str, command_index: dict[str, str]):
+        self.root_dir = root_dir.rstrip("/")
+        self.command_index = command_index
+
+    def _resolve(self, path: str) -> str:
+        return os.path.join(self.root_dir, path.lstrip("/"))
+
+    def read_text(self, path: str) -> str:
+        with open(self._resolve(path), encoding="utf-8", errors="replace") as f:
+            return f.read()
+
+    def read_bytes(self, path: str) -> bytes:
+        with open(self._resolve(path), "rb") as f:
+            return f.read()
+
+    def exists(self, path: str) -> bool:
+        return os.path.exists(self._resolve(path))
+
+    def lstat(self, path: str) -> os.stat_result:
+        return os.lstat(self._resolve(path))
+
+    def glob(self, pattern: str) -> list[str]:
+        resolved = self._resolve(pattern)
+        results = []
+        for hit in sorted(_glob.glob(resolved)):
+            results.append("/" + os.path.relpath(hit, self.root_dir))
+        return results
+
+    def run(self, name: str, argv: list[str], timeout: int = 30) -> tuple[str, str, int]:
+        captured = self.command_index.get(name)
+        if captured is None:
+            return "", f"command '{name}' not captured in bundle", -1
+        with open(captured, encoding="utf-8", errors="replace") as f:
+            return f.read(), "", 0

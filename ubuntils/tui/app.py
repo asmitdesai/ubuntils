@@ -9,6 +9,7 @@ from textual.app import App, ComposeResult
 from textual.message import Message
 
 from ubuntils.collectors import ALL_COLLECTORS
+from ubuntils.collectors.source import LiveSource
 from ubuntils.detectors.engine import DetectionEngine
 from ubuntils.detectors.finding import Finding, Severity
 from ubuntils.timeline.builder import TimelineBuilder, TimelineEvent
@@ -70,7 +71,7 @@ class UbuntilsApp(App):
         start = time.monotonic()
         artifacts: dict = {}
         failures = 0
-        collectors = [C() for C in ALL_COLLECTORS]
+        collectors = [C(source=LiveSource(root="/")) for C in ALL_COLLECTORS]
 
         for i, collector in enumerate(collectors):
             name = type(collector).__name__

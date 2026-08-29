@@ -33,6 +33,8 @@ ubuntils runs in four sequential stages:
 
 No network calls are made. No data leaves the system. This holds for every feature, including custom rules and correlation — all of it runs against locally collected artifacts.
 
+`ubuntils scan` is unchanged by everything below — it is still 100% live, single-host, and every existing flag works identically. Two additional commands, `collect` and `analyze`, split the same detection/timeline pipeline into an offline-friendly acquire-then-analyze workflow for cases where you can't (or don't want to) run detection directly on the host under investigation — see [Offline analysis: collect and analyze](#offline-analysis-collect-and-analyze) below, including its detection-coverage caveats.
+
 ---
 
 ## Installation
@@ -93,6 +95,26 @@ sudo ubuntils scan --remediate --confirm
 ubuntils version
 ```
 
+**Collect a tamper-evident bundle for later or offline analysis:**
+
+```bash
+sudo ubuntils collect --output /path/to/bundle.tar.gz
+```
+
+**Analyze a previously collected bundle (no root required):**
+
+```bash
+ubuntils analyze /path/to/bundle.tar.gz --json
+```
+
+**Analyze a mounted forensic image or extracted filesystem tree instead of a bundle:**
+
+```bash
+ubuntils analyze --root /mnt/forensic-image --json
+```
+
+See [Offline analysis: collect and analyze](#offline-analysis-collect-and-analyze) for the bundle format and — importantly — what offline analysis cannot detect compared to a live `scan`.
+
 ---
 
 ## Flags and configuration
@@ -107,6 +129,22 @@ ubuntils scan [OPTIONS]
   --since TIME        Limit the timeline to events since TIME (e.g. '24h', '7d', '2026-05-20')
   --rules FILE        YAML file of custom detection rules to add (see below)
   --verbose           Verbose structlog output
+
+ubuntils collect [OPTIONS]
+  --output FILE       Bundle path to write (default ./ubuntils-bundle-<timestamp>.tar.gz)
+  --verbose           Verbose structlog output
+
+ubuntils analyze (BUNDLE | --root PATH) [OPTIONS]
+  --root PATH         Analyze a mounted image / artifact tree instead of a bundle
+  --json              Output JSON instead of launching the TUI
+  --output FILE       Write the JSON report to FILE (implies --json)
+  --config FILE       YAML allowlist of findings to suppress (same format as scan)
+  --rules FILE        YAML file of custom detection rules to add (same format as scan)
+  --since TIME        Limit the timeline to events since TIME (e.g. '24h', '7d', '2026-05-20')
+  --verbose           Verbose structlog output
+
+ubuntils version
+  Print version string and exit
 ```
 
 ### False-positive allowlisting (`--config`)
@@ -162,7 +200,82 @@ sudo ubuntils scan --json --rules custom_rules.yaml
 
 ### Report integrity
 
-Every `--json` report ends with a `report_sha256` field — a SHA-256 over the canonical report content. This makes a collected triage artifact tamper-evident and lets you reference a specific scan by digest in a case file. The report also records `tool_version`, `hostname`, and a UTC `generated_at` timestamp under `scan_metadata`.
+Every `--json` report ends with a `report_sha256` field — a SHA-256 over the canonical report content. This makes a collected triage artifact tamper-evident and lets you reference a specific scan by digest in a case file. The report also records `tool_version`, `hostname`, and a UTC `generated_at` timestamp under `scan_metadata`. For `scan` and `analyze --root`, `hostname`/`ubuntu_version` describe the machine `ubuntils` is running on. For `analyze BUNDLE`, they instead come from the bundle's own manifest — the host that was *collected*, not the host running `analyze` — along with `collection_run_id` and the collection's `collected_at_utc_start`/`collected_at_utc_end`, so the report's chain-of-custody record follows the evidence rather than the analyst's workstation.
+
+---
+
+## Offline analysis: collect and analyze
+
+`ubuntils scan` runs collection, detection, and timeline together against the live host. `collect` and `analyze` split that pipeline in two: `collect` acquires a tamper-evident bundle from a host (no detection runs), and `analyze` runs the same detection/timeline pipeline used by `scan` against a bundle, or against a mounted image via `--root`, without requiring root and without touching the original host again. This is for cases where you want to acquire artifacts once and analyze them later, elsewhere, or repeatedly — or where you're triaging a disk image rather than a running system.
+
+### `ubuntils collect`
+
+```bash
+sudo ubuntils collect --output /path/to/bundle.tar.gz
+```
+
+Requires root, like `scan`. Reads a fixed list of files (`/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/sudoers`, `/etc/ld.so.preload`, `/etc/environment`, `/etc/crontab`, `/etc/profile`) and runs a fixed list of commands (`ss -tunap`, `netstat -tunap`, `systemctl list-timers` in both JSON and text form), hashes each captured item, and writes everything plus a `manifest.json` into a `.tar.gz` bundle. If `--output` is omitted, the bundle is written to `./ubuntils-bundle-<UTC timestamp>.tar.gz` in the current directory.
+
+### `ubuntils analyze`
+
+```bash
+ubuntils analyze BUNDLE.tar.gz [--json] [--output FILE] [--config FILE] [--rules FILE] [--since TIME]
+ubuntils analyze --root /mnt/forensic-image [--json] [--output FILE] [--config FILE] [--rules FILE] [--since TIME]
+```
+
+Takes either a bundle path as a positional argument or `--root PATH` pointing at a mounted image / extracted filesystem tree — not both. Runs the identical detection engine, custom rules, and allowlist logic used by `scan`. Does not require root. Command-based collectors (`ss`/`netstat`, `systemctl list-timers`) are never executed against a bundle or a `--root` image — there is no live process/kernel state to query on a dead image, so those collectors are skipped with a note recorded in `scan_metadata.command_collectors_skipped` rather than silently substituting the analyst's own host's live command output. The timeline is skipped the same way (`scan_metadata.timeline_skipped_offline: true`) — building it would otherwise read the analyst's own `/var/log/*` and journald and misattribute that activity to the host under investigation. See [Offline analysis: collect and analyze](#offline-analysis-collect-and-analyze) for the full list of offline detection-coverage gaps.
+
+### Bundle format
+
+A bundle is a gzipped tarball with everything under a `bundle/` prefix:
+
+```
+bundle/
+├── manifest.json
+├── files/
+│   ├── etc/passwd
+│   ├── etc/shadow
+│   └── ...            # every captured file, path-flattened under files/
+└── commands/
+    ├── ss.txt
+    ├── netstat.txt
+    ├── systemctl_list_timers_json.txt
+    └── systemctl_list_timers_text.txt
+```
+
+`manifest.json` schema:
+
+| Field | Type | Description |
+|---|---|---|
+| `run_id` | string | UUID generated fresh for each `collect` run |
+| `host_id` | string | Reserved for future multi-host correlation; currently empty |
+| `hostname` | string | `socket.gethostname()` at collection time |
+| `ubuntu_version` | string | Detected Ubuntu release string |
+| `collected_at_utc_start` / `collected_at_utc_end` | string (ISO 8601) | Wall-clock bounds of the collection run |
+| `tool_version` | string | ubuntils version that produced the bundle |
+| `files[]` | array | One entry per captured file: `source_path`, `bundle_path`, `sha256`, `size`, `mtime`, `ctime` (a file absent/unreadable on the source host is recorded with `sha256: ""`, `size: -1` rather than aborting the collection) |
+| `commands[]` | array | One entry per captured command: `name`, `argv`, `bundle_path`, `sha256`, `exit_code` |
+| `bundle_sha256` | string | SHA-256 over the rest of the manifest (everything above, canonically serialized) — the tamper-evidence anchor for the whole bundle |
+
+### Bundle integrity in JSON output
+
+`analyze`'s `scan_metadata.bundle_integrity` reports one of three values:
+
+- `"live"` — `scan` and `analyze --root` report this; there is no bundle to verify.
+- `"ok"` — `analyze BUNDLE` verified `bundle_sha256` against the manifest and every captured file's SHA-256 against its bundle content; nothing has been altered since `collect` wrote it.
+- `"mismatch"` — the manifest digest or a file's content hash didn't match. Treat findings from a `"mismatch"` bundle with suspicion — something in the bundle was modified, truncated, or corrupted after collection, and any detection results derived from it should not be trusted as chain-of-custody-clean.
+
+### ⚠️ Offline analysis has real detection gaps — read this before relying on it
+
+**A bundle- or `--root`-sourced `analyze` run does not have detection parity with a live `scan`.** These are not edge cases; they are structural limitations of static, offline acquisition, and they will silently produce fewer (or zero) findings for the affected rules rather than an error — the tool cannot tell the difference between "found nothing" and "couldn't look":
+
+- **`PROCESS_MASQUERADE` and `PROCESS_SUSPICIOUS_CONNECTION` will always report zero findings in offline mode.** Both rules key off a process's `exe` field, which is populated by reading the live `/proc/<pid>/exe` symlink target on the running host. A bundle has no live `/proc` to read, and `--root` points at a mounted filesystem tree with no `/proc` either — there is currently no mechanism to capture or reconstruct a resolved exe-symlink target offline, so `exe` is always empty and both rules never fire, regardless of what's actually on the host.
+- **Process enumeration doesn't happen at all offline.** `collect` has no per-PID capture step (`/proc/*/status`, `/proc/*/cmdline`), so no processes exist in a bundle to analyze in the first place — this is the same root cause as the point above, from the acquisition side.
+- **`CRON_TMP_PATH`, `SUDOERS_NOPASSWD`, and `SSH_UNAUTHORIZED_KEY` are limited or absent from bundle-sourced analysis.** `collect`'s file list is static and cannot glob-expand `/etc/cron.d/*`, `/etc/sudoers.d/*`, `/etc/profile.d/*`, or per-user `~/.ssh/authorized_keys` — only `/etc/crontab`, `/etc/sudoers`, and `/etc/environment`/`/etc/profile` are captured. (`--root` against a full mounted filesystem tree does not have this gap, since the real directories are present on disk.)
+- **`SUSPICIOUS_SYSTEMD_TIMER` detection is weakened offline.** Timers themselves show up (from the captured `systemctl list-timers` output), but each timer's `ExecStart` command comes from a separate per-unit `systemctl show <service> --property=ExecStart` call that `collect` doesn't make, so the `exec_start` field is empty and the rule can't evaluate what the timer actually runs.
+- **No timeline, and no finding↔timeline correlation, offline.** `analyze` never builds a timeline for a bundle or a `--root` image — doing so would read the *analyst's own* `/var/log/syslog`, journald, and auditd rather than the target host's, misattributing the analyst's activity to the host under investigation. `scan_metadata.timeline_skipped_offline` is `true` whenever this applies, the JSON `timeline` array is empty, and no finding carries `related_events`. Command-based collectors (`ss`/`netstat`, `systemctl list-timers`) are skipped the same way and for the same reason, recorded in `scan_metadata.command_collectors_skipped`.
+
+**When it matters:** if you're triaging a live, reachable host, use `sudo ubuntils scan` — it has full detection coverage. Use `collect`/`analyze` when you need to acquire once and analyze elsewhere, need to analyze without root, or are working from a disk image where `scan` isn't an option at all — and treat a clean `analyze` result for the rules above as "not checked," not "checked and clean."
 
 ---
 
@@ -420,7 +533,8 @@ Remediation:   not available
     "ubuntu_version": "Ubuntu 22.04.3 LTS",
     "architecture": "x86_64",
     "duration_s": 2.84,
-    "collector_failures": 0
+    "collector_failures": 0,
+    "bundle_integrity": "live"
   },
   "artifact_counts": {
     "ProcessCollector": 142,
@@ -472,7 +586,7 @@ Remediation:   not available
 }
 ```
 
-`remediation_results` appears as an additional top-level key only when `--remediate` is passed. `report_sha256` is always present and is computed over the rest of the document.
+`remediation_results` appears as an additional top-level key only when `--remediate` is passed. `report_sha256` is always present and is computed over the rest of the document. `scan_metadata.bundle_integrity` is `"live"` for `scan` and `analyze --root`, `"ok"` for a verified bundle passed to `analyze`, and `"mismatch"` if a bundle's content doesn't match its manifest — see [Bundle integrity in JSON output](#bundle-integrity-in-json-output).
 
 `related_events` and `guided_remediation` appear on a finding only when they have content. `related_events` holds up to five timeline events matched to the finding by artifact path and rule keywords, most recent first — a surfacing aid, not a causal claim. `guided_remediation` is a reviewed command sequence for you to run by hand; ubuntils never executes it.
 
@@ -571,7 +685,15 @@ Running without root produces a partial scan with warnings. Critical paths like 
 
 VirusTotal hash lookups and MISP IOC export were dropped from this release. VirusTotal only answers for *known* hashes — the case `rkhunter` already covers, and the opposite of the novel-technique gap ubuntils targets — and both features would have put a network call inside a tool whose value rests on making none. The offline guarantee stays absolute.
 
-**v2.0.0**
+**v2.0.0 — offline collect/analyze split**
+- [x] `ubuntils collect` — acquires a tamper-evident bundle (`manifest.json` + hashed files/commands) from a live host, no detection
+- [x] `ubuntils analyze (BUNDLE | --root PATH)` — runs the same detection/timeline pipeline as `scan` against a bundle or a mounted image, no root required
+- [x] `bundle_integrity` (`live`/`ok`/`mismatch`) surfaced in `scan_metadata`
+- [x] Documented detection-coverage gaps in offline mode (`PROCESS_MASQUERADE`, `PROCESS_SUSPICIOUS_CONNECTION`, and reduced coverage for cron/sudoers/SSH glob paths and systemd timer `ExecStart`)
+- [ ] Trustworthy detection: confidence scoring, `--baseline` suppression, replacing mtime-only heuristics in `SSH_UNAUTHORIZED_KEY`/`SHELL_RC_MODIFICATION` — planned, not yet started
+- [ ] Coverage pack: `PACKAGE_TAMPERED`, `IMMUTABLE_FLAG_SET`, `PAM_BACKDOOR`, `KERNEL_MODULE_SUSPICIOUS`, `SETUID_INVENTORY` — planned, not yet started
+
+**v3.0.0 / v4.0.0 (exploratory)**
 - Web dashboard for multi-host triage
 - Wazuh integration for alert forwarding
 - macOS support

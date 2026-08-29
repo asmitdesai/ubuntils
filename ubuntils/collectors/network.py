@@ -1,12 +1,11 @@
 from ubuntils.collectors.base import BaseCollector
-from ubuntils.utils.shell import run_command
 
 
 class NetworkCollector(BaseCollector):
     def collect(self) -> dict:
-        stdout, _, returncode = run_command(["ss", "-tunap"])
+        stdout, _, returncode = self.source.run("ss", ["ss", "-tunap"])
         if returncode != 0:
-            stdout, _, returncode = run_command(["netstat", "-tunap"])
+            stdout, _, returncode = self.source.run("netstat", ["netstat", "-tunap"])
         if returncode != 0:
             return {}
 

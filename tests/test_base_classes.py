@@ -1,6 +1,7 @@
 import pytest
 from ubuntils.detectors.finding import Finding, RemediationResult, Severity, RemediationStatus
 from ubuntils.collectors.base import BaseCollector
+from ubuntils.collectors.source import LiveSource, BundleSource
 from ubuntils.remediators.base import BaseRemediator
 
 
@@ -97,6 +98,25 @@ def test_base_collector_subclass_valid():
     c = GoodCollector()
     assert callable(c.collect)
     assert c.collect() == {"key": "value"}
+
+
+def test_base_collector_defaults_to_livesource():
+    class Dummy(BaseCollector):
+        def collect(self):
+            return {}
+
+    c = Dummy()
+    assert isinstance(c.source, LiveSource)
+
+
+def test_base_collector_accepts_injected_source(tmp_path):
+    class Dummy(BaseCollector):
+        def collect(self):
+            return {}
+
+    src = BundleSource(root_dir=str(tmp_path), command_index={})
+    c = Dummy(source=src)
+    assert c.source is src
 
 
 # --- Task 7: BaseRemediator ---
