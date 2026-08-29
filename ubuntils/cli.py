@@ -10,7 +10,7 @@ import structlog
 
 from ubuntils import __version__
 from ubuntils.collectors import ALL_COLLECTORS
-from ubuntils.collectors.source import LiveSource
+from ubuntils.collectors.source import BundleSource, LiveSource
 from ubuntils.detectors.custom_rules import load_custom_rules
 from ubuntils.detectors.engine import DetectionEngine
 from ubuntils.detectors.finding import Severity
@@ -49,6 +49,13 @@ COLLECT_COMMANDS = [
      ["systemctl", "list-timers", "--all", "--no-pager"]),
 ]
 
+# Collectors that acquire artifacts by shelling out to a command (as opposed
+# to reading files) — these cannot produce meaningful data against a dead,
+# mounted image (there is no live process/kernel state to query with `ss` or
+# `systemctl`), so they are skipped with a note rather than silently
+# contaminating the report with the analyst's own host's live state.
+COMMAND_BASED_COLLECTOR_NAMES = ["NetworkCollector", "SystemdCollector"]
+
 
 def _ensure_root() -> None:
     """Re-exec under sudo if not running as root, preserving the active venv/conda PATH."""
@@ -77,6 +84,17 @@ def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=
     artifact_counts: dict = {}
     collectors = [C(source=source) for C in ALL_COLLECTORS]
 
+    # A genuinely offline analysis is either a bundle replay (BundleSource) or
+    # a `--root` mounted-image LiveSource — in both cases there is no live
+    # process/kernel state to query, so command-based collectors are known to
+    # produce nothing and the live host's own logs must not be substituted in.
+    is_offline = isinstance(source, BundleSource) or (
+        isinstance(source, LiveSource) and getattr(source, "offline", False)
+    )
+    command_collectors_skipped = (
+        list(COMMAND_BASED_COLLECTOR_NAMES) if is_offline else []
+    )
+
     for collector in collectors:
         name = type(collector).__name__
         try:
@@ -92,7 +110,14 @@ def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=
 
     try:
         findings = DetectionEngine(allowlist=allowlist, custom_rules=custom_rules).run(artifacts)
-        timeline = TimelineBuilder().build()
+        if is_offline:
+            # Building the timeline reads the analyst's own /var/log/* and
+            # journald — never appropriate when analyzing a bundle or a
+            # mounted image; correlating those events onto the findings would
+            # misattribute the analyst's host activity to the target host.
+            timeline = []
+        else:
+            timeline = TimelineBuilder().build()
         if since is not None:
             timeline = [e for e in timeline if e.timestamp >= since]
         correlate(findings, timeline)
@@ -121,6 +146,21 @@ def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=
     ubuntu_version = get_ubuntu_version()
     arch = platform.machine()
 
+    # A bundle's manifest already records the *collected* host's own identity
+    # (hostname/ubuntu_version/run/timestamps). When analyzing a bundle, the
+    # report must describe the host that was collected, not the analyst's own
+    # machine running `analyze` — otherwise a bundle from victim-web01
+    # analyzed on analyst-laptop would misleadingly stamp analyst-laptop's
+    # hostname on the report. `--root` (no manifest) and live `scan` keep the
+    # local-host behavior, since there is no other host identity available.
+    manifest = (bundle_info or {}).get("manifest") if bundle_info else None
+    if manifest:
+        report_hostname = manifest.get("hostname") or socket.gethostname()
+        report_ubuntu_version = manifest.get("ubuntu_version") or ubuntu_version
+    else:
+        report_hostname = socket.gethostname()
+        report_ubuntu_version = ubuntu_version
+
     stats = {
         "ubuntu_version": ubuntu_version,
         "architecture": arch,
@@ -137,14 +177,21 @@ def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=
 
     scan_metadata = {
         "tool_version": __version__,
-        "hostname": socket.gethostname(),
+        "hostname": report_hostname,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "ubuntu_version": ubuntu_version,
+        "ubuntu_version": report_ubuntu_version,
         "architecture": arch,
         "duration_s": duration,
         "collector_failures": failures,
         "bundle_integrity": (bundle_info or {}).get("bundle_integrity", "live"),
+        "command_collectors_skipped": command_collectors_skipped,
+        "timeline_skipped_offline": is_offline,
     }
+
+    if manifest:
+        scan_metadata["collection_run_id"] = manifest.get("run_id", "")
+        scan_metadata["collected_at_utc_start"] = manifest.get("collected_at_utc_start", "")
+        scan_metadata["collected_at_utc_end"] = manifest.get("collected_at_utc_end", "")
 
     return findings, timeline, stats, scan_metadata, artifact_counts, remediation_results
 
@@ -294,7 +341,10 @@ def analyze(bundle, root_path, output_json, output_path, config_path, rules_path
     if bundle:
         source, bundle_info = read_bundle(bundle)
     else:
-        source = LiveSource(root=root_path)
+        # A --root path is a mounted/extracted image, not the live host — no
+        # command-based collector may run live against it (see
+        # LiveSource.offline / _run_pipeline's command_collectors_skipped).
+        source = LiveSource(root=root_path, offline=True)
 
     since = None
     if since_value:

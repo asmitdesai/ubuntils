@@ -200,7 +200,7 @@ sudo ubuntils scan --json --rules custom_rules.yaml
 
 ### Report integrity
 
-Every `--json` report ends with a `report_sha256` field — a SHA-256 over the canonical report content. This makes a collected triage artifact tamper-evident and lets you reference a specific scan by digest in a case file. The report also records `tool_version`, `hostname`, and a UTC `generated_at` timestamp under `scan_metadata`.
+Every `--json` report ends with a `report_sha256` field — a SHA-256 over the canonical report content. This makes a collected triage artifact tamper-evident and lets you reference a specific scan by digest in a case file. The report also records `tool_version`, `hostname`, and a UTC `generated_at` timestamp under `scan_metadata`. For `scan` and `analyze --root`, `hostname`/`ubuntu_version` describe the machine `ubuntils` is running on. For `analyze BUNDLE`, they instead come from the bundle's own manifest — the host that was *collected*, not the host running `analyze` — along with `collection_run_id` and the collection's `collected_at_utc_start`/`collected_at_utc_end`, so the report's chain-of-custody record follows the evidence rather than the analyst's workstation.
 
 ---
 
@@ -223,7 +223,7 @@ ubuntils analyze BUNDLE.tar.gz [--json] [--output FILE] [--config FILE] [--rules
 ubuntils analyze --root /mnt/forensic-image [--json] [--output FILE] [--config FILE] [--rules FILE] [--since TIME]
 ```
 
-Takes either a bundle path as a positional argument or `--root PATH` pointing at a mounted image / extracted filesystem tree — not both. Runs the identical detection engine, custom rules, allowlist, and correlation logic used by `scan`, then prints JSON (`--json`/`--output`) or opens the same results TUI. Does not require root, since it never touches live process/kernel state — it only reads files already on disk (from the bundle or the mounted tree).
+Takes either a bundle path as a positional argument or `--root PATH` pointing at a mounted image / extracted filesystem tree — not both. Runs the identical detection engine, custom rules, and allowlist logic used by `scan`. Does not require root. Command-based collectors (`ss`/`netstat`, `systemctl list-timers`) are never executed against a bundle or a `--root` image — there is no live process/kernel state to query on a dead image, so those collectors are skipped with a note recorded in `scan_metadata.command_collectors_skipped` rather than silently substituting the analyst's own host's live command output. The timeline is skipped the same way (`scan_metadata.timeline_skipped_offline: true`) — building it would otherwise read the analyst's own `/var/log/*` and journald and misattribute that activity to the host under investigation. See [Offline analysis: collect and analyze](#offline-analysis-collect-and-analyze) for the full list of offline detection-coverage gaps.
 
 ### Bundle format
 
@@ -273,6 +273,7 @@ bundle/
 - **Process enumeration doesn't happen at all offline.** `collect` has no per-PID capture step (`/proc/*/status`, `/proc/*/cmdline`), so no processes exist in a bundle to analyze in the first place — this is the same root cause as the point above, from the acquisition side.
 - **`CRON_TMP_PATH`, `SUDOERS_NOPASSWD`, and `SSH_UNAUTHORIZED_KEY` are limited or absent from bundle-sourced analysis.** `collect`'s file list is static and cannot glob-expand `/etc/cron.d/*`, `/etc/sudoers.d/*`, `/etc/profile.d/*`, or per-user `~/.ssh/authorized_keys` — only `/etc/crontab`, `/etc/sudoers`, and `/etc/environment`/`/etc/profile` are captured. (`--root` against a full mounted filesystem tree does not have this gap, since the real directories are present on disk.)
 - **`SUSPICIOUS_SYSTEMD_TIMER` detection is weakened offline.** Timers themselves show up (from the captured `systemctl list-timers` output), but each timer's `ExecStart` command comes from a separate per-unit `systemctl show <service> --property=ExecStart` call that `collect` doesn't make, so the `exec_start` field is empty and the rule can't evaluate what the timer actually runs.
+- **No timeline, and no finding↔timeline correlation, offline.** `analyze` never builds a timeline for a bundle or a `--root` image — doing so would read the *analyst's own* `/var/log/syslog`, journald, and auditd rather than the target host's, misattributing the analyst's activity to the host under investigation. `scan_metadata.timeline_skipped_offline` is `true` whenever this applies, the JSON `timeline` array is empty, and no finding carries `related_events`. Command-based collectors (`ss`/`netstat`, `systemctl list-timers`) are skipped the same way and for the same reason, recorded in `scan_metadata.command_collectors_skipped`.
 
 **When it matters:** if you're triaging a live, reachable host, use `sudo ubuntils scan` — it has full detection coverage. Use `collect`/`analyze` when you need to acquire once and analyze elsewhere, need to analyze without root, or are working from a disk image where `scan` isn't an option at all — and treat a clean `analyze` result for the rules above as "not checked," not "checked and clean."
 

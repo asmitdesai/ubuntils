@@ -19,6 +19,10 @@ class ArtifactSource(ABC):
         ...
 
     @abstractmethod
+    def read_bytes(self, path: str) -> bytes:
+        ...
+
+    @abstractmethod
     def exists(self, path: str) -> bool:
         ...
 
@@ -35,23 +39,53 @@ class ArtifactSource(ABC):
         ...
 
 
+class SourceContainmentError(Exception):
+    """Raised when a resolved path would escape the configured root (e.g. via
+    a symlink inside a mounted --root image pointing outside the image)."""
+
+
 class LiveSource(ArtifactSource):
     """Reads from a live filesystem tree (root="/" for the running host,
-    or a mounted image path for offline --root analysis) and runs commands live."""
+    or a mounted image path for offline --root analysis) and runs commands live.
 
-    def __init__(self, root: str = "/"):
+    ``offline`` marks a genuinely offline --root analysis (a mounted/extracted
+    image, not the live host) — in that mode ``run()`` never executes a real
+    command, since there is no live process/kernel state to query against a
+    dead image. Live ``scan``/`collect`` (root="/") always leaves this False.
+    """
+
+    def __init__(self, root: str = "/", offline: bool = False):
         self.root = root.rstrip("/") or "/"
+        self.offline = offline
 
     def _resolve(self, path: str) -> str:
         # path is a target-absolute path like "/etc/passwd"; join under root.
-        return os.path.join(self.root, path.lstrip("/"))
+        resolved = os.path.join(self.root, path.lstrip("/"))
+        if self.root != "/":
+            # Genuine --root (mounted image) analysis: verify a symlink inside
+            # the image can't walk us out to the analyst's real filesystem.
+            root_real = os.path.realpath(self.root)
+            resolved_real = os.path.realpath(resolved)
+            if resolved_real != root_real and not resolved_real.startswith(root_real + os.sep):
+                raise SourceContainmentError(
+                    f"path {path!r} resolves outside --root {self.root!r} "
+                    f"(resolved to {resolved_real!r}) — refusing to follow"
+                )
+        return resolved
 
     def read_text(self, path: str) -> str:
         with open(self._resolve(path), encoding="utf-8", errors="replace") as f:
             return f.read()
 
+    def read_bytes(self, path: str) -> bytes:
+        with open(self._resolve(path), "rb") as f:
+            return f.read()
+
     def exists(self, path: str) -> bool:
-        return os.path.exists(self._resolve(path))
+        try:
+            return os.path.exists(self._resolve(path))
+        except SourceContainmentError:
+            return False
 
     def lstat(self, path: str) -> os.stat_result:
         return os.lstat(self._resolve(path))
@@ -66,6 +100,8 @@ class LiveSource(ArtifactSource):
         return results
 
     def run(self, name: str, argv: list[str], timeout: int = 30) -> tuple[str, str, int]:
+        if self.offline:
+            return "", "command execution disabled for offline --root analysis", -1
         return run_command(argv, timeout=timeout)
 
 
@@ -82,6 +118,10 @@ class BundleSource(ArtifactSource):
 
     def read_text(self, path: str) -> str:
         with open(self._resolve(path), encoding="utf-8", errors="replace") as f:
+            return f.read()
+
+    def read_bytes(self, path: str) -> bytes:
+        with open(self._resolve(path), "rb") as f:
             return f.read()
 
     def exists(self, path: str) -> bool:
