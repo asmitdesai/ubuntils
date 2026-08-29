@@ -263,6 +263,85 @@ def collect(output_path, verbose):
 
 
 @main.command()
+@click.argument("bundle", required=False, type=click.Path(exists=True, dir_okay=False))
+@click.option("--root", "root_path", type=click.Path(exists=True, file_okay=False),
+              help="Analyze a mounted image / artifact tree instead of a bundle")
+@click.option("--json", "output_json", is_flag=True, help="Output JSON instead of launching TUI")
+@click.option("--output", "output_path", type=click.Path(dir_okay=False),
+              help="Write JSON report to FILE (implies --json)")
+@click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False),
+              help="YAML allowlist to suppress findings")
+@click.option("--rules", "rules_path", type=click.Path(exists=True, dir_okay=False),
+              help="YAML file of custom pattern-match detection rules (adds detections)")
+@click.option("--since", "since_value",
+              help="Limit timeline to events since this time (e.g. '24h', '7d', '2026-05-20')")
+@click.option("--verbose", is_flag=True, help="Enable verbose logging")
+def analyze(bundle, root_path, output_json, output_path, config_path, rules_path,
+            since_value, verbose):
+    """Run detection + timeline against a collected bundle or a mounted image (--root)."""
+    if not bundle and not root_path:
+        raise click.UsageError("provide a BUNDLE path or --root PATH")
+    if bundle and root_path:
+        raise click.UsageError("provide either a BUNDLE or --root, not both")
+
+    if output_path:
+        output_json = True
+    configure_logging(json_mode=output_json, verbose=verbose)
+
+    from ubuntils.bundle import read_bundle
+
+    bundle_info = None
+    if bundle:
+        source, bundle_info = read_bundle(bundle)
+    else:
+        source = LiveSource(root=root_path)
+
+    since = None
+    if since_value:
+        try:
+            since = parse_since(since_value)
+        except ValueError as exc:
+            raise click.ClickException(str(exc))
+
+    allowlist = None
+    if config_path:
+        try:
+            allowlist = load_allowlist(config_path)
+        except (ValueError, OSError) as exc:
+            raise click.ClickException(f"Invalid config {config_path}: {exc}")
+
+    custom_rules = None
+    if rules_path:
+        try:
+            custom_rules = load_custom_rules(rules_path)
+        except (ValueError, OSError) as exc:
+            raise click.ClickException(f"Invalid rules file {rules_path}: {exc}")
+
+    findings, timeline, stats, scan_metadata, artifact_counts, remediation_results = \
+        _run_pipeline(source=source, remediate=False, confirm=False,
+                      allowlist=allowlist, since=since, custom_rules=custom_rules,
+                      bundle_info=bundle_info)
+
+    if output_json:
+        report = JSONFormatter().format(
+            scan_metadata, artifact_counts, findings, timeline, remediation_results
+        )
+        if output_path:
+            with open(output_path, "w") as f:
+                f.write(report + "\n")
+            click.echo(f"Report written to {output_path}", err=True)
+        else:
+            click.echo(report)
+        return
+
+    # Not --json: launch TUI with pre-computed results, mirroring scan --remediate's override.
+    def _override():
+        return (findings, timeline, stats)
+
+    UbuntilsApp(verbose=verbose, _scan_override=_override).run()
+
+
+@main.command()
 def version():
     """Print version and exit."""
     click.echo(__version__)
