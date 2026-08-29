@@ -7,7 +7,7 @@ import tarfile
 import tempfile
 
 from ubuntils.bundle.manifest import Manifest, FileEntry, CommandEntry
-from ubuntils.bundle.error import BundleError
+from ubuntils.bundle import BundleError
 from ubuntils.collectors.source import BundleSource
 
 
