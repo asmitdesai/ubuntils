@@ -183,6 +183,19 @@ def test_scan_plain_launches_tui(runner):
     mock_app.run.assert_called_once()
 
 
+def test_tui_app_imports_livesource():
+    """Verify that UbuntilsApp has LiveSource available for collector instantiation."""
+    # Simply verify the import exists and the app can be instantiated
+    from ubuntils.tui.app import LiveSource
+    from ubuntils.tui.app import UbuntilsApp
+
+    # Create an app with a scan override to avoid thread spawning in test
+    app = UbuntilsApp(_scan_override=lambda: ([], [], {}))
+    assert app is not None
+    # Verify LiveSource is available in the app module
+    assert LiveSource is not None
+
+
 def test_run_pipeline_handles_collector_failure():
     """_run_pipeline should continue and count failures when a collector raises."""
     from ubuntils.collectors import ALL_COLLECTORS
