@@ -1,5 +1,3 @@
-import os
-
 from ubuntils.collectors.base import BaseCollector
 
 
@@ -7,8 +5,7 @@ class SSHCollector(BaseCollector):
     def collect(self) -> dict:
         entries = []
         try:
-            with open("/etc/passwd") as f:
-                passwd_lines = f.readlines()
+            passwd_lines = self.source.read_text("/etc/passwd").splitlines()
         except Exception:
             return {}
 
@@ -23,29 +20,28 @@ class SSHCollector(BaseCollector):
             if not home:
                 continue
             auth_keys_path = f"{home}/.ssh/authorized_keys"
-            if not os.path.exists(auth_keys_path):
+            if not self.source.exists(auth_keys_path):
                 continue
             try:
-                file_mtime = os.stat(auth_keys_path).st_mtime
-                with open(auth_keys_path) as f:
-                    for key_line in f:
-                        key_line = key_line.strip()
-                        if not key_line or key_line.startswith("#"):
-                            continue
-                        key_parts = key_line.split(None, 2)
-                        if len(key_parts) < 2:
-                            continue
-                        key_type = key_parts[0]
-                        key_data = key_parts[1]
-                        comment = key_parts[2] if len(key_parts) > 2 else ""
-                        entries.append({
-                            "username": username,
-                            "home": home,
-                            "key_type": key_type,
-                            "key_data": key_data,
-                            "comment": comment,
-                            "file_mtime": float(file_mtime),
-                        })
+                file_mtime = self.source.lstat(auth_keys_path).st_mtime
+                for key_line in self.source.read_text(auth_keys_path).splitlines():
+                    key_line = key_line.strip()
+                    if not key_line or key_line.startswith("#"):
+                        continue
+                    key_parts = key_line.split(None, 2)
+                    if len(key_parts) < 2:
+                        continue
+                    key_type = key_parts[0]
+                    key_data = key_parts[1]
+                    comment = key_parts[2] if len(key_parts) > 2 else ""
+                    entries.append({
+                        "username": username,
+                        "home": home,
+                        "key_type": key_type,
+                        "key_data": key_data,
+                        "comment": comment,
+                        "file_mtime": float(file_mtime),
+                    })
             except Exception:
                 continue
 

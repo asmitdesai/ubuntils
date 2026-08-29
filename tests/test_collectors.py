@@ -352,7 +352,7 @@ def test_ssh_collector_parses_authorized_keys():
 
     with mock.patch("builtins.open", side_effect=_open_ssh), \
          mock.patch("os.path.exists", return_value=True), \
-         mock.patch("os.stat", side_effect=_stat_ssh):
+         mock.patch("os.lstat", side_effect=_stat_ssh):
         result = SSHCollector().collect()
 
     assert "authorized_keys" in result
@@ -380,7 +380,7 @@ def test_ssh_collector_records_mtime():
 
     with mock.patch("builtins.open", side_effect=_open_ssh), \
          mock.patch("os.path.exists", return_value=True), \
-         mock.patch("os.stat", side_effect=_stat_ssh):
+         mock.patch("os.lstat", side_effect=_stat_ssh):
         result = SSHCollector().collect()
 
     assert isinstance(result["authorized_keys"][0]["file_mtime"], float)
@@ -559,6 +559,27 @@ def test_cron_collector_reads_from_source(tmp_path):
     user_entries = [e for e in result["cron_entries"] if e["owner"] == "alice"]
     assert len(user_entries) == 1
     assert "/home/alice/backup.sh" in user_entries[0]["command"]
+
+
+def test_ssh_collector_reads_from_source(tmp_path):
+    from ubuntils.collectors.ssh import SSHCollector
+    from ubuntils.collectors.source import BundleSource
+
+    files = tmp_path / "files"
+    (files / "home" / "alice" / ".ssh").mkdir(parents=True)
+    (files / "etc").mkdir(parents=True)
+    (files / "etc" / "passwd").write_text(PASSWD_SSH)
+    (files / "home" / "alice" / ".ssh" / "authorized_keys").write_text(AUTH_KEYS_CONTENT)
+
+    src = BundleSource(root_dir=str(files), command_index={})
+    result = SSHCollector(source=src).collect()
+
+    assert len(result["authorized_keys"]) == 2
+    first = result["authorized_keys"][0]
+    assert first["username"] == "alice"
+    assert first["key_type"] == "ssh-rsa"
+    assert first["comment"] == "alice@laptop"
+    assert isinstance(first["file_mtime"], float)
 
 
 def test_user_collector_reads_from_source(tmp_path):
