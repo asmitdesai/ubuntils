@@ -12,7 +12,7 @@ def _open_proc(path, *args, **kwargs):
     if path == "/proc/123/status":
         return io.StringIO("Name:\tpython3\nUid:\t1000\t1000\t1000\t1000\n")
     if path == "/proc/123/cmdline":
-        return io.BytesIO(b"python3\x00script.py\x00")
+        return io.StringIO("python3\x00script.py\x00")
     raise FileNotFoundError(path)
 
 
@@ -55,6 +55,32 @@ def test_process_collector_returns_empty_on_glob_failure():
         result = ProcessCollector().collect()
 
     assert result == {}
+
+
+def test_process_collector_reads_from_source(tmp_path):
+    from ubuntils.collectors.processes import ProcessCollector
+    from ubuntils.collectors.source import BundleSource
+
+    files = tmp_path / "files"
+    (files / "proc" / "456").mkdir(parents=True)
+    (files / "proc" / "456" / "status").write_text(
+        "Name:\tsshd\nUid:\t0\t0\t0\t0\n"
+    )
+    (files / "proc" / "456" / "cmdline").write_text("sshd\x00-D\x00")
+
+    src = BundleSource(root_dir=str(files), command_index={})
+    result = ProcessCollector(source=src).collect()
+
+    assert "processes" in result
+    assert len(result["processes"]) == 1
+    p = result["processes"][0]
+    assert p["pid"] == 456
+    assert p["name"] == "sshd"
+    assert p["uid"] == 0
+    assert p["cmdline"] == "sshd -D"
+    # exe is a live /proc symlink read with no ArtifactSource primitive for it;
+    # against a bundle (no real /proc/456/exe on this host) it degrades to "".
+    assert p["exe"] == ""
 
 
 # ─── NetworkCollector ─────────────────────────────────────────────────────────
