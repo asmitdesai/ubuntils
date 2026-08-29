@@ -603,6 +603,30 @@ def test_sudoers_collector_reads_from_source(tmp_path):
         assert not rule["raw_line"].startswith("#include")
 
 
+def test_env_collector_reads_from_source(tmp_path):
+    from ubuntils.collectors.environment import EnvironmentCollector
+    from ubuntils.collectors.source import BundleSource
+
+    files = tmp_path / "files"
+    (files / "etc" / "profile.d").mkdir(parents=True)
+    (files / "home" / "alice").mkdir(parents=True)
+    (files / "etc" / "passwd").write_text(PASSWD_ENV)
+    (files / "etc" / "environment").write_text(ETC_ENVIRONMENT)
+    (files / "etc" / "profile").write_text("")
+    (files / "home" / "alice" / ".bashrc").write_text(BASHRC_MALICIOUS)
+
+    src = BundleSource(root_dir=str(files), command_index={})
+    result = EnvironmentCollector(source=src).collect()
+
+    definitions = result["env_definitions"]
+    variables = [e["variable"] for e in definitions]
+    assert "LD_PRELOAD" in variables
+    assert "PATH" in variables
+    ld_preload = next(e for e in definitions if e["variable"] == "LD_PRELOAD")
+    assert ld_preload["owner"] == "alice"
+    assert ld_preload["value"] == "/tmp/evil.so"
+
+
 def test_user_collector_reads_from_source(tmp_path):
     from ubuntils.collectors.users import UserCollector
     from ubuntils.collectors.source import BundleSource
