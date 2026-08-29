@@ -541,6 +541,28 @@ def test_env_collector_skips_nonexistent_rc_files():
 
 # ─── Collector registry ───────────────────────────────────────────────────────
 
+def test_user_collector_reads_from_source(tmp_path):
+    from ubuntils.collectors.users import UserCollector
+    from ubuntils.collectors.source import BundleSource
+
+    files = tmp_path / "files"
+    (files / "etc").mkdir(parents=True)
+    (files / "etc" / "passwd").write_text(
+        "root:x:0:0:root:/root:/bin/bash\nalice:x:1000:1000::/home/alice:/bin/bash\n"
+    )
+    (files / "etc" / "group").write_text("sudo:x:27:alice\n")
+    (files / "etc" / "shadow").write_text("root:!:0:0:::::\nalice:$6$abc:0:0:::::\n")
+
+    src = BundleSource(root_dir=str(files), command_index={})
+    result = UserCollector(source=src).collect()
+
+    usernames = [u["username"] for u in result["users"]]
+    assert usernames == ["root", "alice"]
+    alice = next(u for u in result["users"] if u["username"] == "alice")
+    assert alice["groups"] == ["sudo"]
+    assert alice["password_locked"] is False
+
+
 def test_all_collectors_registered():
     from ubuntils.collectors import ALL_COLLECTORS
     assert len(ALL_COLLECTORS) == 8
