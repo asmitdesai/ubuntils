@@ -10,6 +10,7 @@ import structlog
 
 from ubuntils import __version__
 from ubuntils.collectors import ALL_COLLECTORS
+from ubuntils.collectors.source import LiveSource
 from ubuntils.detectors.custom_rules import load_custom_rules
 from ubuntils.detectors.engine import DetectionEngine
 from ubuntils.detectors.finding import Severity
@@ -41,8 +42,8 @@ def _ensure_root() -> None:
         sys.exit(1)
 
 
-def _run_pipeline(remediate: bool, confirm: bool, allowlist=None, since=None,
-                  custom_rules=None) -> tuple:
+def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=None,
+                  custom_rules=None, bundle_info=None) -> tuple:
     """Run collectors → detection → timeline → optional remediation.
 
     Returns (findings, timeline, stats, scan_metadata, artifact_counts, remediation_results).
@@ -51,7 +52,7 @@ def _run_pipeline(remediate: bool, confirm: bool, allowlist=None, since=None,
     artifacts: dict = {}
     failures = 0
     artifact_counts: dict = {}
-    collectors = [C() for C in ALL_COLLECTORS]
+    collectors = [C(source=source) for C in ALL_COLLECTORS]
 
     for collector in collectors:
         name = type(collector).__name__
@@ -119,6 +120,7 @@ def _run_pipeline(remediate: bool, confirm: bool, allowlist=None, since=None,
         "architecture": arch,
         "duration_s": duration,
         "collector_failures": failures,
+        "bundle_integrity": (bundle_info or {}).get("bundle_integrity", "live"),
     }
 
     return findings, timeline, stats, scan_metadata, artifact_counts, remediation_results
@@ -174,8 +176,8 @@ def scan(output_json, remediate, confirm, config_path, output_path, since_value,
 
     if output_json or remediate:
         findings, timeline, stats, scan_metadata, artifact_counts, remediation_results = \
-            _run_pipeline(remediate=remediate, confirm=confirm, allowlist=allowlist,
-                          since=since, custom_rules=custom_rules)
+            _run_pipeline(source=LiveSource(root="/"), remediate=remediate, confirm=confirm,
+                          allowlist=allowlist, since=since, custom_rules=custom_rules)
 
         if output_json:
             report = JSONFormatter().format(
