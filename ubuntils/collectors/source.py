@@ -67,3 +67,39 @@ class LiveSource(ArtifactSource):
 
     def run(self, name: str, argv: list[str], timeout: int = 30) -> tuple[str, str, int]:
         return run_command(argv, timeout=timeout)
+
+
+class BundleSource(ArtifactSource):
+    """Reads files captured into a bundle and replays captured command output.
+    Never touches the live host or runs a command — pure offline replay."""
+
+    def __init__(self, root_dir: str, command_index: dict[str, str]):
+        self.root_dir = root_dir.rstrip("/")
+        self.command_index = command_index
+
+    def _resolve(self, path: str) -> str:
+        return os.path.join(self.root_dir, path.lstrip("/"))
+
+    def read_text(self, path: str) -> str:
+        with open(self._resolve(path), encoding="utf-8", errors="replace") as f:
+            return f.read()
+
+    def exists(self, path: str) -> bool:
+        return os.path.exists(self._resolve(path))
+
+    def lstat(self, path: str) -> os.stat_result:
+        return os.lstat(self._resolve(path))
+
+    def glob(self, pattern: str) -> list[str]:
+        resolved = self._resolve(pattern)
+        results = []
+        for hit in sorted(_glob.glob(resolved)):
+            results.append("/" + os.path.relpath(hit, self.root_dir))
+        return results
+
+    def run(self, name: str, argv: list[str], timeout: int = 30) -> tuple[str, str, int]:
+        captured = self.command_index.get(name)
+        if captured is None:
+            return "", f"command '{name}' not captured in bundle", -1
+        with open(captured, encoding="utf-8", errors="replace") as f:
+            return f.read(), "", 0
