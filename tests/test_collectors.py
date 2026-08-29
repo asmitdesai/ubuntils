@@ -582,6 +582,27 @@ def test_ssh_collector_reads_from_source(tmp_path):
     assert isinstance(first["file_mtime"], float)
 
 
+def test_sudoers_collector_reads_from_source(tmp_path):
+    from ubuntils.collectors.sudoers import SudoersCollector
+    from ubuntils.collectors.source import BundleSource
+
+    files = tmp_path / "files"
+    (files / "etc" / "sudoers.d").mkdir(parents=True)
+    (files / "etc" / "sudoers").write_text(SUDOERS_CONTENT)
+    (files / "etc" / "sudoers.d" / "bob").write_text(SUDOERS_D_CONTENT)
+
+    src = BundleSource(root_dir=str(files), command_index={})
+    result = SudoersCollector(source=src).collect()
+
+    rules = result["sudoers_rules"]
+    nopasswd_rules = [r for r in rules if "NOPASSWD" in r["options"]]
+    assert len(nopasswd_rules) >= 2
+    sources = {r["source"] for r in rules}
+    assert "/etc/sudoers.d/bob" in sources
+    for rule in rules:
+        assert not rule["raw_line"].startswith("#include")
+
+
 def test_user_collector_reads_from_source(tmp_path):
     from ubuntils.collectors.users import UserCollector
     from ubuntils.collectors.source import BundleSource
