@@ -19,10 +19,40 @@ def _sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
+def _safe_extract(tf: tarfile.TarFile, work: str) -> None:
+    """Validate every tar member before extraction.
+
+    Rejects members whose resolved destination would escape ``work`` (path
+    traversal via e.g. "../../ESCAPED.txt") and members that are not plain
+    files or directories (symlinks, hardlinks, device/fifo nodes, etc.) — a
+    forensic bundle should never legitimately contain those.
+    """
+    work_real = os.path.realpath(work)
+    for member in tf.getmembers():
+        dest = os.path.realpath(os.path.join(work, member.name))
+        if dest != work_real and not dest.startswith(work_real + os.sep):
+            raise BundleError(
+                f"bundle member {member.name!r} would extract outside the "
+                f"target directory (path traversal)"
+            )
+        if not (member.isfile() or member.isdir()):
+            raise BundleError(
+                f"bundle member {member.name!r} is not a regular file or "
+                f"directory (type={member.type!r}) — refusing to extract"
+            )
+
+    try:
+        tf.extractall(work, filter="data")
+    except TypeError:
+        # Python < 3.12 (or a tarfile shim) without the `filter` kwarg —
+        # the manual member validation above is the primary defense here.
+        tf.extractall(work)
+
+
 def read_bundle(path: str) -> tuple:
     work = tempfile.mkdtemp(prefix="ubuntils_analyze_")
     with tarfile.open(path, "r:gz") as tf:
-        tf.extractall(work)
+        _safe_extract(tf, work)
 
     base = os.path.join(work, "bundle")
     manifest_path = os.path.join(base, "manifest.json")

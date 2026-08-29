@@ -200,3 +200,125 @@ def test_read_bundle_without_manifest_raises(tmp_path):
         assert False, "expected BundleError"
     except BundleError:
         pass
+
+
+def test_read_bundle_rejects_path_traversal_member(tmp_path):
+    """A malicious bundle with a member like '../../ESCAPED.txt' must not be
+    allowed to write outside the extraction directory."""
+    malicious = tmp_path / "evil.tar.gz"
+    escape_target = tmp_path / "ESCAPED.txt"
+
+    with tarfile.open(malicious, "w:gz") as tf:
+        info = tarfile.TarInfo(name="bundle/../../ESCAPED.txt")
+        data = b"pwned"
+        info.size = len(data)
+        import io
+        tf.addfile(info, io.BytesIO(data))
+
+    try:
+        read_bundle(str(malicious))
+        assert False, "expected BundleError"
+    except BundleError:
+        pass
+
+    assert not escape_target.exists()
+
+
+def test_write_bundle_creates_output_file_with_owner_only_mode(tmp_path):
+    """collect runs as root and captures /etc/shadow — the archive file
+    itself must not be created world- or group-readable via the default umask."""
+    import stat
+    root = tmp_path / "root"
+    (root / "etc").mkdir(parents=True)
+    (root / "etc" / "passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
+
+    out = tmp_path / "bundle.tar.gz"
+    old_umask = os.umask(0o022)
+    try:
+        write_bundle(
+            source=LiveSource(root=str(root)),
+            files_to_capture=["/etc/passwd"],
+            commands_to_capture=[],
+            out_path=str(out),
+            metadata={"hostname": "h1", "ubuntu_version": "Ubuntu 22.04", "tool_version": "2.0.0"},
+        )
+    finally:
+        os.umask(old_umask)
+
+    mode = stat.S_IMODE(os.stat(out).st_mode)
+    assert mode == 0o600, f"expected bundle file mode 0600, got {oct(mode)}"
+
+
+def test_write_bundle_sets_restrictive_mode_on_tar_entries(tmp_path):
+    import stat
+    root = tmp_path / "root"
+    (root / "etc").mkdir(parents=True)
+    (root / "etc" / "passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
+
+    out = tmp_path / "bundle.tar.gz"
+    write_bundle(
+        source=LiveSource(root=str(root)),
+        files_to_capture=["/etc/passwd"],
+        commands_to_capture=[],
+        out_path=str(out),
+        metadata={"hostname": "h1", "ubuntu_version": "Ubuntu 22.04", "tool_version": "2.0.0"},
+    )
+
+    with tarfile.open(out, "r:gz") as tf:
+        for member in tf.getmembers():
+            if member.isfile():
+                assert stat.S_IMODE(member.mode) == 0o600, member.name
+            elif member.isdir():
+                assert stat.S_IMODE(member.mode) == 0o700, member.name
+
+
+def test_write_bundle_hashes_raw_bytes_not_lossy_decoded_text(tmp_path):
+    """A file with genuinely non-UTF-8 bytes must round-trip through
+    write_bundle/read_bundle with a hash matching a direct hashlib.sha256 of
+    the original bytes — errors='replace' text decoding would otherwise
+    silently corrupt the captured content before hashing."""
+    import hashlib
+    root = tmp_path / "root"
+    (root / "etc").mkdir(parents=True)
+    raw = b"\xff\xfe\x80\x81not valid utf-8 \x00\x01\x02"
+    (root / "etc" / "binfile").write_bytes(raw)
+
+    out = tmp_path / "bundle.tar.gz"
+    write_bundle(
+        source=LiveSource(root=str(root)),
+        files_to_capture=["/etc/binfile"],
+        commands_to_capture=[],
+        out_path=str(out),
+        metadata={"hostname": "h1", "ubuntu_version": "U", "tool_version": "2.0.0"},
+    )
+
+    expected_hash = hashlib.sha256(raw).hexdigest()
+
+    with tarfile.open(out, "r:gz") as tf:
+        manifest_member = next(n for n in tf.getnames() if n.endswith("manifest.json"))
+        manifest = json.loads(tf.extractfile(manifest_member).read())
+
+    entry = next(f for f in manifest["files"] if f["source_path"] == "/etc/binfile")
+    assert entry["sha256"] == expected_hash
+
+    source, info = read_bundle(str(out))
+    assert info["bundle_integrity"] == "ok"
+    assert source.read_bytes("/etc/binfile") == raw
+
+
+def test_read_bundle_rejects_symlink_member(tmp_path):
+    """A bundle containing a symlink member must be rejected outright — a
+    forensic bundle should only ever contain plain files and directories."""
+    malicious = tmp_path / "evil_symlink.tar.gz"
+
+    with tarfile.open(malicious, "w:gz") as tf:
+        info = tarfile.TarInfo(name="bundle/link")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "/etc/shadow"
+        tf.addfile(info)
+
+    try:
+        read_bundle(str(malicious))
+        assert False, "expected BundleError"
+    except BundleError:
+        pass

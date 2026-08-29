@@ -17,6 +17,14 @@ def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _restrict_tarinfo_permissions(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo:
+    """Force restrictive permissions on every entry written into the archive
+    (a bundle can contain /etc/shadow — it must not be world-readable inside
+    the tarball, regardless of the staging directory's own permissions)."""
+    tarinfo.mode = 0o700 if tarinfo.isdir() else 0o600
+    return tarinfo
+
+
 def write_bundle(
     source: ArtifactSource,
     files_to_capture: list,
@@ -39,7 +47,7 @@ def write_bundle(
             dest = os.path.join(work, bundle_rel)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             try:
-                data = source.read_text(path).encode("utf-8")
+                data = source.read_bytes(path)
                 st = source.lstat(path)
                 with open(dest, "wb") as f:
                     f.write(data)
@@ -84,8 +92,14 @@ def write_bundle(
         with open(os.path.join(work, "manifest.json"), "w", encoding="utf-8") as f:
             json.dump(manifest_dict, f, indent=2, sort_keys=True)
 
-        with tarfile.open(out_path, "w:gz") as tf:
-            tf.add(work, arcname="bundle")
+        # Create the archive with owner-only permissions up front — the default
+        # umask-derived mode (typically 0644) would otherwise make a bundle
+        # containing /etc/shadow world-readable the instant it's created.
+        fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.chmod(out_path, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            with tarfile.open(fileobj=fh, mode="w:gz") as tf:
+                tf.add(work, arcname="bundle", filter=_restrict_tarinfo_permissions)
 
         return out_path
     finally:
