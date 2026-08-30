@@ -12,6 +12,7 @@ from ubuntils.collectors import ALL_COLLECTORS
 from ubuntils.collectors.source import LiveSource
 from ubuntils.detectors.engine import DetectionEngine
 from ubuntils.detectors.finding import Finding, Severity
+from ubuntils.detectors.scoring import apply_signal
 from ubuntils.timeline.builder import TimelineBuilder, TimelineEvent
 from ubuntils.timeline.correlator import correlate
 from ubuntils.tui.results_screen import ResultsScreen
@@ -88,15 +89,21 @@ class UbuntilsApp(App):
                 CollectorProgress(name=name, index=i + 1, total=len(collectors), success=success)
             )
 
+        engine = None
         try:
-            findings = DetectionEngine(
+            engine = DetectionEngine(
                 allowlist=self._allowlist, custom_rules=self._custom_rules,
                 baseline=self._baseline
-            ).run(artifacts)
+            )
+            findings = engine.run(artifacts)
             timeline = TimelineBuilder().build()
             if self._since is not None:
                 timeline = [e for e in timeline if e.timestamp >= self._since]
             correlate(findings, timeline)
+            for finding in findings:
+                if finding.related_events:
+                    apply_signal(finding, "timeline_corroboration", 25,
+                                 f"{len(finding.related_events)} nearby timeline event(s)")
         except Exception as exc:
             logger.error("scan_engine_failed", error=str(exc))
             findings = []
@@ -116,6 +123,7 @@ class UbuntilsApp(App):
                 "LOW": sum(1 for f in findings if f.severity == Severity.LOW),
             },
             "timeline_count": len(timeline),
+            "suppressed_by_baseline": engine.suppressed_by_baseline if engine else 0,
         }
         self.post_message(
             ScanComplete(findings=findings, timeline=timeline, stats=stats)

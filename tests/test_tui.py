@@ -752,6 +752,47 @@ async def test_app_applies_allowlist_in_own_scan():
             assert all(f.rule_id != "USER_UID_ZERO" for f in screen._findings)
 
 
+async def test_app_applies_timeline_corroboration_signal_and_surfaces_baseline_suppression():
+    """UbuntilsApp._run_scan must mirror cli.py's _run_pipeline: apply the
+    timeline_corroboration signal after correlate(), and surface
+    suppressed_by_baseline into stats (not silently drop it)."""
+    from ubuntils.utils.baseline import Baseline
+
+    baseline = Baseline(entries=[{"rule_id": "CRON_TMP_PATH", "fingerprint": "bad line"}])
+    app = UbuntilsApp(baseline=baseline)
+
+    def fake_engine_run(self, artifacts):
+        self.baseline_suppressed_findings = []
+        kept, self.baseline_suppressed_findings = self.baseline.filter([
+            _finding(rule_id="USER_UID_ZERO", remediation_available=False),
+            _finding(rule_id="CRON_TMP_PATH"),
+        ])
+        self.suppressed_by_baseline = len(self.baseline_suppressed_findings)
+        return kept
+
+    def fake_correlate(findings, timeline):
+        for f in findings:
+            if f.rule_id == "USER_UID_ZERO":
+                f.related_events.append("sentinel")
+
+    with (
+        patch("ubuntils.tui.app.ALL_COLLECTORS", []),
+        patch("ubuntils.detectors.engine.DetectionEngine.run", fake_engine_run),
+        patch("ubuntils.tui.app.correlate", fake_correlate),
+        patch("ubuntils.tui.app.TimelineBuilder") as tb,
+    ):
+        tb.return_value.build.return_value = []
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.pause(delay=0.3)
+            screen = pilot.app.screen
+            assert isinstance(screen, _ResultsScreen)
+            uid_zero = next(f for f in screen._findings if f.rule_id == "USER_UID_ZERO")
+            assert any(s["name"] == "timeline_corroboration" for s in uid_zero.signals)
+            assert not any(f.rule_id == "CRON_TMP_PATH" for f in screen._findings)
+            assert screen._stats.get("suppressed_by_baseline") == 1
+
+
 def test_detail_text_includes_guided_remediation_and_related_events():
     import datetime
     from ubuntils.detectors.finding import Finding, Severity

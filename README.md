@@ -638,6 +638,8 @@ Every finding carries a `confidence` score (0–100, default 50) and a `confiden
 
 A `LOW`-band finding is not dismissed or hidden — it still appears in the findings list and JSON output exactly like any other — but the band tells you how much weight to put on it before investigating further. This replaces the old mtime-only heuristic for `SSH_UNAUTHORIZED_KEY`/`SHELL_RC_MODIFICATION`, where a stale but legitimately-touched file (e.g. a config management tool rewriting `.bashrc` on every run) looked identical to a genuinely new backdoor.
 
+**Known limitation:** only content-pattern and ctime signals are live today. Ownership/fingerprint-based signals — an unknown SSH key fingerprint, a key's `from=` restriction option, or an RC-file owner/mode mismatch (an `ownership_anomaly` signal) — are not yet implemented. This is a deferred coverage gap, tracked for a future release, not something the current confidence score accounts for.
+
 ---
 
 ## Remediation

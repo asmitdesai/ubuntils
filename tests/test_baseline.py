@@ -36,7 +36,8 @@ def test_baseline_filter_drops_matches_and_counts_them():
     b = Baseline(entries=[{"rule_id": "SSH_UNAUTHORIZED_KEY", "fingerprint": "ci@runner"}])
     kept, suppressed = b.filter([_finding(), _finding(raw_value="unrelated key")])
     assert len(kept) == 1
-    assert suppressed == 1
+    assert len(suppressed) == 1
+    assert suppressed[0].rule_id == "SSH_UNAUTHORIZED_KEY"
 
 
 def test_load_baseline_parses_yaml(tmp_path):

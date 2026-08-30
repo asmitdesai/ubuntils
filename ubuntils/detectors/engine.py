@@ -40,6 +40,7 @@ class DetectionEngine:
         self.custom_rules = custom_rules or []
         self.baseline = baseline
         self.suppressed_by_baseline = 0
+        self.baseline_suppressed_findings: List[Finding] = []
 
     def run(self, artifacts: dict) -> List[Finding]:
         findings = []
@@ -53,9 +54,10 @@ class DetectionEngine:
                 findings.extend(apply_custom_rules(self.custom_rules, artifacts))
             except Exception as exc:
                 _log.exception("Custom rules raised: %s", exc)
-        self.suppressed_by_baseline = 0
+        self.baseline_suppressed_findings = []
         if self.baseline is not None:
-            findings, self.suppressed_by_baseline = self.baseline.filter(findings)
+            findings, self.baseline_suppressed_findings = self.baseline.filter(findings)
+        self.suppressed_by_baseline = len(self.baseline_suppressed_findings)
         if self.allowlist is not None:
             findings = self.allowlist.filter(findings)
         return findings

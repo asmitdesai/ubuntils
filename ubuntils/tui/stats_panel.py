@@ -18,14 +18,18 @@ def get_ubuntu_version() -> str:
 
 def format_stats(stats: dict) -> str:
     fc = stats.get("finding_counts", {})
-    return "\n".join([
+    lines = [
         f"Ubuntu Version:   {stats.get('ubuntu_version', 'Unknown')}",
         f"Architecture:     {stats.get('architecture', platform.machine())}",
         f"Scan Duration:    {stats.get('duration_s', 0):.1f}s",
         f"Collectors run:   {stats.get('collector_count', 0)} ({stats.get('collector_failures', 0)} failed)",
         f"Findings:         {fc.get('HIGH', 0)} HIGH  {fc.get('MEDIUM', 0)} MEDIUM  {fc.get('LOW', 0)} LOW",
         f"Timeline events:  {stats.get('timeline_count', 0)}",
-    ])
+    ]
+    suppressed = stats.get("suppressed_by_baseline", 0)
+    if suppressed:
+        lines.append(f"Suppressed by baseline: {suppressed}")
+    return "\n".join(lines)
 
 
 class StatsPanel(Widget):

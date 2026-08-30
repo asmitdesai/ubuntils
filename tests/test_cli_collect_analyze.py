@@ -245,6 +245,68 @@ def test_analyze_bundle_with_bad_rules_file_errors(tmp_path, monkeypatch):
     assert result.exit_code != 0
 
 
+def test_analyze_bundle_with_baseline_suppresses_finding(tmp_path, monkeypatch):
+    """--baseline on `analyze BUNDLE` must suppress the matching finding and
+    record it (rule_id/artifact_path) in scan_metadata['baseline_suppressed'],
+    mirroring scan's --baseline handling."""
+    monkeypatch.setattr("ubuntils.cli._ensure_root", lambda: None)
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "passwd").write_text(
+        "root:x:0:0:root:/root:/bin/bash\nghost:x:0:0::/home/ghost:/bin/bash\n"
+    )
+    out = tmp_path / "b.tar.gz"
+    from ubuntils.bundle import write_bundle
+    from ubuntils.collectors.source import LiveSource
+    write_bundle(
+        source=LiveSource(root=str(tmp_path)),
+        files_to_capture=["/etc/passwd"],
+        commands_to_capture=[],
+        out_path=str(out),
+        metadata={"hostname": "h", "ubuntu_version": "U", "tool_version": "2.0.0"},
+    )
+
+    baseline_file = tmp_path / "baseline.yaml"
+    baseline_file.write_text("baseline:\n  - rule_id: USER_UID_ZERO\n    fingerprint: ghost\n")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["analyze", str(out), "--json", "--baseline", str(baseline_file)]
+    )
+    assert result.exit_code == 0, result.output
+    report = _json.loads(result.output)
+    assert not any(f["rule_id"] == "USER_UID_ZERO" for f in report["findings"])
+    meta = report["scan_metadata"]
+    assert meta["suppressed_by_baseline"] == 1
+    assert meta["baseline_suppressed"] == [
+        {"rule_id": "USER_UID_ZERO", "artifact_path": "/etc/passwd"}
+    ]
+
+
+def test_analyze_bundle_with_bad_baseline_file_errors(tmp_path, monkeypatch):
+    monkeypatch.setattr("ubuntils.cli._ensure_root", lambda: None)
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
+    out = tmp_path / "b.tar.gz"
+    from ubuntils.bundle import write_bundle
+    from ubuntils.collectors.source import LiveSource
+    write_bundle(
+        source=LiveSource(root=str(tmp_path)),
+        files_to_capture=["/etc/passwd"],
+        commands_to_capture=[],
+        out_path=str(out),
+        metadata={"hostname": "h", "ubuntu_version": "U", "tool_version": "2.0.0"},
+    )
+
+    bad_baseline = tmp_path / "bad_baseline.yaml"
+    bad_baseline.write_text("not: [valid, - baseline\n")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["analyze", str(out), "--json", "--baseline", str(bad_baseline)]
+    )
+    assert result.exit_code != 0
+
+
 def test_scan_json_accepts_baseline_flag(monkeypatch, tmp_path):
     monkeypatch.setattr("ubuntils.cli._ensure_root", lambda: None)
     baseline_file = tmp_path / "baseline.yaml"

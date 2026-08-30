@@ -18,6 +18,7 @@ from ubuntils.detectors.rules import (
     rule_uid_zero_account,
 )
 from ubuntils.utils.baseline import Baseline
+from ubuntils.utils.config import Allowlist
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -641,9 +642,21 @@ def test_shell_rc_modification_has_guided_remediation(tmp_path):
 
 
 def test_engine_applies_baseline_before_allowlist_and_counts_suppressed():
-    artifacts = {"authorized_keys": [_ssh_key_entry()]}
+    """Baseline and allowlist suppress two *different* findings, proving the
+    two mechanisms compose: baseline drops SSH_UNAUTHORIZED_KEY (counted),
+    allowlist drops USER_UID_ZERO (not baseline-counted), and both are gone
+    from the final result."""
+    artifacts = {
+        "authorized_keys": [_ssh_key_entry()],
+        "users": [_user_entry(username="ghost", uid=0, shell="/bin/bash")],
+    }
     baseline = Baseline(entries=[{"rule_id": "SSH_UNAUTHORIZED_KEY", "fingerprint": "test@host"}])
-    engine = DetectionEngine(baseline=baseline)
+    allowlist = Allowlist(rules=["USER_UID_ZERO"])
+    engine = DetectionEngine(baseline=baseline, allowlist=allowlist)
     findings = engine.run(artifacts)
     assert not any(f.rule_id == "SSH_UNAUTHORIZED_KEY" for f in findings)
+    assert not any(f.rule_id == "USER_UID_ZERO" for f in findings)
+    # Only the baseline-matched finding is counted by suppressed_by_baseline;
+    # the allowlist-suppressed one is not double-counted or miscounted.
     assert engine.suppressed_by_baseline == 1
+    assert [f.rule_id for f in engine.baseline_suppressed_findings] == ["SSH_UNAUTHORIZED_KEY"]

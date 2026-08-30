@@ -150,6 +150,8 @@ def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=
                 rule_id=finding.rule_id,
                 status=result.status.value,
                 message=result.message,
+                confidence=finding.confidence,
+                confidence_band=finding.confidence_band,
             )
 
     ubuntu_version = get_ubuntu_version()
@@ -195,6 +197,10 @@ def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=
         "bundle_integrity": (bundle_info or {}).get("bundle_integrity", "live"),
         "command_collectors_skipped": command_collectors_skipped,
         "suppressed_by_baseline": engine.suppressed_by_baseline if engine else 0,
+        "baseline_suppressed": (
+            [{"rule_id": f.rule_id, "artifact_path": f.artifact_path}
+             for f in engine.baseline_suppressed_findings] if engine else []
+        ),
     }
 
     if manifest:

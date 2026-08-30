@@ -38,10 +38,10 @@ class Baseline:
 
     def filter(self, findings: list) -> tuple:
         kept = []
-        suppressed = 0
+        suppressed = []
         for f in findings:
             if self.matches(f):
-                suppressed += 1
+                suppressed.append(f)
             else:
                 kept.append(f)
         return kept, suppressed

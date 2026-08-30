@@ -496,3 +496,6 @@ def test_run_pipeline_records_suppressed_by_baseline_count(tmp_path):
     )
     assert not any(f.rule_id == "USER_UID_ZERO" for f in findings)
     assert meta["suppressed_by_baseline"] == 1
+    assert meta["baseline_suppressed"] == [
+        {"rule_id": "USER_UID_ZERO", "artifact_path": "/etc/passwd"}
+    ]
