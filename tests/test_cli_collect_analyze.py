@@ -137,7 +137,7 @@ def test_analyze_root_skips_command_collectors_and_never_runs_live_commands(tmp_
 
 def test_scan_json_does_not_skip_command_collectors(monkeypatch):
     """Live `scan` must be entirely unaffected — command_collectors_skipped
-    stays empty and the timeline is not skipped."""
+    stays empty."""
     monkeypatch.setattr("ubuntils.cli._ensure_root", lambda: None)
     runner = CliRunner()
     result = runner.invoke(main, ["scan", "--json"])
@@ -145,10 +145,12 @@ def test_scan_json_does_not_skip_command_collectors(monkeypatch):
     report = _json.loads(result.output)
     meta = report["scan_metadata"]
     assert meta["command_collectors_skipped"] == []
-    assert meta["timeline_skipped_offline"] is False
 
 
-def test_analyze_root_produces_empty_timeline_with_flag_set(tmp_path, monkeypatch):
+def test_analyze_root_produces_empty_timeline_with_no_log_files(tmp_path, monkeypatch):
+    """A `--root` image with no captured /var/log/* files produces an empty
+    timeline (offline LiveSource.run() is disabled, so journald is empty too,
+    and there are no static log files under the image to read)."""
     monkeypatch.setattr("ubuntils.cli._ensure_root", lambda: None)
     root = tmp_path / "image"
     (root / "etc").mkdir(parents=True)
@@ -159,10 +161,11 @@ def test_analyze_root_produces_empty_timeline_with_flag_set(tmp_path, monkeypatc
     assert result.exit_code == 0, result.output
     report = _json.loads(result.output)
     assert report["timeline"] == []
-    assert report["scan_metadata"]["timeline_skipped_offline"] is True
 
 
-def test_analyze_bundle_produces_empty_timeline_with_flag_set(tmp_path, monkeypatch):
+def test_analyze_bundle_produces_empty_timeline_with_no_captured_logs(tmp_path, monkeypatch):
+    """A bundle that captured no log files and no journalctl command produces
+    an empty timeline — BundleSource replay has nothing to replay from."""
     monkeypatch.setattr("ubuntils.cli._ensure_root", lambda: None)
     (tmp_path / "etc").mkdir()
     (tmp_path / "etc" / "passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
@@ -182,7 +185,6 @@ def test_analyze_bundle_produces_empty_timeline_with_flag_set(tmp_path, monkeypa
     assert result.exit_code == 0, result.output
     report = _json.loads(result.output)
     assert report["timeline"] == []
-    assert report["scan_metadata"]["timeline_skipped_offline"] is True
 
 
 def test_analyze_bundle_uses_bundle_hostname_not_test_runners(tmp_path, monkeypatch):
@@ -241,3 +243,75 @@ def test_analyze_bundle_with_bad_rules_file_errors(tmp_path, monkeypatch):
         main, ["analyze", str(out), "--json", "--rules", str(bad_rules)]
     )
     assert result.exit_code != 0
+
+
+def test_analyze_bundle_with_baseline_suppresses_finding(tmp_path, monkeypatch):
+    """--baseline on `analyze BUNDLE` must suppress the matching finding and
+    record it (rule_id/artifact_path) in scan_metadata['baseline_suppressed'],
+    mirroring scan's --baseline handling."""
+    monkeypatch.setattr("ubuntils.cli._ensure_root", lambda: None)
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "passwd").write_text(
+        "root:x:0:0:root:/root:/bin/bash\nghost:x:0:0::/home/ghost:/bin/bash\n"
+    )
+    out = tmp_path / "b.tar.gz"
+    from ubuntils.bundle import write_bundle
+    from ubuntils.collectors.source import LiveSource
+    write_bundle(
+        source=LiveSource(root=str(tmp_path)),
+        files_to_capture=["/etc/passwd"],
+        commands_to_capture=[],
+        out_path=str(out),
+        metadata={"hostname": "h", "ubuntu_version": "U", "tool_version": "2.0.0"},
+    )
+
+    baseline_file = tmp_path / "baseline.yaml"
+    baseline_file.write_text("baseline:\n  - rule_id: USER_UID_ZERO\n    fingerprint: ghost\n")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["analyze", str(out), "--json", "--baseline", str(baseline_file)]
+    )
+    assert result.exit_code == 0, result.output
+    report = _json.loads(result.output)
+    assert not any(f["rule_id"] == "USER_UID_ZERO" for f in report["findings"])
+    meta = report["scan_metadata"]
+    assert meta["suppressed_by_baseline"] == 1
+    assert meta["baseline_suppressed"] == [
+        {"rule_id": "USER_UID_ZERO", "artifact_path": "/etc/passwd"}
+    ]
+
+
+def test_analyze_bundle_with_bad_baseline_file_errors(tmp_path, monkeypatch):
+    monkeypatch.setattr("ubuntils.cli._ensure_root", lambda: None)
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
+    out = tmp_path / "b.tar.gz"
+    from ubuntils.bundle import write_bundle
+    from ubuntils.collectors.source import LiveSource
+    write_bundle(
+        source=LiveSource(root=str(tmp_path)),
+        files_to_capture=["/etc/passwd"],
+        commands_to_capture=[],
+        out_path=str(out),
+        metadata={"hostname": "h", "ubuntu_version": "U", "tool_version": "2.0.0"},
+    )
+
+    bad_baseline = tmp_path / "bad_baseline.yaml"
+    bad_baseline.write_text("not: [valid, - baseline\n")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["analyze", str(out), "--json", "--baseline", str(bad_baseline)]
+    )
+    assert result.exit_code != 0
+
+
+def test_scan_json_accepts_baseline_flag(monkeypatch, tmp_path):
+    monkeypatch.setattr("ubuntils.cli._ensure_root", lambda: None)
+    baseline_file = tmp_path / "baseline.yaml"
+    baseline_file.write_text("baseline:\n  - rule_id: USER_UID_ZERO\n    fingerprint: nonexistent\n")
+    runner = CliRunner()
+    result = runner.invoke(main, ["scan", "--json", "--baseline", str(baseline_file)])
+    assert result.exit_code == 0, result.output
+    assert "suppressed_by_baseline" in result.output

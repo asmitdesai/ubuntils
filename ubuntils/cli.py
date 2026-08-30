@@ -10,16 +10,18 @@ import structlog
 
 from ubuntils import __version__
 from ubuntils.collectors import ALL_COLLECTORS
-from ubuntils.collectors.source import BundleSource, LiveSource
+from ubuntils.collectors.source import LiveSource
 from ubuntils.detectors.custom_rules import load_custom_rules
 from ubuntils.detectors.engine import DetectionEngine
 from ubuntils.detectors.finding import Severity
+from ubuntils.detectors.scoring import apply_signal
 from ubuntils.formatters.json_formatter import JSONFormatter
 from ubuntils.remediators import REMEDIATOR_REGISTRY
 from ubuntils.timeline.builder import TimelineBuilder
 from ubuntils.timeline.correlator import correlate
 from ubuntils.tui.app import UbuntilsApp
 from ubuntils.tui.stats_panel import get_ubuntu_version
+from ubuntils.utils.baseline import load_baseline
 from ubuntils.utils.config import load_allowlist
 from ubuntils.utils.logging import configure_logging
 from ubuntils.utils.since_parser import parse_since
@@ -39,6 +41,9 @@ COLLECT_FILES = [
     "/etc/environment",
     "/etc/crontab",
     "/etc/profile",
+    "/var/log/syslog",
+    "/var/log/messages",
+    "/var/log/audit/audit.log",
 ]
 COLLECT_COMMANDS = [
     ("ss", ["ss", "-tunap"]),
@@ -47,6 +52,7 @@ COLLECT_COMMANDS = [
      ["systemctl", "list-timers", "--all", "--no-pager", "--output", "json"]),
     ("systemctl_list_timers_text",
      ["systemctl", "list-timers", "--all", "--no-pager"]),
+    ("journalctl", ["journalctl", "-o", "json", "--since=7 days ago", "--no-pager"]),
 ]
 
 # Collectors that acquire artifacts by shelling out to a command (as opposed
@@ -73,7 +79,7 @@ def _ensure_root() -> None:
 
 
 def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=None,
-                  custom_rules=None, bundle_info=None) -> tuple:
+                  custom_rules=None, bundle_info=None, baseline=None) -> tuple:
     """Run collectors → detection → timeline → optional remediation.
 
     Returns (findings, timeline, stats, scan_metadata, artifact_counts, remediation_results).
@@ -84,15 +90,14 @@ def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=
     artifact_counts: dict = {}
     collectors = [C(source=source) for C in ALL_COLLECTORS]
 
-    # A genuinely offline analysis is either a bundle replay (BundleSource) or
-    # a `--root` mounted-image LiveSource — in both cases there is no live
-    # process/kernel state to query, so command-based collectors are known to
-    # produce nothing and the live host's own logs must not be substituted in.
-    is_offline = isinstance(source, BundleSource) or (
-        isinstance(source, LiveSource) and getattr(source, "offline", False)
-    )
+    # Only a genuine --root (offline LiveSource over a mounted/extracted
+    # image) has *no* command output available — LiveSource.run() disables
+    # execution entirely in that mode (see collectors/source.py). A
+    # BundleSource replays real captured command output, so its collectors
+    # are NOT "skipped" — they produce genuine data from the collect step.
+    is_offline_root = isinstance(source, LiveSource) and getattr(source, "offline", False)
     command_collectors_skipped = (
-        list(COMMAND_BASED_COLLECTOR_NAMES) if is_offline else []
+        list(COMMAND_BASED_COLLECTOR_NAMES) if is_offline_root else []
     )
 
     for collector in collectors:
@@ -108,19 +113,23 @@ def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=
             logger.error("collector_failed", name=name, error=str(exc))
             failures += 1
 
+    engine = None
     try:
-        findings = DetectionEngine(allowlist=allowlist, custom_rules=custom_rules).run(artifacts)
-        if is_offline:
-            # Building the timeline reads the analyst's own /var/log/* and
-            # journald — never appropriate when analyzing a bundle or a
-            # mounted image; correlating those events onto the findings would
-            # misattribute the analyst's host activity to the target host.
-            timeline = []
-        else:
-            timeline = TimelineBuilder().build()
+        engine = DetectionEngine(allowlist=allowlist, custom_rules=custom_rules, baseline=baseline)
+        findings = engine.run(artifacts)
+        # TimelineBuilder now reads through the same `source` as every
+        # collector: a BundleSource replays captured logs/journald, an
+        # offline `--root` LiveSource reads real static log files on the
+        # mounted image (journald is empty there — no live journalctl to
+        # replay), and a live scan behaves exactly as before.
+        timeline = TimelineBuilder(source=source).build()
         if since is not None:
             timeline = [e for e in timeline if e.timestamp >= since]
         correlate(findings, timeline)
+        for finding in findings:
+            if finding.related_events:
+                apply_signal(finding, "timeline_corroboration", 25,
+                             f"{len(finding.related_events)} nearby timeline event(s)")
     except Exception as exc:
         logger.error("scan_engine_failed", error=str(exc))
         findings = []
@@ -141,6 +150,8 @@ def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=
                 rule_id=finding.rule_id,
                 status=result.status.value,
                 message=result.message,
+                confidence=finding.confidence,
+                confidence_band=finding.confidence_band,
             )
 
     ubuntu_version = get_ubuntu_version()
@@ -185,7 +196,11 @@ def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=
         "collector_failures": failures,
         "bundle_integrity": (bundle_info or {}).get("bundle_integrity", "live"),
         "command_collectors_skipped": command_collectors_skipped,
-        "timeline_skipped_offline": is_offline,
+        "suppressed_by_baseline": engine.suppressed_by_baseline if engine else 0,
+        "baseline_suppressed": (
+            [{"rule_id": f.rule_id, "artifact_path": f.artifact_path}
+             for f in engine.baseline_suppressed_findings] if engine else []
+        ),
     }
 
     if manifest:
@@ -208,6 +223,8 @@ def main():
 @click.option("--confirm", is_flag=True, help="Required with --remediate to apply changes")
 @click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False),
               help="YAML config with false-positive allowlist (rules/paths to suppress)")
+@click.option("--baseline", "baseline_path", type=click.Path(exists=True, dir_okay=False),
+              help="YAML baseline of environment-specific known-good fingerprints to suppress")
 @click.option("--output", "output_path", type=click.Path(dir_okay=False),
               help="Write JSON report to FILE instead of stdout (implies --json)")
 @click.option("--since", "since_value",
@@ -215,7 +232,7 @@ def main():
 @click.option("--rules", "rules_path", type=click.Path(exists=True, dir_okay=False),
               help="YAML file of custom pattern-match detection rules (adds detections)")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging")
-def scan(output_json, remediate, confirm, config_path, output_path, since_value,
+def scan(output_json, remediate, confirm, config_path, baseline_path, output_path, since_value,
          rules_path, verbose):
     """Scan the system for forensic artifacts and suspicious activity."""
     _ensure_root()
@@ -237,6 +254,13 @@ def scan(output_json, remediate, confirm, config_path, output_path, since_value,
         except (ValueError, OSError) as exc:
             raise click.ClickException(f"Invalid config {config_path}: {exc}")
 
+    baseline = None
+    if baseline_path:
+        try:
+            baseline = load_baseline(baseline_path)
+        except (ValueError, OSError) as exc:
+            raise click.ClickException(f"Invalid baseline {baseline_path}: {exc}")
+
     custom_rules = None
     if rules_path:
         try:
@@ -247,7 +271,8 @@ def scan(output_json, remediate, confirm, config_path, output_path, since_value,
     if output_json or remediate:
         findings, timeline, stats, scan_metadata, artifact_counts, remediation_results = \
             _run_pipeline(source=LiveSource(root="/"), remediate=remediate, confirm=confirm,
-                          allowlist=allowlist, since=since, custom_rules=custom_rules)
+                          allowlist=allowlist, since=since, custom_rules=custom_rules,
+                          baseline=baseline)
 
         if output_json:
             report = JSONFormatter().format(
@@ -270,7 +295,7 @@ def scan(output_json, remediate, confirm, config_path, output_path, since_value,
 
     # Plain TUI mode: let the app run its own scan with live progress
     UbuntilsApp(verbose=verbose, allowlist=allowlist, since=since,
-                custom_rules=custom_rules).run()
+                custom_rules=custom_rules, baseline=baseline).run()
 
 
 @main.command()
@@ -318,12 +343,14 @@ def collect(output_path, verbose):
               help="Write JSON report to FILE (implies --json)")
 @click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False),
               help="YAML allowlist to suppress findings")
+@click.option("--baseline", "baseline_path", type=click.Path(exists=True, dir_okay=False),
+              help="YAML baseline of environment-specific known-good fingerprints to suppress")
 @click.option("--rules", "rules_path", type=click.Path(exists=True, dir_okay=False),
               help="YAML file of custom pattern-match detection rules (adds detections)")
 @click.option("--since", "since_value",
               help="Limit timeline to events since this time (e.g. '24h', '7d', '2026-05-20')")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging")
-def analyze(bundle, root_path, output_json, output_path, config_path, rules_path,
+def analyze(bundle, root_path, output_json, output_path, config_path, baseline_path, rules_path,
             since_value, verbose):
     """Run detection + timeline against a collected bundle or a mounted image (--root)."""
     if not bundle and not root_path:
@@ -360,6 +387,13 @@ def analyze(bundle, root_path, output_json, output_path, config_path, rules_path
         except (ValueError, OSError) as exc:
             raise click.ClickException(f"Invalid config {config_path}: {exc}")
 
+    baseline = None
+    if baseline_path:
+        try:
+            baseline = load_baseline(baseline_path)
+        except (ValueError, OSError) as exc:
+            raise click.ClickException(f"Invalid baseline {baseline_path}: {exc}")
+
     custom_rules = None
     if rules_path:
         try:
@@ -370,7 +404,7 @@ def analyze(bundle, root_path, output_json, output_path, config_path, rules_path
     findings, timeline, stats, scan_metadata, artifact_counts, remediation_results = \
         _run_pipeline(source=source, remediate=False, confirm=False,
                       allowlist=allowlist, since=since, custom_rules=custom_rules,
-                      bundle_info=bundle_info)
+                      bundle_info=bundle_info, baseline=baseline)
 
     if output_json:
         report = JSONFormatter().format(

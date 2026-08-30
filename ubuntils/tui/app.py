@@ -12,6 +12,7 @@ from ubuntils.collectors import ALL_COLLECTORS
 from ubuntils.collectors.source import LiveSource
 from ubuntils.detectors.engine import DetectionEngine
 from ubuntils.detectors.finding import Finding, Severity
+from ubuntils.detectors.scoring import apply_signal
 from ubuntils.timeline.builder import TimelineBuilder, TimelineEvent
 from ubuntils.timeline.correlator import correlate
 from ubuntils.tui.results_screen import ResultsScreen
@@ -47,13 +48,14 @@ class UbuntilsApp(App):
     TITLE = "ubuntils"
 
     def __init__(self, verbose: bool = False, _scan_override=None,
-                 allowlist=None, since=None, custom_rules=None) -> None:
+                 allowlist=None, since=None, custom_rules=None, baseline=None) -> None:
         super().__init__()
         self._verbose = verbose
         self._scan_override = _scan_override
         self._allowlist = allowlist
         self._since = since
         self._custom_rules = custom_rules
+        self._baseline = baseline
 
     def on_mount(self) -> None:
         self.push_screen(
@@ -87,14 +89,21 @@ class UbuntilsApp(App):
                 CollectorProgress(name=name, index=i + 1, total=len(collectors), success=success)
             )
 
+        engine = None
         try:
-            findings = DetectionEngine(
-                allowlist=self._allowlist, custom_rules=self._custom_rules
-            ).run(artifacts)
+            engine = DetectionEngine(
+                allowlist=self._allowlist, custom_rules=self._custom_rules,
+                baseline=self._baseline
+            )
+            findings = engine.run(artifacts)
             timeline = TimelineBuilder().build()
             if self._since is not None:
                 timeline = [e for e in timeline if e.timestamp >= self._since]
             correlate(findings, timeline)
+            for finding in findings:
+                if finding.related_events:
+                    apply_signal(finding, "timeline_corroboration", 25,
+                                 f"{len(finding.related_events)} nearby timeline event(s)")
         except Exception as exc:
             logger.error("scan_engine_failed", error=str(exc))
             findings = []
@@ -114,6 +123,7 @@ class UbuntilsApp(App):
                 "LOW": sum(1 for f in findings if f.severity == Severity.LOW),
             },
             "timeline_count": len(timeline),
+            "suppressed_by_baseline": engine.suppressed_by_baseline if engine else 0,
         }
         self.post_message(
             ScanComplete(findings=findings, timeline=timeline, stats=stats)

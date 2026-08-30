@@ -7,6 +7,7 @@ from click.testing import CliRunner
 
 from ubuntils.cli import main, _run_pipeline
 from ubuntils.collectors.source import LiveSource
+from ubuntils.utils.baseline import Baseline
 from ubuntils.utils.since_parser import parse_since
 
 
@@ -435,3 +436,66 @@ def test_pipeline_attaches_related_events(monkeypatch):
     findings = result[0]
     assert findings[0].related_events
     assert "bob" in findings[0].related_events[0].description
+
+
+def test_run_pipeline_applies_timeline_corroboration_signal(tmp_path, monkeypatch):
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "passwd").write_text(
+        "root:x:0:0:root:/root:/bin/bash\nghost:x:0:0::/home/ghost:/bin/bash\n"
+    )
+    src = LiveSource(root=str(tmp_path))
+
+    # Fake correlate() to guarantee at least one finding gets related_events,
+    # without depending on real syslog/journald content in the test environment.
+    def _fake_correlate(findings, timeline):
+        for f in findings:
+            if f.rule_id == "USER_UID_ZERO":
+                f.related_events.append("sentinel")
+
+    monkeypatch.setattr("ubuntils.cli.correlate", _fake_correlate)
+
+    findings, *_ = _run_pipeline(source=src, remediate=False, confirm=False)
+    uid_zero = next(f for f in findings if f.rule_id == "USER_UID_ZERO")
+    assert any(s["name"] == "timeline_corroboration" for s in uid_zero.signals)
+
+
+def test_bundle_analysis_does_not_mark_command_collectors_skipped(tmp_path, monkeypatch):
+    monkeypatch.setattr("ubuntils.cli._ensure_root", lambda: None)
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
+    out = tmp_path / "b.tar.gz"
+    from ubuntils.bundle import write_bundle
+    from ubuntils.collectors.source import LiveSource
+    write_bundle(
+        source=LiveSource(root=str(tmp_path)),
+        files_to_capture=["/etc/passwd"],
+        commands_to_capture=[("ss", ["ss", "-tunap"])],
+        out_path=str(out),
+        metadata={"hostname": "h", "ubuntu_version": "U", "tool_version": "2.0.0"},
+    )
+
+    from ubuntils.bundle import read_bundle
+    from ubuntils.cli import _run_pipeline
+    source, bundle_info = read_bundle(str(out))
+    _findings, _timeline, _stats, meta, _counts, _rem = _run_pipeline(
+        source=source, remediate=False, confirm=False, bundle_info=bundle_info,
+    )
+    assert meta["command_collectors_skipped"] == []
+
+
+def test_run_pipeline_records_suppressed_by_baseline_count(tmp_path):
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "passwd").write_text(
+        "root:x:0:0:root:/root:/bin/bash\nghost:x:0:0::/home/ghost:/bin/bash\n"
+    )
+    src = LiveSource(root=str(tmp_path))
+    baseline = Baseline(entries=[{"rule_id": "USER_UID_ZERO", "fingerprint": "ghost"}])
+
+    findings, timeline, stats, meta, counts, rem = _run_pipeline(
+        source=src, remediate=False, confirm=False, baseline=baseline,
+    )
+    assert not any(f.rule_id == "USER_UID_ZERO" for f in findings)
+    assert meta["suppressed_by_baseline"] == 1
+    assert meta["baseline_suppressed"] == [
+        {"rule_id": "USER_UID_ZERO", "artifact_path": "/etc/passwd"}
+    ]

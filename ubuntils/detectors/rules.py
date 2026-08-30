@@ -4,6 +4,7 @@ import time
 from typing import List
 
 from ubuntils.detectors.finding import Finding, Severity
+from ubuntils.detectors.scoring import apply_signal
 from ubuntils.utils.validators import (
     is_login_shell,
     path_in_standard_bins,
@@ -40,6 +41,8 @@ def _is_outbound(conn: dict) -> bool:
 
 _7_DAYS_SECONDS = 7 * 24 * 3600
 _48_HOURS_SECONDS = 48 * 3600
+
+_DANGEROUS_KEY_OPTIONS = ("command=", "no-pty")
 
 
 def rule_cron_root_exec(artifacts: dict) -> List[Finding]:
@@ -146,28 +149,47 @@ def rule_suspicious_systemd_timer(artifacts: dict) -> List[Finding]:
 
 def rule_ssh_unauthorized_key(artifacts: dict) -> List[Finding]:
     findings = []
-    cutoff = time.time() - _7_DAYS_SECONDS
+    now = time.time()
+    cutoff = now - _7_DAYS_SECONDS
     for key_entry in artifacts.get("authorized_keys", []):
         file_mtime = key_entry.get("file_mtime", 0.0)
-        if file_mtime >= cutoff:
-            key_repr = " ".join(filter(None, [
-                key_entry.get("key_type", ""),
-                key_entry.get("key_data", ""),
-                key_entry.get("comment", ""),
-            ]))
-            findings.append(Finding(
-                rule_id="SSH_UNAUTHORIZED_KEY",
-                severity=Severity.MEDIUM,
-                title="Recently added SSH authorized key",
-                description=(
-                    f"authorized_keys file for '{key_entry.get('username', '')}' "
-                    "was modified within the last 7 days"
-                ),
-                artifact_path=f"{key_entry.get('home', '')}/.ssh/authorized_keys",
-                raw_value=key_repr,
-                remediation_available=True,
-                remediation_description="Remove the unauthorized key entry from authorized_keys",
-            ))
+        if file_mtime < cutoff:
+            continue
+        key_repr = " ".join(filter(None, [
+            key_entry.get("key_type", ""),
+            key_entry.get("key_data", ""),
+            key_entry.get("comment", ""),
+        ]))
+        finding = Finding(
+            rule_id="SSH_UNAUTHORIZED_KEY",
+            severity=Severity.MEDIUM,
+            title="Recently added SSH authorized key",
+            description=(
+                f"authorized_keys file for '{key_entry.get('username', '')}' "
+                "was modified within the last 7 days"
+            ),
+            artifact_path=f"{key_entry.get('home', '')}/.ssh/authorized_keys",
+            raw_value=key_repr,
+            remediation_available=True,
+            remediation_description="Remove the unauthorized key entry from authorized_keys",
+        )
+
+        options = key_entry.get("options", "")
+        has_dangerous_option = any(opt in options for opt in _DANGEROUS_KEY_OPTIONS)
+        if has_dangerous_option:
+            apply_signal(finding, "content_match", 30,
+                         f"dangerous key option present: {options!r}")
+
+        file_ctime = key_entry.get("file_ctime", 0.0)
+        ctime_also_recent = file_ctime >= cutoff
+        if ctime_also_recent:
+            apply_signal(finding, "ctime_corroborates_mtime", 20,
+                         "ctime is also within the window — harder to forge than mtime alone")
+        elif not has_dangerous_option:
+            apply_signal(finding, "mtime_only", -20,
+                         "recency is the only signal; ctime is not recent (mtime may be forged)")
+
+        findings.append(finding)
     return findings
 
 
@@ -304,42 +326,65 @@ def rule_uid_zero_account(artifacts: dict) -> List[Finding]:
     return findings
 
 
+_CURL_TO_SHELL_RE = re.compile(r"\b(curl|wget)\b[^\n|]*\|\s*(sudo\s+)?(ba)?sh\b")
+_BASE64_DECODE_RE = re.compile(r"\bbase64\b\s+(-d|--decode)\b")
+
+
+def _rc_content_is_suspicious(content: str) -> bool:
+    if _CURL_TO_SHELL_RE.search(content):
+        return True
+    if _BASE64_DECODE_RE.search(content):
+        return True
+    for line in content.splitlines():
+        if line.strip().startswith(("PATH=", "export PATH=")) and path_in_writable_tmp(line):
+            return True
+    return False
+
+
 def rule_shell_rc_modification(artifacts: dict) -> List[Finding]:
     findings = []
     cutoff = time.time() - _48_HOURS_SECONDS
-    seen_paths: set = set()
 
-    for defn in artifacts.get("env_definitions", []):
-        owner = defn.get("owner", "")
-        source = defn.get("source", "")
-        if owner == "system":
+    for entry in artifacts.get("shell_init_files", []):
+        mtime = entry.get("mtime", 0.0)
+        if mtime < cutoff:
             continue
-        if os.path.basename(source) not in SHELL_INIT_FILENAMES:
-            continue
-        if source in seen_paths:
-            continue
-        seen_paths.add(source)
-        try:
-            mtime = os.stat(source).st_mtime
-        except OSError:
-            continue
-        if mtime >= cutoff:
-            findings.append(Finding(
-                rule_id="SHELL_RC_MODIFICATION",
-                severity=Severity.LOW,
-                title="Shell init file recently modified",
-                description=(
-                    f"Shell init file '{source}' for user '{owner}' "
-                    "was modified within the last 48 hours"
-                ),
-                artifact_path=source,
-                raw_value=source,
-                remediation_available=False,
-                remediation_description=None,
-                guided_remediation=(
-                    f"Review recent additions to {source} "
-                    f"(`diff` it against a known-good copy or `/etc/skel`), "
-                    f"then revert any malicious lines by hand."
-                ),
-            ))
+        source = entry.get("source", "")
+        owner = entry.get("owner", "")
+        finding = Finding(
+            rule_id="SHELL_RC_MODIFICATION",
+            severity=Severity.LOW,
+            title="Shell init file recently modified",
+            description=(
+                f"Shell init file '{source}' for user '{owner}' "
+                "was modified within the last 48 hours"
+            ),
+            artifact_path=source,
+            raw_value=source,
+            remediation_available=False,
+            remediation_description=None,
+            guided_remediation=(
+                f"Review recent additions to {source} "
+                f"(`diff` it against a known-good copy or `/etc/skel`), "
+                f"then revert any malicious lines by hand."
+            ),
+        )
+
+        content = entry.get("content", "")
+        content_suspicious = _rc_content_is_suspicious(content)
+        if content_suspicious:
+            apply_signal(finding, "content_match", 30,
+                         "content matches a known-suspicious pattern "
+                         "(curl/wget-to-shell, base64 -d, or a writable-tmp PATH prepend)")
+
+        ctime = entry.get("ctime", 0.0)
+        ctime_also_recent = ctime >= cutoff
+        if ctime_also_recent:
+            apply_signal(finding, "ctime_corroborates_mtime", 20,
+                         "ctime is also within the window — harder to forge than mtime alone")
+        elif not content_suspicious:
+            apply_signal(finding, "mtime_only", -20,
+                         "recency is the only signal; ctime is not recent (mtime may be forged)")
+
+        findings.append(finding)
     return findings
