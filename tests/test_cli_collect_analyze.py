@@ -243,3 +243,13 @@ def test_analyze_bundle_with_bad_rules_file_errors(tmp_path, monkeypatch):
         main, ["analyze", str(out), "--json", "--rules", str(bad_rules)]
     )
     assert result.exit_code != 0
+
+
+def test_scan_json_accepts_baseline_flag(monkeypatch, tmp_path):
+    monkeypatch.setattr("ubuntils.cli._ensure_root", lambda: None)
+    baseline_file = tmp_path / "baseline.yaml"
+    baseline_file.write_text("baseline:\n  - rule_id: USER_UID_ZERO\n    fingerprint: nonexistent\n")
+    runner = CliRunner()
+    result = runner.invoke(main, ["scan", "--json", "--baseline", str(baseline_file)])
+    assert result.exit_code == 0, result.output
+    assert "suppressed_by_baseline" in result.output

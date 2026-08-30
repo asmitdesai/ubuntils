@@ -7,6 +7,7 @@ from click.testing import CliRunner
 
 from ubuntils.cli import main, _run_pipeline
 from ubuntils.collectors.source import LiveSource
+from ubuntils.utils.baseline import Baseline
 from ubuntils.utils.since_parser import parse_since
 
 
@@ -480,3 +481,18 @@ def test_bundle_analysis_does_not_mark_command_collectors_skipped(tmp_path, monk
         source=source, remediate=False, confirm=False, bundle_info=bundle_info,
     )
     assert meta["command_collectors_skipped"] == []
+
+
+def test_run_pipeline_records_suppressed_by_baseline_count(tmp_path):
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "passwd").write_text(
+        "root:x:0:0:root:/root:/bin/bash\nghost:x:0:0::/home/ghost:/bin/bash\n"
+    )
+    src = LiveSource(root=str(tmp_path))
+    baseline = Baseline(entries=[{"rule_id": "USER_UID_ZERO", "fingerprint": "ghost"}])
+
+    findings, timeline, stats, meta, counts, rem = _run_pipeline(
+        source=src, remediate=False, confirm=False, baseline=baseline,
+    )
+    assert not any(f.rule_id == "USER_UID_ZERO" for f in findings)
+    assert meta["suppressed_by_baseline"] == 1

@@ -21,6 +21,7 @@ from ubuntils.timeline.builder import TimelineBuilder
 from ubuntils.timeline.correlator import correlate
 from ubuntils.tui.app import UbuntilsApp
 from ubuntils.tui.stats_panel import get_ubuntu_version
+from ubuntils.utils.baseline import load_baseline
 from ubuntils.utils.config import load_allowlist
 from ubuntils.utils.logging import configure_logging
 from ubuntils.utils.since_parser import parse_since
@@ -78,7 +79,7 @@ def _ensure_root() -> None:
 
 
 def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=None,
-                  custom_rules=None, bundle_info=None) -> tuple:
+                  custom_rules=None, bundle_info=None, baseline=None) -> tuple:
     """Run collectors → detection → timeline → optional remediation.
 
     Returns (findings, timeline, stats, scan_metadata, artifact_counts, remediation_results).
@@ -112,8 +113,10 @@ def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=
             logger.error("collector_failed", name=name, error=str(exc))
             failures += 1
 
+    engine = None
     try:
-        findings = DetectionEngine(allowlist=allowlist, custom_rules=custom_rules).run(artifacts)
+        engine = DetectionEngine(allowlist=allowlist, custom_rules=custom_rules, baseline=baseline)
+        findings = engine.run(artifacts)
         # TimelineBuilder now reads through the same `source` as every
         # collector: a BundleSource replays captured logs/journald, an
         # offline `--root` LiveSource reads real static log files on the
@@ -191,6 +194,7 @@ def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=
         "collector_failures": failures,
         "bundle_integrity": (bundle_info or {}).get("bundle_integrity", "live"),
         "command_collectors_skipped": command_collectors_skipped,
+        "suppressed_by_baseline": engine.suppressed_by_baseline if engine else 0,
     }
 
     if manifest:
@@ -213,6 +217,8 @@ def main():
 @click.option("--confirm", is_flag=True, help="Required with --remediate to apply changes")
 @click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False),
               help="YAML config with false-positive allowlist (rules/paths to suppress)")
+@click.option("--baseline", "baseline_path", type=click.Path(exists=True, dir_okay=False),
+              help="YAML baseline of environment-specific known-good fingerprints to suppress")
 @click.option("--output", "output_path", type=click.Path(dir_okay=False),
               help="Write JSON report to FILE instead of stdout (implies --json)")
 @click.option("--since", "since_value",
@@ -220,7 +226,7 @@ def main():
 @click.option("--rules", "rules_path", type=click.Path(exists=True, dir_okay=False),
               help="YAML file of custom pattern-match detection rules (adds detections)")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging")
-def scan(output_json, remediate, confirm, config_path, output_path, since_value,
+def scan(output_json, remediate, confirm, config_path, baseline_path, output_path, since_value,
          rules_path, verbose):
     """Scan the system for forensic artifacts and suspicious activity."""
     _ensure_root()
@@ -242,6 +248,13 @@ def scan(output_json, remediate, confirm, config_path, output_path, since_value,
         except (ValueError, OSError) as exc:
             raise click.ClickException(f"Invalid config {config_path}: {exc}")
 
+    baseline = None
+    if baseline_path:
+        try:
+            baseline = load_baseline(baseline_path)
+        except (ValueError, OSError) as exc:
+            raise click.ClickException(f"Invalid baseline {baseline_path}: {exc}")
+
     custom_rules = None
     if rules_path:
         try:
@@ -252,7 +265,8 @@ def scan(output_json, remediate, confirm, config_path, output_path, since_value,
     if output_json or remediate:
         findings, timeline, stats, scan_metadata, artifact_counts, remediation_results = \
             _run_pipeline(source=LiveSource(root="/"), remediate=remediate, confirm=confirm,
-                          allowlist=allowlist, since=since, custom_rules=custom_rules)
+                          allowlist=allowlist, since=since, custom_rules=custom_rules,
+                          baseline=baseline)
 
         if output_json:
             report = JSONFormatter().format(
@@ -275,7 +289,7 @@ def scan(output_json, remediate, confirm, config_path, output_path, since_value,
 
     # Plain TUI mode: let the app run its own scan with live progress
     UbuntilsApp(verbose=verbose, allowlist=allowlist, since=since,
-                custom_rules=custom_rules).run()
+                custom_rules=custom_rules, baseline=baseline).run()
 
 
 @main.command()
@@ -323,12 +337,14 @@ def collect(output_path, verbose):
               help="Write JSON report to FILE (implies --json)")
 @click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False),
               help="YAML allowlist to suppress findings")
+@click.option("--baseline", "baseline_path", type=click.Path(exists=True, dir_okay=False),
+              help="YAML baseline of environment-specific known-good fingerprints to suppress")
 @click.option("--rules", "rules_path", type=click.Path(exists=True, dir_okay=False),
               help="YAML file of custom pattern-match detection rules (adds detections)")
 @click.option("--since", "since_value",
               help="Limit timeline to events since this time (e.g. '24h', '7d', '2026-05-20')")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging")
-def analyze(bundle, root_path, output_json, output_path, config_path, rules_path,
+def analyze(bundle, root_path, output_json, output_path, config_path, baseline_path, rules_path,
             since_value, verbose):
     """Run detection + timeline against a collected bundle or a mounted image (--root)."""
     if not bundle and not root_path:
@@ -365,6 +381,13 @@ def analyze(bundle, root_path, output_json, output_path, config_path, rules_path
         except (ValueError, OSError) as exc:
             raise click.ClickException(f"Invalid config {config_path}: {exc}")
 
+    baseline = None
+    if baseline_path:
+        try:
+            baseline = load_baseline(baseline_path)
+        except (ValueError, OSError) as exc:
+            raise click.ClickException(f"Invalid baseline {baseline_path}: {exc}")
+
     custom_rules = None
     if rules_path:
         try:
@@ -375,7 +398,7 @@ def analyze(bundle, root_path, output_json, output_path, config_path, rules_path
     findings, timeline, stats, scan_metadata, artifact_counts, remediation_results = \
         _run_pipeline(source=source, remediate=False, confirm=False,
                       allowlist=allowlist, since=since, custom_rules=custom_rules,
-                      bundle_info=bundle_info)
+                      bundle_info=bundle_info, baseline=baseline)
 
     if output_json:
         report = JSONFormatter().format(
