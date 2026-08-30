@@ -20,9 +20,16 @@ def format_detail(finding: Finding) -> str:
     lines = [
         finding.description,
         "",
+        f"Confidence: {finding.confidence} ({finding.confidence_band})",
         f"Artifact:  {finding.artifact_path}",
         f"Raw:       {finding.raw_value}",
     ]
+    if finding.signals:
+        lines.append("")
+        lines.append("Signals:")
+        for s in finding.signals:
+            sign = "+" if s["weight"] >= 0 else ""
+            lines.append(f"  {sign}{s['weight']:>4}  {s['name']}: {s['detail']}")
     if finding.remediation_available and finding.remediation_description:
         lines.append(f"Remediation: {finding.remediation_description}")
     elif finding.remediation_available:
@@ -39,9 +46,16 @@ def _detail_text(finding: Finding | None, result: RemediationResult | None = Non
     lines = [
         finding.description,
         "",
+        f"Confidence: {finding.confidence} ({finding.confidence_band})",
         f"Artifact:  {finding.artifact_path}",
         f"Raw:       {finding.raw_value}",
     ]
+    if finding.signals:
+        lines.append("")
+        lines.append("Signals:")
+        for s in finding.signals:
+            sign = "+" if s["weight"] >= 0 else ""
+            lines.append(f"  {sign}{s['weight']:>4}  {s['name']}: {s['detail']}")
 
     if finding.guided_remediation:
         lines += ["", "Guided remediation:", f"  {finding.guided_remediation}"]
@@ -135,7 +149,10 @@ class FindingsPanel(Widget):
             path = f.artifact_path[:35]
             items.append(
                 ListItem(
-                    Label(f"[{color} bold]{sev}[/{color} bold]  {rule}  {escape(path)}"),
+                    Label(
+                        f"[{color} bold]{sev}[/{color} bold]  {rule}  "
+                        f"{escape(path)}  ({f.confidence_band})"
+                    ),
                     id=f"finding-{i}",
                 )
             )

@@ -773,3 +773,35 @@ def test_detail_text_includes_guided_remediation_and_related_events():
     assert "kill -9 99" in text
     assert "Related events:" in text
     assert "Accepted publickey" in text
+
+
+def _finding_with_signals():
+    f = Finding(
+        rule_id="SSH_UNAUTHORIZED_KEY", severity=Severity.MEDIUM, title="t", description="d",
+        artifact_path="/x", raw_value="v", remediation_available=False,
+    )
+    from ubuntils.detectors.scoring import apply_signal
+    apply_signal(f, "content_match", 30, "dangerous option present")
+    return f
+
+
+def test_format_detail_includes_confidence_band():
+    text = format_detail(_finding_with_signals())
+    assert "HIGH" in text
+
+
+def test_findings_list_row_shows_confidence_band(tmp_path):
+    # FindingsPanel.compose() builds one Label per finding — assert the
+    # confidence band string appears in the rendered label text.
+    from ubuntils.tui.findings_panel import FindingsPanel
+    panel = FindingsPanel([_finding_with_signals()])
+    # compose() is a generator; materialize it without mounting a full app.
+    items = list(panel.compose())
+    list_view = items[0]
+    # Positional children passed to a Textual widget land in
+    # `_pending_children` until the widget is mounted into a running app;
+    # `.children` stays empty until then, so inspect the pending list instead.
+    list_item = list_view._pending_children[0]
+    label = list_item._pending_children[0]
+    label_text = str(label.render())
+    assert "HIGH" in label_text

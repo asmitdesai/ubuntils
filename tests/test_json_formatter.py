@@ -126,6 +126,20 @@ def test_finding_emits_related_events_and_guided_remediation():
     assert f["guided_remediation"] == "systemctl disable --now foo.service"
 
 
+def test_finding_emits_confidence_and_signals():
+    finding = Finding(
+        rule_id="SSH_UNAUTHORIZED_KEY", severity=Severity.MEDIUM, title="t",
+        description="d", artifact_path="/x", raw_value="v",
+        remediation_available=False,
+    )
+    from ubuntils.detectors.scoring import apply_signal
+    apply_signal(finding, "content_match", 30, "dangerous option present")
+    f = json.loads(JSONFormatter().format({}, {}, [finding], [], []))["findings"][0]
+    assert f["confidence"] == finding.confidence
+    assert f["confidence_band"] == finding.confidence_band
+    assert f["signals"] == [{"name": "content_match", "weight": 30, "detail": "dangerous option present"}]
+
+
 def test_finding_omits_empty_correlation_fields():
     finding = Finding(
         rule_id="CRON_TMP_PATH", severity=Severity.HIGH, title="t",

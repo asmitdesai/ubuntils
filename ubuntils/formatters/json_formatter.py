@@ -41,6 +41,9 @@ class JSONFormatter:
             "artifact_path": f.artifact_path,
             "raw_value": f.raw_value,
             "remediation_available": f.remediation_available,
+            "confidence": f.confidence,
+            "confidence_band": f.confidence_band,
+            "signals": f.signals,
         }
         if f.remediation_description is not None:
             d["remediation_description"] = f.remediation_description
