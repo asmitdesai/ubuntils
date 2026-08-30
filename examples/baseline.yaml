@@ -1,0 +1,16 @@
+# ubuntils baseline — environment-specific known-good fingerprints
+#
+# Pass with:  sudo ubuntils scan --json --baseline examples/baseline.yaml
+#
+# Different from --config (allowlist): --config mutes a rule/path everywhere;
+# --baseline says "in *this* environment, this specific artifact is known
+# good" (a key fingerprint, an expected RC file). A match is dropped from the
+# report and counted in scan_metadata.suppressed_by_baseline — suppression is
+# always visible, never silent.
+
+baseline:
+  - rule_id: SSH_UNAUTHORIZED_KEY
+    fingerprint: ci@ci-runner      # substring match against the finding's raw_value
+
+  - rule_id: SHELL_RC_MODIFICATION
+    fingerprint: /home/deploy/.bashrc  # exact match against the finding's artifact_path

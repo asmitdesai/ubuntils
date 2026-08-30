@@ -17,6 +17,7 @@ from ubuntils.detectors.rules import (
     rule_suspicious_systemd_timer,
     rule_uid_zero_account,
 )
+from ubuntils.utils.baseline import Baseline
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -586,3 +587,12 @@ def test_shell_rc_modification_has_guided_remediation(tmp_path):
     findings = rule_shell_rc_modification(artifacts)
     assert findings[0].remediation_available is False
     assert str(rc) in findings[0].guided_remediation
+
+
+def test_engine_applies_baseline_before_allowlist_and_counts_suppressed():
+    artifacts = {"authorized_keys": [_ssh_key_entry()]}
+    baseline = Baseline(entries=[{"rule_id": "SSH_UNAUTHORIZED_KEY", "fingerprint": "test@host"}])
+    engine = DetectionEngine(baseline=baseline)
+    findings = engine.run(artifacts)
+    assert not any(f.rule_id == "SSH_UNAUTHORIZED_KEY" for f in findings)
+    assert engine.suppressed_by_baseline == 1
