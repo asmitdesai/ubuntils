@@ -435,3 +435,24 @@ def test_pipeline_attaches_related_events(monkeypatch):
     findings = result[0]
     assert findings[0].related_events
     assert "bob" in findings[0].related_events[0].description
+
+
+def test_run_pipeline_applies_timeline_corroboration_signal(tmp_path, monkeypatch):
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "passwd").write_text(
+        "root:x:0:0:root:/root:/bin/bash\nghost:x:0:0::/home/ghost:/bin/bash\n"
+    )
+    src = LiveSource(root=str(tmp_path))
+
+    # Fake correlate() to guarantee at least one finding gets related_events,
+    # without depending on real syslog/journald content in the test environment.
+    def _fake_correlate(findings, timeline):
+        for f in findings:
+            if f.rule_id == "USER_UID_ZERO":
+                f.related_events.append("sentinel")
+
+    monkeypatch.setattr("ubuntils.cli.correlate", _fake_correlate)
+
+    findings, *_ = _run_pipeline(source=src, remediate=False, confirm=False)
+    uid_zero = next(f for f in findings if f.rule_id == "USER_UID_ZERO")
+    assert any(s["name"] == "timeline_corroboration" for s in uid_zero.signals)

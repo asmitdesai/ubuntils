@@ -14,6 +14,7 @@ from ubuntils.collectors.source import BundleSource, LiveSource
 from ubuntils.detectors.custom_rules import load_custom_rules
 from ubuntils.detectors.engine import DetectionEngine
 from ubuntils.detectors.finding import Severity
+from ubuntils.detectors.scoring import apply_signal
 from ubuntils.formatters.json_formatter import JSONFormatter
 from ubuntils.remediators import REMEDIATOR_REGISTRY
 from ubuntils.timeline.builder import TimelineBuilder
@@ -121,6 +122,10 @@ def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=
         if since is not None:
             timeline = [e for e in timeline if e.timestamp >= since]
         correlate(findings, timeline)
+        for finding in findings:
+            if finding.related_events:
+                apply_signal(finding, "timeline_corroboration", 25,
+                             f"{len(finding.related_events)} nearby timeline event(s)")
     except Exception as exc:
         logger.error("scan_engine_failed", error=str(exc))
         findings = []
