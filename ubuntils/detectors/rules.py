@@ -4,6 +4,7 @@ import time
 from typing import List
 
 from ubuntils.detectors.finding import Finding, Severity
+from ubuntils.detectors.scoring import apply_signal
 from ubuntils.utils.validators import (
     is_login_shell,
     path_in_standard_bins,
@@ -40,6 +41,8 @@ def _is_outbound(conn: dict) -> bool:
 
 _7_DAYS_SECONDS = 7 * 24 * 3600
 _48_HOURS_SECONDS = 48 * 3600
+
+_DANGEROUS_KEY_OPTIONS = ("command=", "no-pty")
 
 
 def rule_cron_root_exec(artifacts: dict) -> List[Finding]:
@@ -146,28 +149,47 @@ def rule_suspicious_systemd_timer(artifacts: dict) -> List[Finding]:
 
 def rule_ssh_unauthorized_key(artifacts: dict) -> List[Finding]:
     findings = []
-    cutoff = time.time() - _7_DAYS_SECONDS
+    now = time.time()
+    cutoff = now - _7_DAYS_SECONDS
     for key_entry in artifacts.get("authorized_keys", []):
         file_mtime = key_entry.get("file_mtime", 0.0)
-        if file_mtime >= cutoff:
-            key_repr = " ".join(filter(None, [
-                key_entry.get("key_type", ""),
-                key_entry.get("key_data", ""),
-                key_entry.get("comment", ""),
-            ]))
-            findings.append(Finding(
-                rule_id="SSH_UNAUTHORIZED_KEY",
-                severity=Severity.MEDIUM,
-                title="Recently added SSH authorized key",
-                description=(
-                    f"authorized_keys file for '{key_entry.get('username', '')}' "
-                    "was modified within the last 7 days"
-                ),
-                artifact_path=f"{key_entry.get('home', '')}/.ssh/authorized_keys",
-                raw_value=key_repr,
-                remediation_available=True,
-                remediation_description="Remove the unauthorized key entry from authorized_keys",
-            ))
+        if file_mtime < cutoff:
+            continue
+        key_repr = " ".join(filter(None, [
+            key_entry.get("key_type", ""),
+            key_entry.get("key_data", ""),
+            key_entry.get("comment", ""),
+        ]))
+        finding = Finding(
+            rule_id="SSH_UNAUTHORIZED_KEY",
+            severity=Severity.MEDIUM,
+            title="Recently added SSH authorized key",
+            description=(
+                f"authorized_keys file for '{key_entry.get('username', '')}' "
+                "was modified within the last 7 days"
+            ),
+            artifact_path=f"{key_entry.get('home', '')}/.ssh/authorized_keys",
+            raw_value=key_repr,
+            remediation_available=True,
+            remediation_description="Remove the unauthorized key entry from authorized_keys",
+        )
+
+        options = key_entry.get("options", "")
+        has_dangerous_option = any(opt in options for opt in _DANGEROUS_KEY_OPTIONS)
+        if has_dangerous_option:
+            apply_signal(finding, "content_match", 30,
+                         f"dangerous key option present: {options!r}")
+
+        file_ctime = key_entry.get("file_ctime", 0.0)
+        ctime_also_recent = file_ctime >= cutoff
+        if ctime_also_recent:
+            apply_signal(finding, "ctime_corroborates_mtime", 20,
+                         "ctime is also within the window — harder to forge than mtime alone")
+        elif not has_dangerous_option:
+            apply_signal(finding, "mtime_only", -20,
+                         "recency is the only signal; ctime is not recent (mtime may be forged)")
+
+        findings.append(finding)
     return findings
 
 

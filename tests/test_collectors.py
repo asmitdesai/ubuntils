@@ -628,6 +628,36 @@ def test_ssh_collector_reads_from_source(tmp_path):
     assert isinstance(first["file_mtime"], float)
 
 
+def test_ssh_collector_captures_ctime_and_options(tmp_path):
+    from ubuntils.collectors.ssh import SSHCollector
+    from ubuntils.collectors.source import BundleSource
+
+    files = tmp_path / "files"
+    home = files / "home" / "alice"
+    (home / ".ssh").mkdir(parents=True)
+    (files / "etc").mkdir()
+    (files / "etc" / "passwd").write_text(
+        "alice:x:1000:1000::/home/alice:/bin/bash\n"
+    )
+    (home / ".ssh" / "authorized_keys").write_text(
+        'command="/bin/echo hi",no-pty ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 ci@runner\n'
+        "ssh-rsa AAAAB3NzaC1yc2E alice@laptop\n"
+    )
+
+    src = BundleSource(root_dir=str(files), command_index={})
+    result = SSHCollector(source=src).collect()
+
+    entries = result["authorized_keys"]
+    assert len(entries) == 2
+    first, second = entries
+    assert first["options"] == 'command="/bin/echo hi",no-pty'
+    assert first["key_type"] == "ssh-ed25519"
+    assert first["comment"] == "ci@runner"
+    assert first["file_ctime"] > 0
+    assert second["options"] == ""
+    assert second["key_type"] == "ssh-rsa"
+
+
 def test_sudoers_collector_reads_from_source(tmp_path):
     from ubuntils.collectors.sudoers import SudoersCollector
     from ubuntils.collectors.source import BundleSource

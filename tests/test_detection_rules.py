@@ -216,6 +216,30 @@ def test_rule_ssh_unauthorized_key_empty_artifacts():
     assert rule_ssh_unauthorized_key({}) == []
 
 
+def test_ssh_rule_bare_mtime_touch_is_low_confidence():
+    # ctime NOT recent (file existed, only mtime was touched), no dangerous options.
+    old_ctime = time.time() - 400 * 24 * 3600
+    entry = _ssh_key_entry(file_mtime=time.time() - 3600)
+    entry["file_ctime"] = old_ctime
+    entry["options"] = ""
+    findings = rule_ssh_unauthorized_key({"authorized_keys": [entry]})
+    assert len(findings) == 1
+    assert findings[0].confidence_band == "LOW"
+    assert findings[0].signals[0]["name"] == "mtime_only"
+
+
+def test_ssh_rule_dangerous_option_is_high_confidence():
+    entry = _ssh_key_entry(file_mtime=time.time() - 3600)
+    entry["file_ctime"] = time.time() - 3600
+    entry["options"] = 'command="/bin/sh"'
+    findings = rule_ssh_unauthorized_key({"authorized_keys": [entry]})
+    assert len(findings) == 1
+    assert findings[0].confidence_band == "HIGH"
+    signal_names = {s["name"] for s in findings[0].signals}
+    assert "content_match" in signal_names
+    assert "ctime_corroborates_mtime" in signal_names
+
+
 # ---------------------------------------------------------------------------
 # SUDOERS_NOPASSWD
 # ---------------------------------------------------------------------------
