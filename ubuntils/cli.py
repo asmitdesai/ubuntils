@@ -10,7 +10,7 @@ import structlog
 
 from ubuntils import __version__
 from ubuntils.collectors import ALL_COLLECTORS
-from ubuntils.collectors.source import BundleSource, LiveSource
+from ubuntils.collectors.source import LiveSource
 from ubuntils.detectors.custom_rules import load_custom_rules
 from ubuntils.detectors.engine import DetectionEngine
 from ubuntils.detectors.finding import Severity
@@ -40,6 +40,9 @@ COLLECT_FILES = [
     "/etc/environment",
     "/etc/crontab",
     "/etc/profile",
+    "/var/log/syslog",
+    "/var/log/messages",
+    "/var/log/audit/audit.log",
 ]
 COLLECT_COMMANDS = [
     ("ss", ["ss", "-tunap"]),
@@ -48,6 +51,7 @@ COLLECT_COMMANDS = [
      ["systemctl", "list-timers", "--all", "--no-pager", "--output", "json"]),
     ("systemctl_list_timers_text",
      ["systemctl", "list-timers", "--all", "--no-pager"]),
+    ("journalctl", ["journalctl", "-o", "json", "--since=7 days ago", "--no-pager"]),
 ]
 
 # Collectors that acquire artifacts by shelling out to a command (as opposed
@@ -85,15 +89,14 @@ def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=
     artifact_counts: dict = {}
     collectors = [C(source=source) for C in ALL_COLLECTORS]
 
-    # A genuinely offline analysis is either a bundle replay (BundleSource) or
-    # a `--root` mounted-image LiveSource — in both cases there is no live
-    # process/kernel state to query, so command-based collectors are known to
-    # produce nothing and the live host's own logs must not be substituted in.
-    is_offline = isinstance(source, BundleSource) or (
-        isinstance(source, LiveSource) and getattr(source, "offline", False)
-    )
+    # Only a genuine --root (offline LiveSource over a mounted/extracted
+    # image) has *no* command output available — LiveSource.run() disables
+    # execution entirely in that mode (see collectors/source.py). A
+    # BundleSource replays real captured command output, so its collectors
+    # are NOT "skipped" — they produce genuine data from the collect step.
+    is_offline_root = isinstance(source, LiveSource) and getattr(source, "offline", False)
     command_collectors_skipped = (
-        list(COMMAND_BASED_COLLECTOR_NAMES) if is_offline else []
+        list(COMMAND_BASED_COLLECTOR_NAMES) if is_offline_root else []
     )
 
     for collector in collectors:
@@ -111,14 +114,12 @@ def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=
 
     try:
         findings = DetectionEngine(allowlist=allowlist, custom_rules=custom_rules).run(artifacts)
-        if is_offline:
-            # Building the timeline reads the analyst's own /var/log/* and
-            # journald — never appropriate when analyzing a bundle or a
-            # mounted image; correlating those events onto the findings would
-            # misattribute the analyst's host activity to the target host.
-            timeline = []
-        else:
-            timeline = TimelineBuilder().build()
+        # TimelineBuilder now reads through the same `source` as every
+        # collector: a BundleSource replays captured logs/journald, an
+        # offline `--root` LiveSource reads real static log files on the
+        # mounted image (journald is empty there — no live journalctl to
+        # replay), and a live scan behaves exactly as before.
+        timeline = TimelineBuilder(source=source).build()
         if since is not None:
             timeline = [e for e in timeline if e.timestamp >= since]
         correlate(findings, timeline)
@@ -190,7 +191,6 @@ def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=
         "collector_failures": failures,
         "bundle_integrity": (bundle_info or {}).get("bundle_integrity", "live"),
         "command_collectors_skipped": command_collectors_skipped,
-        "timeline_skipped_offline": is_offline,
     }
 
     if manifest:

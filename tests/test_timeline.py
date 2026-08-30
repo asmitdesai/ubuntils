@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
+from ubuntils.collectors.source import BundleSource, LiveSource
 from ubuntils.timeline.builder import TimelineBuilder, TimelineEvent
 
 
@@ -52,8 +53,8 @@ def test_parse_syslog_timestamps_are_aware():
 
 def test_parse_journald_json():
     builder = TimelineBuilder()
-    with patch("ubuntils.timeline.builder.run_command") as mock_cmd:
-        mock_cmd.return_value = (JOURNALD_JSON_OUTPUT, "", 0)
+    with patch.object(LiveSource, "run") as mock_run:
+        mock_run.return_value = (JOURNALD_JSON_OUTPUT, "", 0)
         events = builder._parse_journald(since_days=7)
 
     assert len(events) == 2
@@ -65,8 +66,8 @@ def test_parse_journald_json():
 
 def test_parse_journald_returns_empty_on_failure():
     builder = TimelineBuilder()
-    with patch("ubuntils.timeline.builder.run_command") as mock_cmd:
-        mock_cmd.return_value = ("", "journalctl not found", -1)
+    with patch.object(LiveSource, "run") as mock_run:
+        mock_run.return_value = ("", "journalctl not found", -1)
         events = builder._parse_journald(since_days=7)
     assert events == []
 
@@ -114,8 +115,8 @@ def test_parse_syslog_skips_bad_timestamp():
 def test_parse_journald_skips_empty_lines():
     builder = TimelineBuilder()
     content = "\n" + JOURNALD_JSON_OUTPUT + "\n"
-    with patch("ubuntils.timeline.builder.run_command") as mock_cmd:
-        mock_cmd.return_value = (content, "", 0)
+    with patch.object(LiveSource, "run") as mock_run:
+        mock_run.return_value = (content, "", 0)
         events = builder._parse_journald(since_days=7)
     assert len(events) == 2
 
@@ -123,8 +124,8 @@ def test_parse_journald_skips_empty_lines():
 def test_parse_journald_skips_bad_json():
     builder = TimelineBuilder()
     bad_json = "not-json\n" + JOURNALD_JSON_OUTPUT
-    with patch("ubuntils.timeline.builder.run_command") as mock_cmd:
-        mock_cmd.return_value = (bad_json, "", 0)
+    with patch.object(LiveSource, "run") as mock_run:
+        mock_run.return_value = (bad_json, "", 0)
         events = builder._parse_journald(since_days=7)
     assert len(events) == 2
 
@@ -150,24 +151,14 @@ def test_parse_auditd_skips_bad_timestamp():
     assert events == []
 
 
-def test_build_reads_syslog_and_auditd():
-    builder = TimelineBuilder()
-    syslog_content = SYSLOG_SNIPPET
-    auditd_content = AUDITD_SNIPPET
+def test_build_reads_syslog_and_auditd(tmp_path):
+    (tmp_path / "var" / "log" / "audit").mkdir(parents=True)
+    (tmp_path / "var" / "log" / "syslog").write_text(SYSLOG_SNIPPET)
+    (tmp_path / "var" / "log" / "audit" / "audit.log").write_text(AUDITD_SNIPPET)
 
-    def fake_open(path, *args, **kwargs):
-        import io
-        if "syslog" in path:
-            return io.StringIO(syslog_content)
-        if "audit" in path:
-            return io.StringIO(auditd_content)
-        raise OSError("not found")
-
-    with (
-        patch("builtins.open", side_effect=fake_open),
-        patch("ubuntils.timeline.builder.run_command") as mock_cmd,
-    ):
-        mock_cmd.return_value = (JOURNALD_JSON_OUTPUT, "", 0)
+    builder = TimelineBuilder(source=LiveSource(root=str(tmp_path)))
+    with patch.object(LiveSource, "run") as mock_run:
+        mock_run.return_value = (JOURNALD_JSON_OUTPUT, "", 0)
         events = builder.build()
 
     assert len(events) > 0
@@ -175,16 +166,41 @@ def test_build_reads_syslog_and_auditd():
     assert "syslog" in sources
 
 
-def test_build_handles_missing_log_files():
-    builder = TimelineBuilder()
-    with (
-        patch("builtins.open", side_effect=OSError("not found")),
-        patch("ubuntils.timeline.builder.run_command") as mock_cmd,
-    ):
-        mock_cmd.return_value = ("", "", -1)
+def test_build_handles_missing_log_files(tmp_path):
+    builder = TimelineBuilder(source=LiveSource(root=str(tmp_path)))
+    with patch.object(LiveSource, "run") as mock_run:
+        mock_run.return_value = ("", "", -1)
         events = builder.build()
 
     assert events == []
+
+
+def test_timeline_builder_reads_syslog_via_source(tmp_path):
+    files = tmp_path / "files"
+    (files / "var" / "log").mkdir(parents=True)
+    (files / "var" / "log" / "syslog").write_text(
+        "Jan  5 10:00:00 host sshd[123]: Accepted password for alice\n"
+    )
+    src = BundleSource(root_dir=str(files), command_index={})
+
+    events = TimelineBuilder(source=src).build()
+
+    assert any("Accepted password for alice" in e.description for e in events)
+
+
+def test_timeline_builder_replays_captured_journalctl(tmp_path):
+    import json
+    files = tmp_path / "files"
+    cmds = tmp_path / "commands"
+    cmds.mkdir()
+    files.mkdir()
+    record = json.dumps({"__REALTIME_TIMESTAMP": "1735646400000000", "MESSAGE": "sudo: alice ran /bin/su"})
+    (cmds / "journalctl.txt").write_text(record + "\n")
+    src = BundleSource(root_dir=str(files), command_index={"journalctl": str(cmds / "journalctl.txt")})
+
+    events = TimelineBuilder(source=src).build()
+
+    assert any("sudo: alice ran /bin/su" in e.description for e in events)
 
 
 def test_build_sorted_ascending():

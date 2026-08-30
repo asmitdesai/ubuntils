@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import json
 import re
@@ -6,7 +8,7 @@ from dataclasses import dataclass
 import structlog
 from dateutil import parser as dateutil_parser
 
-from ubuntils.utils.shell import run_command
+from ubuntils.collectors.source import ArtifactSource, LiveSource
 
 logger = structlog.get_logger()
 
@@ -24,20 +26,23 @@ class TimelineEvent:
 
 
 class TimelineBuilder:
+    def __init__(self, source: ArtifactSource | None = None):
+        self.source = source if source is not None else LiveSource()
+
     def build(self, since_days: int = 7) -> list[TimelineEvent]:
         events: list[TimelineEvent] = []
         for path in ("/var/log/syslog", "/var/log/messages"):
+            if self.source.exists(path):
+                try:
+                    events.extend(self._parse_syslog(self.source.read_text(path)))
+                except OSError:
+                    pass
+        events.extend(self._parse_journald(since_days))
+        if self.source.exists("/var/log/audit/audit.log"):
             try:
-                with open(path) as f:
-                    events.extend(self._parse_syslog(f.read()))
+                events.extend(self._parse_auditd(self.source.read_text("/var/log/audit/audit.log")))
             except OSError:
                 pass
-        events.extend(self._parse_journald(since_days))
-        try:
-            with open("/var/log/audit/audit.log") as f:
-                events.extend(self._parse_auditd(f.read()))
-        except OSError:
-            pass
         return self._deduplicate(events)
 
     def _parse_syslog(self, content: str) -> list[TimelineEvent]:
@@ -61,9 +66,9 @@ class TimelineBuilder:
         return events
 
     def _parse_journald(self, since_days: int) -> list[TimelineEvent]:
-        since = f"{since_days} days ago"
-        stdout, _, returncode = run_command(
-            ["journalctl", "-o", "json", f"--since={since}", "--no-pager"]
+        stdout, _stderr, returncode = self.source.run(
+            "journalctl",
+            ["journalctl", "-o", "json", f"--since={since_days} days ago", "--no-pager"],
         )
         if returncode != 0 or not stdout.strip():
             return []

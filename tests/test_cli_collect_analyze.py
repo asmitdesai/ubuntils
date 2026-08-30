@@ -137,7 +137,7 @@ def test_analyze_root_skips_command_collectors_and_never_runs_live_commands(tmp_
 
 def test_scan_json_does_not_skip_command_collectors(monkeypatch):
     """Live `scan` must be entirely unaffected — command_collectors_skipped
-    stays empty and the timeline is not skipped."""
+    stays empty."""
     monkeypatch.setattr("ubuntils.cli._ensure_root", lambda: None)
     runner = CliRunner()
     result = runner.invoke(main, ["scan", "--json"])
@@ -145,10 +145,12 @@ def test_scan_json_does_not_skip_command_collectors(monkeypatch):
     report = _json.loads(result.output)
     meta = report["scan_metadata"]
     assert meta["command_collectors_skipped"] == []
-    assert meta["timeline_skipped_offline"] is False
 
 
-def test_analyze_root_produces_empty_timeline_with_flag_set(tmp_path, monkeypatch):
+def test_analyze_root_produces_empty_timeline_with_no_log_files(tmp_path, monkeypatch):
+    """A `--root` image with no captured /var/log/* files produces an empty
+    timeline (offline LiveSource.run() is disabled, so journald is empty too,
+    and there are no static log files under the image to read)."""
     monkeypatch.setattr("ubuntils.cli._ensure_root", lambda: None)
     root = tmp_path / "image"
     (root / "etc").mkdir(parents=True)
@@ -159,10 +161,11 @@ def test_analyze_root_produces_empty_timeline_with_flag_set(tmp_path, monkeypatc
     assert result.exit_code == 0, result.output
     report = _json.loads(result.output)
     assert report["timeline"] == []
-    assert report["scan_metadata"]["timeline_skipped_offline"] is True
 
 
-def test_analyze_bundle_produces_empty_timeline_with_flag_set(tmp_path, monkeypatch):
+def test_analyze_bundle_produces_empty_timeline_with_no_captured_logs(tmp_path, monkeypatch):
+    """A bundle that captured no log files and no journalctl command produces
+    an empty timeline — BundleSource replay has nothing to replay from."""
     monkeypatch.setattr("ubuntils.cli._ensure_root", lambda: None)
     (tmp_path / "etc").mkdir()
     (tmp_path / "etc" / "passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
@@ -182,7 +185,6 @@ def test_analyze_bundle_produces_empty_timeline_with_flag_set(tmp_path, monkeypa
     assert result.exit_code == 0, result.output
     report = _json.loads(result.output)
     assert report["timeline"] == []
-    assert report["scan_metadata"]["timeline_skipped_offline"] is True
 
 
 def test_analyze_bundle_uses_bundle_hostname_not_test_runners(tmp_path, monkeypatch):

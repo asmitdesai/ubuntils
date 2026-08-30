@@ -456,3 +456,27 @@ def test_run_pipeline_applies_timeline_corroboration_signal(tmp_path, monkeypatc
     findings, *_ = _run_pipeline(source=src, remediate=False, confirm=False)
     uid_zero = next(f for f in findings if f.rule_id == "USER_UID_ZERO")
     assert any(s["name"] == "timeline_corroboration" for s in uid_zero.signals)
+
+
+def test_bundle_analysis_does_not_mark_command_collectors_skipped(tmp_path, monkeypatch):
+    monkeypatch.setattr("ubuntils.cli._ensure_root", lambda: None)
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
+    out = tmp_path / "b.tar.gz"
+    from ubuntils.bundle import write_bundle
+    from ubuntils.collectors.source import LiveSource
+    write_bundle(
+        source=LiveSource(root=str(tmp_path)),
+        files_to_capture=["/etc/passwd"],
+        commands_to_capture=[("ss", ["ss", "-tunap"])],
+        out_path=str(out),
+        metadata={"hostname": "h", "ubuntu_version": "U", "tool_version": "2.0.0"},
+    )
+
+    from ubuntils.bundle import read_bundle
+    from ubuntils.cli import _run_pipeline
+    source, bundle_info = read_bundle(str(out))
+    _findings, _timeline, _stats, meta, _counts, _rem = _run_pipeline(
+        source=source, remediate=False, confirm=False, bundle_info=bundle_info,
+    )
+    assert meta["command_collectors_skipped"] == []
