@@ -27,6 +27,9 @@ class Finding:
     remediation_description: Optional[str] = None
     related_events: List = field(default_factory=list)
     guided_remediation: Optional[str] = None
+    confidence: int = 50
+    confidence_band: str = "MEDIUM"
+    signals: List[dict] = field(default_factory=list)
 
 
 @dataclass
