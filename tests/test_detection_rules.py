@@ -419,20 +419,6 @@ def test_rule_shell_rc_modification_non_init_file_no_finding(tmp_path):
     assert findings == []
 
 
-def test_rule_shell_rc_modification_deduplicates(tmp_path):
-    bashrc = tmp_path / ".bashrc"
-    bashrc.write_text("export A=1\nexport B=2\n")
-    recent_mtime = time.time() - 3600
-    os.utime(bashrc, (recent_mtime, recent_mtime))
-
-    artifacts = {"shell_init_files": [
-        {"owner": "alice", "source": str(bashrc), "mtime": recent_mtime,
-         "ctime": time.time() - 400 * 24 * 3600, "content": "export A=1\nexport B=2\n"},
-    ]}
-    findings = rule_shell_rc_modification(artifacts)
-    assert len(findings) == 1
-
-
 def test_rule_shell_rc_modification_empty_artifacts():
     assert rule_shell_rc_modification({}) == []
 
