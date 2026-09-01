@@ -868,6 +868,93 @@ def test_package_collector_parses_setuid_binaries(tmp_path):
     assert result["setuid_binaries"] == [
         "/usr/bin/sudo", "/usr/bin/passwd", "/tmp/.hidden/backdoor"
     ]
+    assert result["dpkg_verify_collection_failed"] is False
+    assert result["setuid_collection_failed"] is False
+
+
+class _SpySource:
+    """Minimal ArtifactSource stand-in that records every run() call's kwargs
+    so tests can assert PackageCollector passes non-default, generous timeouts
+    for the two slow commands (dpkg --verify, find_setuid) without depending
+    on those binaries actually existing or being slow on the test runner."""
+
+    def __init__(self, responses=None):
+        self.calls = []
+        self._responses = responses or {}
+
+    def run(self, name, argv, timeout=30):
+        self.calls.append({"name": name, "argv": argv, "timeout": timeout})
+        return self._responses.get(name, ("", "", 0))
+
+    def read_text(self, path):
+        raise OSError(path)
+
+    def read_bytes(self, path):
+        raise OSError(path)
+
+    def exists(self, path):
+        return False
+
+    def lstat(self, path):
+        raise OSError(path)
+
+    def glob(self, pattern):
+        return []
+
+
+def test_package_collector_uses_generous_non_default_timeouts_for_slow_commands():
+    from ubuntils.collectors.packages import (
+        PackageCollector, DPKG_VERIFY_TIMEOUT, FIND_SETUID_TIMEOUT,
+    )
+
+    src = _SpySource()
+    PackageCollector(source=src).collect()
+
+    calls_by_name = {c["name"]: c for c in src.calls}
+    assert calls_by_name["dpkg_verify"]["timeout"] == DPKG_VERIFY_TIMEOUT
+    assert calls_by_name["find_setuid"]["timeout"] == FIND_SETUID_TIMEOUT
+    # Both must be well above the ArtifactSource.run default of 30s.
+    assert DPKG_VERIFY_TIMEOUT > 30
+    assert FIND_SETUID_TIMEOUT > 30
+
+
+def test_package_collector_find_setuid_scans_setgid_and_attacker_drop_locations():
+    from ubuntils.collectors.packages import PackageCollector
+
+    src = _SpySource()
+    PackageCollector(source=src).collect()
+
+    calls_by_name = {c["name"]: c for c in src.calls}
+    argv = calls_by_name["find_setuid"]["argv"]
+    for path in ("/opt", "/home", "/srv", "/usr", "/bin", "/sbin", "/tmp", "/var/tmp", "/dev/shm"):
+        assert path in argv
+    assert "-2000" in argv  # setgid
+    assert "-4000" in argv  # setuid
+
+
+def test_package_collector_distinguishes_timeout_from_clean_empty_output():
+    from ubuntils.collectors.packages import PackageCollector
+
+    # rc == -1 is shell.run_command's convention for a timeout/OSError.
+    timed_out_src = _SpySource(responses={
+        "dpkg_verify": ("", "Command timed out after 600 seconds", -1),
+        "find_setuid": ("", "Command timed out after 300 seconds", -1),
+    })
+    result = PackageCollector(source=timed_out_src).collect()
+    assert result["dpkg_verify_entries"] == []
+    assert result["setuid_binaries"] == []
+    assert result["dpkg_verify_collection_failed"] is True
+    assert result["setuid_collection_failed"] is True
+
+    clean_src = _SpySource(responses={
+        "dpkg_verify": ("", "", 0),
+        "find_setuid": ("", "", 0),
+    })
+    clean_result = PackageCollector(source=clean_src).collect()
+    assert clean_result["dpkg_verify_entries"] == []
+    assert clean_result["setuid_binaries"] == []
+    assert clean_result["dpkg_verify_collection_failed"] is False
+    assert clean_result["setuid_collection_failed"] is False
 
 
 # ─── PamCollector ────────────────────────────────────────────────────────────
@@ -890,6 +977,28 @@ def test_pam_collector_reads_pam_d_and_nsswitch(tmp_path):
     sshd_entry = next(f for f in result["pam_files"] if f["path"] == "/etc/pam.d/sshd")
     assert "pam_permit.so" in sshd_entry["content"]
     assert result["nsswitch_content"] == "passwd: files systemd\n"
+
+
+def test_pam_collector_preserves_partial_results_when_a_later_file_read_raises():
+    from ubuntils.collectors.pam import PamCollector
+
+    class _FlakySource:
+        def glob(self, pattern):
+            return ["/etc/pam.d/sshd", "/etc/pam.d/common-auth"]
+
+        def read_text(self, path):
+            if path == "/etc/pam.d/sshd":
+                return "auth sufficient pam_permit.so\n"
+            if path == "/etc/pam.d/common-auth":
+                # A non-OSError/ValueError failure on the SECOND file must not
+                # discard the first file's already-read content.
+                raise RuntimeError("unexpected failure reading " + path)
+            return ""  # /etc/nsswitch.conf — unrelated to this test
+
+    result = PamCollector(source=_FlakySource()).collect()
+
+    paths = {f["path"] for f in result["pam_files"]}
+    assert paths == {"/etc/pam.d/sshd"}
 
 
 # ─── KernelCollector ─────────────────────────────────────────────────────────

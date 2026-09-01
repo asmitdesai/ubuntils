@@ -10,7 +10,18 @@ import uuid
 from datetime import datetime, timezone
 
 from ubuntils.bundle.manifest import Manifest, FileEntry, CommandEntry
+from ubuntils.collectors.packages import DPKG_VERIFY_TIMEOUT, FIND_SETUID_TIMEOUT
 from ubuntils.collectors.source import ArtifactSource
+
+# Per-command timeouts for `collect`'s bundle-capture step. MUST match the
+# timeouts PackageCollector uses live (see collectors/packages.py) — a bundle
+# captures the exact same commands, so a mismatch here would mean `collect`
+# times out (or wastes time) differently than a live `scan` for the same
+# command. Any command not listed here uses the ArtifactSource.run default (30s).
+COMMAND_TIMEOUTS: dict = {
+    "dpkg_verify": DPKG_VERIFY_TIMEOUT,
+    "find_setuid": FIND_SETUID_TIMEOUT,
+}
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -64,7 +75,7 @@ def write_bundle(
 
         command_entries = []
         for name, argv in commands_to_capture:
-            stdout, _stderr, code = source.run(name, argv)
+            stdout, _stderr, code = source.run(name, argv, timeout=COMMAND_TIMEOUTS.get(name, 30))
             bundle_rel = os.path.join("commands", f"{name}.txt")
             dest = os.path.join(work, bundle_rel)
             data = stdout.encode("utf-8")

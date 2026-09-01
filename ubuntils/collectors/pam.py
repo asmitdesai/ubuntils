@@ -12,7 +12,11 @@ class PamCollector(BaseCollector):
                     continue
                 pam_files.append({"path": path, "content": content})
         except Exception:
-            pam_files = []
+            # A failure partway through the loop (e.g. glob() itself raising,
+            # or a read failure outside the (OSError, ValueError) the inner
+            # handler expects) must not discard files already read
+            # successfully — preserve pam_files as gathered so far.
+            pass
 
         nsswitch_content = ""
         try:

@@ -10,7 +10,7 @@ import structlog
 
 from ubuntils import __version__
 from ubuntils.collectors import ALL_COLLECTORS
-from ubuntils.collectors.packages import SENSITIVE_ATTR_PATHS
+from ubuntils.collectors.packages import SENSITIVE_ATTR_PATHS, SETUID_FIND_PATHS
 from ubuntils.collectors.source import LiveSource
 from ubuntils.detectors.custom_rules import load_custom_rules
 from ubuntils.detectors.engine import DetectionEngine
@@ -57,8 +57,8 @@ COLLECT_COMMANDS = [
     ("journalctl", ["journalctl", "-o", "json", "--since=7 days ago", "--no-pager"]),
     ("dpkg_verify", ["dpkg", "--verify"]),
     ("lsattr_sensitive", ["lsattr", "-d", *SENSITIVE_ATTR_PATHS]),
-    ("find_setuid", ["find", "/usr", "/bin", "/sbin", "/tmp", "/var/tmp", "/dev/shm",
-                      "-xdev", "-perm", "-4000", "-type", "f"]),
+    ("find_setuid", ["find", *SETUID_FIND_PATHS,
+                      "-xdev", "(", "-perm", "-4000", "-o", "-perm", "-2000", ")", "-type", "f"]),
     ("lsmod", ["lsmod"]),
 ]
 
