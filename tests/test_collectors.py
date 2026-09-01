@@ -812,3 +812,32 @@ def test_package_collector_parses_dpkg_verify(tmp_path):
     assert {"path": "/etc/ssh/sshd_config", "flags": "??5??????", "is_conffile": True, "missing": False} in entries
     assert {"path": "/usr/bin/sshd", "flags": "", "is_conffile": False, "missing": True} in entries
     assert {"path": "/usr/bin/passwd", "flags": "....5..T.", "is_conffile": False, "missing": False} in entries
+
+
+def test_package_collector_parses_lsattr_immutable_flags(tmp_path):
+    from ubuntils.collectors.packages import PackageCollector
+    from ubuntils.collectors.source import BundleSource
+
+    cmds = tmp_path / "commands"
+    cmds.mkdir()
+    (cmds / "dpkg_verify.txt").write_text("")
+    (cmds / "lsattr_sensitive.txt").write_text(
+        "----i--------e--- /etc/ld.so.preload\n"
+        "-------------e--- /etc/passwd\n"
+        "lsattr: No such file or directory - /etc/sudoers.d/custom\n"
+    )
+    (cmds / "find_setuid.txt").write_text("")
+    src = BundleSource(
+        root_dir=str(tmp_path / "files"),
+        command_index={
+            "dpkg_verify": str(cmds / "dpkg_verify.txt"),
+            "lsattr_sensitive": str(cmds / "lsattr_sensitive.txt"),
+            "find_setuid": str(cmds / "find_setuid.txt"),
+        },
+    )
+
+    result = PackageCollector(source=src).collect()
+
+    assert {"path": "/etc/ld.so.preload", "attrs": "----i--------e---"} in result["immutable_flags"]
+    assert {"path": "/etc/passwd", "attrs": "-------------e---"} in result["immutable_flags"]
+    assert len(result["immutable_flags"]) == 2  # the lsattr error line is skipped, not crashed on

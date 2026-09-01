@@ -1,6 +1,13 @@
 from ubuntils.collectors.base import BaseCollector
 
 
+SENSITIVE_ATTR_PATHS = [
+    "/etc/passwd", "/etc/shadow", "/etc/group", "/etc/sudoers",
+    "/etc/ld.so.preload", "/etc/crontab", "/etc/environment",
+    "/etc/pam.d/common-auth", "/etc/pam.d/sshd", "/etc/nsswitch.conf",
+]
+
+
 class PackageCollector(BaseCollector):
     def collect(self) -> dict:
         return {
@@ -38,7 +45,22 @@ class PackageCollector(BaseCollector):
         return entries
 
     def _immutable_flag_entries(self) -> list:
-        return []  # implemented in Task 2
+        stdout, _stderr, rc = self.source.run(
+            "lsattr_sensitive", ["lsattr", "-d", *SENSITIVE_ATTR_PATHS]
+        )
+        if not stdout:
+            return []
+        entries = []
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line or line.startswith("lsattr:"):
+                continue
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            attrs, path = parts
+            entries.append({"path": path.strip(), "attrs": attrs})
+        return entries
 
     def _setuid_binaries(self) -> list:
         return []  # implemented in Task 3

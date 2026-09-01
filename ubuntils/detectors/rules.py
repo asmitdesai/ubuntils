@@ -448,3 +448,31 @@ def rule_package_tampered(artifacts: dict) -> List[Finding]:
                          f"dpkg --verify reports a real content/mode/size mismatch (flags: '{flags}')")
             findings.append(finding)
     return findings
+
+
+def rule_immutable_flag_set(artifacts: dict) -> List[Finding]:
+    findings = []
+    for entry in artifacts.get("immutable_flags", []):
+        path = entry.get("path", "")
+        attrs = entry.get("attrs", "")
+        if "i" in attrs or "a" in attrs:
+            flag_name = "immutable (i)" if "i" in attrs else "append-only (a)"
+            finding = Finding(
+                rule_id="IMMUTABLE_FLAG_SET",
+                severity=Severity.MEDIUM,
+                title="Sensitive file has an unexpected chattr flag",
+                description=(
+                    f"'{path}' has the {flag_name} attribute set — attackers use this to protect "
+                    "implants or hide tampering from further edits/log rotation"
+                ),
+                artifact_path=path,
+                raw_value=attrs,
+                remediation_available=False,
+                remediation_description=None,
+                guided_remediation=f"Review then clear the flag if unexpected: chattr -i -a {path}",
+            )
+            apply_signal(finding, "content_match", 25,
+                         f"chattr attribute string '{attrs}' actually carries {flag_name} — "
+                         "stock Ubuntu does not set this on this file by default")
+            findings.append(finding)
+    return findings

@@ -9,6 +9,7 @@ from ubuntils.detectors.finding import Severity
 from ubuntils.detectors.rules import (
     rule_cron_root_exec,
     rule_cron_tmp_path,
+    rule_immutable_flag_set,
     rule_ld_preload_inject,
     rule_process_masquerade,
     rule_shell_rc_modification,
@@ -699,3 +700,21 @@ def test_rule_package_tampered_ignores_conffile_only_mtime_changes():
         ]
     }
     assert rule_package_tampered(artifacts) == []
+
+
+def test_rule_immutable_flag_set_flags_immutable_and_append_only():
+    artifacts = {
+        "immutable_flags": [
+            {"path": "/etc/ld.so.preload", "attrs": "----i--------e---"},
+            {"path": "/etc/passwd", "attrs": "-------------e---"},
+            {"path": "/var/log/auth.log", "attrs": "-----a-------e---"},
+        ]
+    }
+    findings = rule_immutable_flag_set(artifacts)
+    triggered = {f.artifact_path for f in findings}
+
+    assert "/etc/ld.so.preload" in triggered   # 'i' set — suspicious
+    assert "/var/log/auth.log" in triggered    # 'a' set — suspicious (log-hiding tactic)
+    assert "/etc/passwd" not in triggered      # no i/a flag present
+    assert all(f.rule_id == "IMMUTABLE_FLAG_SET" and f.severity == Severity.MEDIUM for f in findings)
+    assert all(any(s["name"] == "content_match" for s in f.signals) for f in findings)
