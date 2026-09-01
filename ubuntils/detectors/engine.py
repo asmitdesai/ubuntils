@@ -7,6 +7,7 @@ from ubuntils.detectors.rules import (
     rule_cron_root_exec,
     rule_cron_tmp_path,
     rule_ld_preload_inject,
+    rule_package_tampered,
     rule_process_masquerade,
     rule_process_suspicious_connection,
     rule_shell_rc_modification,
@@ -29,6 +30,7 @@ ALL_RULES = [
     rule_process_suspicious_connection,
     rule_uid_zero_account,
     rule_shell_rc_modification,
+    rule_package_tampered,
 ]
 
 _log = logging.getLogger(__name__)

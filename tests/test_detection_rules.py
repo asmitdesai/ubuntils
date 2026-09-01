@@ -523,7 +523,7 @@ def test_uid_zero_no_users_key():
 
 
 def test_engine_all_rules_registered():
-    assert len(ALL_RULES) == 10
+    assert len(ALL_RULES) == 11
 
 
 def test_engine_runs_custom_rules_and_allowlist_suppresses_them():
@@ -660,3 +660,42 @@ def test_engine_applies_baseline_before_allowlist_and_counts_suppressed():
     # the allowlist-suppressed one is not double-counted or miscounted.
     assert engine.suppressed_by_baseline == 1
     assert [f.rule_id for f in engine.baseline_suppressed_findings] == ["SSH_UNAUTHORIZED_KEY"]
+
+
+def test_rule_package_tampered_flags_content_mismatch_and_missing():
+    from ubuntils.detectors.rules import rule_package_tampered
+
+    artifacts = {
+        "dpkg_verify_entries": [
+            {"path": "/usr/bin/sshd", "flags": "", "is_conffile": False, "missing": True},
+            {"path": "/usr/bin/passwd", "flags": "....5..T.", "is_conffile": False, "missing": False},
+            {"path": "/etc/ssh/sshd_config", "flags": "??5??????", "is_conffile": True, "missing": False},
+        ]
+    }
+    findings = rule_package_tampered(artifacts)
+    triggered_paths = {f.artifact_path for f in findings}
+
+    assert "/usr/bin/sshd" in triggered_paths          # missing binary
+    assert "/usr/bin/passwd" in triggered_paths         # content (5) mismatch, non-conffile
+    assert "/etc/ssh/sshd_config" not in triggered_paths  # conffile content edits are expected/low-signal
+    assert all(f.rule_id == "PACKAGE_TAMPERED" for f in findings)
+    assert all(f.remediation_available is False for f in findings)
+
+    missing = next(f for f in findings if f.artifact_path == "/usr/bin/sshd")
+    assert missing.confidence_band == "HIGH"
+    assert any(s["name"] == "missing_file" for s in missing.signals)
+
+    tampered = next(f for f in findings if f.artifact_path == "/usr/bin/passwd")
+    assert tampered.confidence_band == "HIGH"
+    assert any(s["name"] == "content_match" for s in tampered.signals)
+
+
+def test_rule_package_tampered_ignores_conffile_only_mtime_changes():
+    from ubuntils.detectors.rules import rule_package_tampered
+
+    artifacts = {
+        "dpkg_verify_entries": [
+            {"path": "/etc/foo.conf", "flags": ".......T.", "is_conffile": True, "missing": False},
+        ]
+    }
+    assert rule_package_tampered(artifacts) == []

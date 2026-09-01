@@ -388,3 +388,63 @@ def rule_shell_rc_modification(artifacts: dict) -> List[Finding]:
 
         findings.append(finding)
     return findings
+
+
+def rule_package_tampered(artifacts: dict) -> List[Finding]:
+    findings = []
+    for entry in artifacts.get("dpkg_verify_entries", []):
+        path = entry.get("path", "")
+        flags = entry.get("flags", "")
+        missing = entry.get("missing", False)
+        is_conffile = entry.get("is_conffile", False)
+
+        if missing:
+            finding = Finding(
+                rule_id="PACKAGE_TAMPERED",
+                severity=Severity.HIGH,
+                title="Package-owned file is missing",
+                description=(
+                    f"'{path}' is owned by an installed package but is missing from disk "
+                    "(dpkg --verify reports it as absent)"
+                ),
+                artifact_path=path,
+                raw_value="missing",
+                remediation_available=False,
+                remediation_description=None,
+                guided_remediation=(
+                    f"Reinstall the owning package to restore '{path}': "
+                    f"dpkg -S {path} 2>/dev/null | cut -d: -f1 | xargs -r apt-get install --reinstall -y"
+                ),
+            )
+            apply_signal(finding, "missing_file", 35,
+                         "package-owned file absent from disk — cannot be an incidental edit")
+            findings.append(finding)
+            continue
+
+        # Conffiles are expected to be user-edited; only their content hash (5) matters
+        # for tamper detection, and even then it's routine — skip conffiles entirely to
+        # avoid drowning responders in expected local config edits.
+        if is_conffile:
+            continue
+
+        if any(ch in flags for ch in ("5", "M", "S")):
+            finding = Finding(
+                rule_id="PACKAGE_TAMPERED",
+                severity=Severity.HIGH,
+                title="Package-owned file modified since installation",
+                description=(
+                    f"'{path}' differs from the package manifest (dpkg --verify flags: '{flags}')"
+                ),
+                artifact_path=path,
+                raw_value=flags,
+                remediation_available=False,
+                remediation_description=None,
+                guided_remediation=(
+                    f"Compare against the package's known-good copy and reinstall if tampered: "
+                    f"dpkg -S {path} 2>/dev/null | cut -d: -f1 | xargs -r apt-get install --reinstall -y"
+                ),
+            )
+            apply_signal(finding, "content_match", 30,
+                         f"dpkg --verify reports a real content/mode/size mismatch (flags: '{flags}')")
+            findings.append(finding)
+    return findings

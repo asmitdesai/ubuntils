@@ -6,6 +6,7 @@ from ubuntils.collectors.systemd import SystemdCollector
 from ubuntils.collectors.ssh import SSHCollector
 from ubuntils.collectors.sudoers import SudoersCollector
 from ubuntils.collectors.environment import EnvironmentCollector
+from ubuntils.collectors.packages import PackageCollector
 
 ALL_COLLECTORS = [
     ProcessCollector,
@@ -16,4 +17,5 @@ ALL_COLLECTORS = [
     SSHCollector,
     SudoersCollector,
     EnvironmentCollector,
+    PackageCollector,
 ]
