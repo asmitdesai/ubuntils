@@ -868,3 +868,25 @@ def test_package_collector_parses_setuid_binaries(tmp_path):
     assert result["setuid_binaries"] == [
         "/usr/bin/sudo", "/usr/bin/passwd", "/tmp/.hidden/backdoor"
     ]
+
+
+# ─── PamCollector ────────────────────────────────────────────────────────────
+
+def test_pam_collector_reads_pam_d_and_nsswitch(tmp_path):
+    from ubuntils.collectors.pam import PamCollector
+    from ubuntils.collectors.source import BundleSource
+
+    files = tmp_path / "files"
+    (files / "etc" / "pam.d").mkdir(parents=True)
+    (files / "etc" / "pam.d" / "sshd").write_text("auth sufficient pam_permit.so\n")
+    (files / "etc" / "pam.d" / "common-auth").write_text("auth required pam_unix.so nullok\n")
+    (files / "etc" / "nsswitch.conf").write_text("passwd: files systemd\n")
+
+    src = BundleSource(root_dir=str(files), command_index={})
+    result = PamCollector(source=src).collect()
+
+    paths = {f["path"] for f in result["pam_files"]}
+    assert paths == {"/etc/pam.d/sshd", "/etc/pam.d/common-auth"}
+    sshd_entry = next(f for f in result["pam_files"] if f["path"] == "/etc/pam.d/sshd")
+    assert "pam_permit.so" in sshd_entry["content"]
+    assert result["nsswitch_content"] == "passwd: files systemd\n"

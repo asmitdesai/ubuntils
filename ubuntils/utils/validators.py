@@ -13,6 +13,11 @@ KNOWN_SETUID_BINARIES = frozenset({
     "/usr/sbin/pppd",
 })
 
+ALLOWED_NSS_MODULES = frozenset({
+    "files", "compat", "systemd", "mymachines", "myhostname",
+    "resolve", "dns", "nis", "nisplus", "db",
+})
+
 
 def is_login_shell(shell: str) -> bool:
     return shell not in NOLOGIN_SHELLS

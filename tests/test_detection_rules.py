@@ -742,3 +742,40 @@ def test_rule_setuid_inventory_flags_unknown_binaries_and_writable_tmp():
     assert in_tmp.confidence > outside_tmp.confidence  # writable-tmp location raises confidence
     assert any(s["name"] == "writable_tmp_location" for s in in_tmp.signals)
     assert not any(s["name"] == "writable_tmp_location" for s in outside_tmp.signals)
+
+
+# ---------------------------------------------------------------------------
+# PAM_BACKDOOR
+# ---------------------------------------------------------------------------
+
+def test_rule_pam_backdoor_flags_pam_permit_and_unknown_nss_module():
+    from ubuntils.detectors.rules import rule_pam_backdoor
+
+    artifacts = {
+        "pam_files": [
+            {"path": "/etc/pam.d/sshd", "content": "auth sufficient pam_permit.so\n"},
+            {"path": "/etc/pam.d/common-auth", "content": "auth required pam_unix.so nullok\n"},
+        ],
+        "nsswitch_content": "passwd: files systemd evilmodule\n",
+    }
+    findings = rule_pam_backdoor(artifacts)
+    triggered_paths = {f.artifact_path for f in findings}
+
+    assert "/etc/pam.d/sshd" in triggered_paths
+    assert "/etc/pam.d/common-auth" not in triggered_paths
+    assert "/etc/nsswitch.conf" in triggered_paths
+    assert all(f.rule_id == "PAM_BACKDOOR" and f.severity == Severity.HIGH for f in findings)
+    assert all(f.confidence_band == "HIGH" for f in findings)
+    assert all(any(s["name"] == "content_match" for s in f.signals) for f in findings)
+
+
+def test_rule_pam_backdoor_clean_config_produces_no_findings():
+    from ubuntils.detectors.rules import rule_pam_backdoor
+
+    artifacts = {
+        "pam_files": [
+            {"path": "/etc/pam.d/common-auth", "content": "auth required pam_unix.so nullok\n"},
+        ],
+        "nsswitch_content": "passwd: files systemd\n",
+    }
+    assert rule_pam_backdoor(artifacts) == []

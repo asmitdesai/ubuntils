@@ -12,6 +12,7 @@ from ubuntils.utils.validators import (
     path_in_writable_tmp,
     uid_is_system,
     KNOWN_SETUID_BINARIES,
+    ALLOWED_NSS_MODULES,
 )
 
 KNOWN_SYSTEM_BINARIES = frozenset({
@@ -506,4 +507,64 @@ def rule_setuid_inventory(artifacts: dict) -> List[Finding]:
                          "located under a world-writable temp directory — a common drop location "
                          "for attacker-planted setuid binaries")
         findings.append(finding)
+    return findings
+
+
+def rule_pam_backdoor(artifacts: dict) -> List[Finding]:
+    findings = []
+    for entry in artifacts.get("pam_files", []):
+        path = entry.get("path", "")
+        content = entry.get("content", "")
+        for line in content.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if "pam_permit.so" in stripped:
+                finding = Finding(
+                    rule_id="PAM_BACKDOOR",
+                    severity=Severity.HIGH,
+                    title="PAM config unconditionally permits authentication",
+                    description=(
+                        f"'{path}' loads pam_permit.so, which always succeeds — a common backdoor "
+                        "technique to bypass authentication for a service"
+                    ),
+                    artifact_path=path,
+                    raw_value=stripped,
+                    remediation_available=False,
+                    remediation_description=None,
+                    guided_remediation=f"Review and remove the pam_permit.so line from {path}",
+                )
+                apply_signal(finding, "content_match", 30,
+                             "pam_permit.so is present verbatim in the PAM stack — not inferred")
+                findings.append(finding)
+                break  # one finding per file is enough signal
+
+    nsswitch = artifacts.get("nsswitch_content", "")
+    for line in nsswitch.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or ":" not in stripped:
+            continue
+        _database, _sep, modules_str = stripped.partition(":")
+        for token in modules_str.split():
+            module = token.strip("[]").split("=")[0]
+            if not module or module in ALLOWED_NSS_MODULES:
+                continue
+            finding = Finding(
+                rule_id="PAM_BACKDOOR",
+                severity=Severity.HIGH,
+                title="Unexpected NSS module in nsswitch.conf",
+                description=(
+                    f"nsswitch.conf references NSS module '{module}', which is not in the "
+                    "standard Ubuntu module set — unexpected NSS modules can intercept lookups "
+                    "(e.g. name resolution or user auth) system-wide"
+                ),
+                artifact_path="/etc/nsswitch.conf",
+                raw_value=stripped,
+                remediation_available=False,
+                remediation_description=None,
+                guided_remediation="Review /etc/nsswitch.conf and remove the unexpected module",
+            )
+            apply_signal(finding, "content_match", 30,
+                         f"module name '{module}' is present verbatim in nsswitch.conf, not inferred")
+            findings.append(finding)
     return findings
