@@ -11,6 +11,7 @@ from ubuntils.utils.validators import (
     path_in_standard_libs,
     path_in_writable_tmp,
     uid_is_system,
+    KNOWN_SETUID_BINARIES,
 )
 
 KNOWN_SYSTEM_BINARIES = frozenset({
@@ -475,4 +476,34 @@ def rule_immutable_flag_set(artifacts: dict) -> List[Finding]:
                          f"chattr attribute string '{attrs}' actually carries {flag_name} — "
                          "stock Ubuntu does not set this on this file by default")
             findings.append(finding)
+    return findings
+
+
+def rule_setuid_inventory(artifacts: dict) -> List[Finding]:
+    findings = []
+    for path in artifacts.get("setuid_binaries", []):
+        if path in KNOWN_SETUID_BINARIES:
+            continue
+        in_tmp = path_in_writable_tmp(path)
+        finding = Finding(
+            rule_id="SETUID_INVENTORY",
+            severity=Severity.LOW,
+            title="Unexpected setuid binary",
+            description=(
+                f"'{path}' has the setuid bit set and is not in the known-good baseline"
+                + (" (and is located in a world-writable temp directory)" if in_tmp else "")
+            ),
+            artifact_path=path,
+            raw_value="setuid",
+            remediation_available=False,
+            remediation_description=None,
+            guided_remediation=f"Review and, if unauthorized, remove the setuid bit: chmod u-s {path}",
+        )
+        apply_signal(finding, "baseline_deviation", 15,
+                     "setuid binary not present in ubuntils' known-good baseline")
+        if in_tmp:
+            apply_signal(finding, "writable_tmp_location", 25,
+                         "located under a world-writable temp directory — a common drop location "
+                         "for attacker-planted setuid binaries")
+        findings.append(finding)
     return findings

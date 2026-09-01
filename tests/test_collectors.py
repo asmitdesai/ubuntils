@@ -841,3 +841,30 @@ def test_package_collector_parses_lsattr_immutable_flags(tmp_path):
     assert {"path": "/etc/ld.so.preload", "attrs": "----i--------e---"} in result["immutable_flags"]
     assert {"path": "/etc/passwd", "attrs": "-------------e---"} in result["immutable_flags"]
     assert len(result["immutable_flags"]) == 2  # the lsattr error line is skipped, not crashed on
+
+
+def test_package_collector_parses_setuid_binaries(tmp_path):
+    from ubuntils.collectors.packages import PackageCollector
+    from ubuntils.collectors.source import BundleSource
+
+    cmds = tmp_path / "commands"
+    cmds.mkdir()
+    (cmds / "dpkg_verify.txt").write_text("")
+    (cmds / "lsattr_sensitive.txt").write_text("")
+    (cmds / "find_setuid.txt").write_text(
+        "/usr/bin/sudo\n/usr/bin/passwd\n/tmp/.hidden/backdoor\n"
+    )
+    src = BundleSource(
+        root_dir=str(tmp_path / "files"),
+        command_index={
+            "dpkg_verify": str(cmds / "dpkg_verify.txt"),
+            "lsattr_sensitive": str(cmds / "lsattr_sensitive.txt"),
+            "find_setuid": str(cmds / "find_setuid.txt"),
+        },
+    )
+
+    result = PackageCollector(source=src).collect()
+
+    assert result["setuid_binaries"] == [
+        "/usr/bin/sudo", "/usr/bin/passwd", "/tmp/.hidden/backdoor"
+    ]

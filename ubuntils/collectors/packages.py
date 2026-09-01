@@ -63,4 +63,11 @@ class PackageCollector(BaseCollector):
         return entries
 
     def _setuid_binaries(self) -> list:
-        return []  # implemented in Task 3
+        stdout, _stderr, rc = self.source.run(
+            "find_setuid",
+            ["find", "/usr", "/bin", "/sbin", "/tmp", "/var/tmp", "/dev/shm",
+             "-xdev", "-perm", "-4000", "-type", "f"],
+        )
+        if not stdout:
+            return []
+        return [line.strip() for line in stdout.splitlines() if line.strip()]

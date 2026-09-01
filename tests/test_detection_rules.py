@@ -12,6 +12,7 @@ from ubuntils.detectors.rules import (
     rule_immutable_flag_set,
     rule_ld_preload_inject,
     rule_process_masquerade,
+    rule_setuid_inventory,
     rule_shell_rc_modification,
     rule_ssh_unauthorized_key,
     rule_sudoers_nopasswd,
@@ -718,3 +719,26 @@ def test_rule_immutable_flag_set_flags_immutable_and_append_only():
     assert "/etc/passwd" not in triggered      # no i/a flag present
     assert all(f.rule_id == "IMMUTABLE_FLAG_SET" and f.severity == Severity.MEDIUM for f in findings)
     assert all(any(s["name"] == "content_match" for s in f.signals) for f in findings)
+
+
+def test_rule_setuid_inventory_flags_unknown_binaries_and_writable_tmp():
+    artifacts = {
+        "setuid_binaries": [
+            "/usr/bin/sudo",              # known-good, no finding
+            "/tmp/.hidden/backdoor",      # unknown + in writable tmp — most suspicious
+            "/usr/local/bin/mystery",     # unknown, outside writable tmp
+        ]
+    }
+    findings = rule_setuid_inventory(artifacts)
+    triggered = {f.artifact_path for f in findings}
+
+    assert "/usr/bin/sudo" not in triggered
+    assert "/tmp/.hidden/backdoor" in triggered
+    assert "/usr/local/bin/mystery" in triggered
+    assert all(f.rule_id == "SETUID_INVENTORY" and f.severity == Severity.LOW for f in findings)
+
+    in_tmp = next(f for f in findings if f.artifact_path == "/tmp/.hidden/backdoor")
+    outside_tmp = next(f for f in findings if f.artifact_path == "/usr/local/bin/mystery")
+    assert in_tmp.confidence > outside_tmp.confidence  # writable-tmp location raises confidence
+    assert any(s["name"] == "writable_tmp_location" for s in in_tmp.signals)
+    assert not any(s["name"] == "writable_tmp_location" for s in outside_tmp.signals)
