@@ -799,3 +799,28 @@ def test_rule_pam_backdoor_ignores_trailing_comment_after_nss_line():
         "nsswitch_content": "passwd: files systemd  # standard\n",
     }
     assert rule_pam_backdoor(artifacts) == []
+
+
+# ─── KernelModuleSuspicious ──────────────────────────────────────────────────
+
+def test_rule_kernel_module_suspicious_flags_unknown_modules():
+    from ubuntils.detectors.rules import rule_kernel_module_suspicious
+
+    artifacts = {
+        "kernel_modules": [
+            {"name": "xt_conntrack", "size": "16384", "used_by": ["iptable_filter"]},
+            {"name": "evil_rootkit", "size": "12288", "used_by": []},
+        ]
+    }
+    findings = rule_kernel_module_suspicious(artifacts)
+
+    assert len(findings) == 1
+    assert findings[0].artifact_path == "evil_rootkit"
+    assert findings[0].rule_id == "KERNEL_MODULE_SUSPICIOUS"
+    assert findings[0].severity == Severity.HIGH
+    # Deliberately modest confidence: an unallowlisted module is common and legitimate on
+    # hardware-heavy hosts (see the README caveat), so this signal alone should not push a
+    # finding to HIGH confidence — severity (how bad if real) and confidence (how sure it's
+    # real) are orthogonal, and this rule is honest about being unsure.
+    assert findings[0].confidence_band == "MEDIUM"
+    assert any(s["name"] == "unallowlisted_module" for s in findings[0].signals)

@@ -13,6 +13,7 @@ from ubuntils.utils.validators import (
     uid_is_system,
     KNOWN_SETUID_BINARIES,
     ALLOWED_NSS_MODULES,
+    ALLOWED_KERNEL_MODULES,
 )
 
 KNOWN_SYSTEM_BINARIES = frozenset({
@@ -573,4 +574,38 @@ def rule_pam_backdoor(artifacts: dict) -> List[Finding]:
             apply_signal(finding, "content_match", 30,
                          f"module name '{module}' is present verbatim in nsswitch.conf, not inferred")
             findings.append(finding)
+    return findings
+
+
+def rule_kernel_module_suspicious(artifacts: dict) -> List[Finding]:
+    findings = []
+    for module in artifacts.get("kernel_modules", []):
+        name = module.get("name", "")
+        if name in ALLOWED_KERNEL_MODULES:
+            continue
+        finding = Finding(
+            rule_id="KERNEL_MODULE_SUSPICIOUS",
+            severity=Severity.HIGH,
+            title="Loaded kernel module not in the expected set",
+            description=(
+                f"Module '{name}' is loaded but is not in ubuntils' baseline of common built-in "
+                "modules. This may be a legitimate hardware/vendor driver (see README) or an "
+                "unexpected/malicious module — verify manually"
+            ),
+            artifact_path=name,
+            raw_value=str(module),
+            remediation_available=False,
+            remediation_description=None,
+            guided_remediation=(
+                f"Inspect the module and unload if unauthorized: modinfo {name} && rmmod {name}"
+            ),
+        )
+        # Deliberately a small weight: this baseline is intentionally narrow (see the README
+        # caveat and Global Constraints), so being unallowlisted alone is weak evidence —
+        # legitimate hardware/vendor drivers hit this constantly. Keep the finding at MEDIUM
+        # confidence by default; a responder's --config allowlist is the real fix for noise,
+        # not an inflated confidence score here.
+        apply_signal(finding, "unallowlisted_module", 10,
+                     "module name is not present in ubuntils' built-in module baseline")
+        findings.append(finding)
     return findings

@@ -19,6 +19,19 @@ ALLOWED_NSS_MODULES = frozenset({
     "mdns4", "mdns4_minimal", "mdns6", "mdns6_minimal",
 })
 
+# Common built-in modules on stock Ubuntu server/container hosts (networking,
+# filesystem overlay, virtualization). Deliberately NOT exhaustive for desktop/
+# hardware drivers (GPU, Wi-Fi, proprietary vendor modules) — see README caveat;
+# responders on such hosts should allowlist their host's modules via --config.
+ALLOWED_KERNEL_MODULES = frozenset({
+    "overlay", "br_netfilter", "veth", "xt_conntrack", "xt_nat", "xt_tcpudp",
+    "xt_MASQUERADE", "xt_addrtype", "xt_comment", "xt_mark", "xt_multiport",
+    "iptable_filter", "iptable_nat", "ip_tables", "ip6_tables", "nf_conntrack",
+    "nf_nat", "nf_defrag_ipv4", "nf_defrag_ipv6", "sch_fq_codel",
+    "vboxdrv", "vboxnetflt", "vboxnetadp",
+    "virtio_net", "virtio_blk", "virtio_pci", "virtio_ring",
+})
+
 
 def is_login_shell(shell: str) -> bool:
     return shell not in NOLOGIN_SHELLS

@@ -890,3 +890,27 @@ def test_pam_collector_reads_pam_d_and_nsswitch(tmp_path):
     sshd_entry = next(f for f in result["pam_files"] if f["path"] == "/etc/pam.d/sshd")
     assert "pam_permit.so" in sshd_entry["content"]
     assert result["nsswitch_content"] == "passwd: files systemd\n"
+
+
+# ─── KernelCollector ─────────────────────────────────────────────────────────
+
+def test_kernel_collector_parses_lsmod(tmp_path):
+    from ubuntils.collectors.kernel import KernelCollector
+    from ubuntils.collectors.source import BundleSource
+
+    cmds = tmp_path / "commands"
+    cmds.mkdir()
+    (cmds / "lsmod.txt").write_text(
+        "Module                  Size  Used by\n"
+        "xt_conntrack           16384  1 iptable_filter\n"
+        "evil_rootkit           12288  0\n"
+    )
+    src = BundleSource(root_dir=str(tmp_path / "files"),
+                        command_index={"lsmod": str(cmds / "lsmod.txt")})
+
+    result = KernelCollector(source=src).collect()
+    names = [m["name"] for m in result["kernel_modules"]]
+
+    assert names == ["xt_conntrack", "evil_rootkit"]
+    xt = next(m for m in result["kernel_modules"] if m["name"] == "xt_conntrack")
+    assert xt["used_by"] == ["iptable_filter"]
