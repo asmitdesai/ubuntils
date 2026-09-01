@@ -16,6 +16,7 @@ KNOWN_SETUID_BINARIES = frozenset({
 ALLOWED_NSS_MODULES = frozenset({
     "files", "compat", "systemd", "mymachines", "myhostname",
     "resolve", "dns", "nis", "nisplus", "db",
+    "mdns4", "mdns4_minimal", "mdns6", "mdns6_minimal",
 })
 
 

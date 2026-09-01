@@ -545,8 +545,14 @@ def rule_pam_backdoor(artifacts: dict) -> List[Finding]:
         if not stripped or stripped.startswith("#") or ":" not in stripped:
             continue
         _database, _sep, modules_str = stripped.partition(":")
+        # Strip trailing inline comments (anything after an unquoted #)
+        if "#" in modules_str:
+            modules_str = modules_str[:modules_str.index("#")]
         for token in modules_str.split():
-            module = token.strip("[]").split("=")[0]
+            # Skip action clauses (tokens starting with [, like [NOTFOUND=return])
+            if token.startswith("["):
+                continue
+            module = token.split("=")[0]  # Extract module name (before any = option)
             if not module or module in ALLOWED_NSS_MODULES:
                 continue
             finding = Finding(

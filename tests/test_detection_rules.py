@@ -779,3 +779,23 @@ def test_rule_pam_backdoor_clean_config_produces_no_findings():
         "nsswitch_content": "passwd: files systemd\n",
     }
     assert rule_pam_backdoor(artifacts) == []
+
+
+def test_rule_pam_backdoor_ignores_standard_hosts_line_with_action_clause_and_mdns():
+    from ubuntils.detectors.rules import rule_pam_backdoor
+
+    artifacts = {
+        "pam_files": [],
+        "nsswitch_content": "hosts: files mdns4_minimal [NOTFOUND=return] dns\n",
+    }
+    assert rule_pam_backdoor(artifacts) == []
+
+
+def test_rule_pam_backdoor_ignores_trailing_comment_after_nss_line():
+    from ubuntils.detectors.rules import rule_pam_backdoor
+
+    artifacts = {
+        "pam_files": [],
+        "nsswitch_content": "passwd: files systemd  # standard\n",
+    }
+    assert rule_pam_backdoor(artifacts) == []
