@@ -436,7 +436,7 @@ A summary view of the scan: detected Ubuntu version, architecture, scan duration
 | SHELL_RC_MODIFICATION | LOW | No | Shell init files (bashrc, profile, zshrc, etc.) modified within the last 48 hours for any user with a login shell |
 | PACKAGE_TAMPERED | HIGH | No | System-owned package files modified, missing, or whose content/mode/size mismatches the package manifest (via `dpkg --verify`) |
 | IMMUTABLE_FLAG_SET | MEDIUM | No | Immutable (`i`) or append-only (`a`) flags set on sensitive files like /etc/passwd, /etc/sudoers, or /etc/pam.d/* (detected via `lsattr`) |
-| PAM_BACKDOOR | HIGH | No | Modified /etc/pam.d/* files or unexpected NSS modules in /etc/nsswitch.conf — indicators of authentication bypass |
+| PAM_BACKDOOR | HIGH | No | A literal `pam_permit.so` line in any /etc/pam.d/* file, or an NSS module in /etc/nsswitch.conf outside an allowlist (files/sss/ldap/winbind/...) |
 | KERNEL_MODULE_SUSPICIOUS | HIGH | No | Loaded kernel modules outside an allowlist of common built-in modules — note: hardware-heavy hosts (GPUs, Wi-Fi cards, proprietary drivers) will see false positives; add expected modules via `--config` |
 | SETUID_INVENTORY | LOW | No | Unexpected setuid or setgid binaries outside a known baseline set |
 
@@ -563,25 +563,32 @@ Raw value:     ....5..T. (content and mtime differ)
 Remediation:   not available
 ```
 
-**IMMUTABLE_FLAG_SET** — Attackers often set the immutable flag (`i`) or append-only flag (`a`) on files to prevent modification or deletion, even by root. Setting these flags on sensitive system files like /etc/passwd, /etc/sudoers, or /etc/pam.d/* is a strong indicator of attacker hardening. This rule detects immutable and append-only flags via `lsattr`. Flag-only — flag changes require human review.
+**IMMUTABLE_FLAG_SET** — Attackers often set the immutable flag (`i`) or append-only flag (`a`) on files to prevent modification or deletion, even by root, including to hide tampering from further edits/log rotation. Setting these flags on sensitive system files like /etc/passwd, /etc/sudoers, /etc/pam.d/*, or the auth/syslog/wtmp/btmp log files is a strong indicator of attacker hardening. This rule detects immutable and append-only flags via `lsattr` against that fixed list of sensitive paths. Flag-only — flag changes require human review.
 
 *Example finding:*
 ```
 [MEDIUM] IMMUTABLE_FLAG_SET
-Title:         Immutable or append-only flag set on sensitive file
+Title:         Sensitive file has an unexpected chattr flag
 Artifact:      /etc/ld.so.preload
 Raw value:     ----i--------e---
 Remediation:   not available
 ```
 
-**PAM_BACKDOOR** — PAM (Pluggable Authentication Modules) and NSS (Name Service Switch) are the core authentication and identity systems on Linux. Modifications to /etc/pam.d/* or unexpected modules in /etc/nsswitch.conf can bypass authentication entirely. This rule flags any modifications to these files and unexpected NSS module loading. Flag-only — authentication configuration changes require careful verification.
+**PAM_BACKDOOR** — PAM (Pluggable Authentication Modules) and NSS (Name Service Switch) are the core authentication and identity systems on Linux. This rule does NOT do mtime-based "was this file modified" detection — it pattern-matches file *content*: (1) a literal `pam_permit.so` line in any /etc/pam.d/* file (this module always succeeds and is a classic auth-bypass backdoor), or (2) an NSS module listed in /etc/nsswitch.conf that isn't in ubuntils' built-in allowlist. **Note:** the NSS check will false-positive on domain-joined/SSSD/LDAP/Winbind hosts using a module outside the built-in allowlist — it is intentionally scored at lower confidence than the pam_permit.so match for this reason; use `--config` to allowlist unrecognized module names for your environment. Flag-only — authentication configuration changes require careful verification.
 
-*Example finding:*
+*Example findings:*
 ```
 [HIGH] PAM_BACKDOOR
-Title:         PAM or NSS configuration modified
-Artifact:      /etc/pam.d/common-auth
-Raw value:     mtime within last 7 days
+Title:         PAM config unconditionally permits authentication
+Artifact:      /etc/pam.d/sshd
+Raw value:     auth required pam_permit.so
+Remediation:   not available
+```
+```
+[HIGH] PAM_BACKDOOR
+Title:         Unexpected NSS module in nsswitch.conf
+Artifact:      /etc/nsswitch.conf
+Raw value:     passwd: files evilmod
 Remediation:   not available
 ```
 
@@ -590,20 +597,20 @@ Remediation:   not available
 *Example finding:*
 ```
 [HIGH] KERNEL_MODULE_SUSPICIOUS
-Title:         Unexpected kernel module loaded
+Title:         Loaded kernel module not in the expected set
 Artifact:      implant_rootkit
-Raw value:     live (currently loaded)
+Raw value:     {'name': 'implant_rootkit', 'size': '12288', 'used_by': []}
 Remediation:   not available
 ```
 
-**SETUID_INVENTORY** — Setuid and setgid binaries escalate privileges automatically when executed. Attackers create custom setuid binaries to persist privilege escalation. This rule flags setuid/setgid binaries outside a known baseline set of legitimate system utilities. Flag-only — unexpected setuid binaries require investigation but may be legitimate application-installed binaries.
+**SETUID_INVENTORY** — Setuid and setgid binaries escalate privileges automatically when executed. Attackers create custom setuid/setgid binaries to persist privilege escalation, most often outside the standard system binary directories (a mainstream install path like /opt, a user's own /home, /srv, or a world-writable temp dir). This rule inventories setuid/setgid binaries via `find -perm -4000 -o -perm -2000` across `/usr /bin /sbin /opt /home /srv /tmp /var/tmp /dev/shm` and flags any outside a known baseline set of legitimate system utilities. Flag-only — unexpected setuid/setgid binaries require investigation but may be legitimate application-installed binaries.
 
 *Example finding:*
 ```
 [LOW] SETUID_INVENTORY
-Title:         Unexpected setuid binary found
-Artifact:      /tmp/.sh
-Raw value:     -rwsr-xr-x (setuid on suspicious path)
+Title:         Unexpected setuid binary
+Artifact:      /tmp/.hidden/backdoor
+Raw value:     setuid
 Remediation:   not available
 ```
 
@@ -756,6 +763,10 @@ If any step fails, remediation stops immediately, the system is left unchanged, 
 ### Collector dependencies
 
 `PackageCollector` requires three standard Ubuntu tools on the live host (`dpkg`, `lsattr`, `find` — all present on stock Ubuntu installations). If any command is unavailable, `PackageCollector` gracefully produces empty data for that portion rather than crashing. Offline analysis (`analyze BUNDLE`) replays the captured command output from `collect` time, so command availability on the analyzer's host is not required.
+
+The setuid/setgid `find` scan passes `-xdev` to stay bounded — it does not descend into separately-mounted filesystems (a distinct mount under `/opt`, an NFS-mounted `/home`, etc.). This is a deliberate runtime-vs-coverage tradeoff: without `-xdev`, the scan could hang scanning network mounts or virtual filesystems. If your environment mounts these paths on separate filesystems, be aware they will not be scanned.
+
+`dpkg --verify` and the setuid/setgid `find` scan use generous non-default timeouts (10 minutes and 5 minutes respectively, see `ubuntils/collectors/packages.py`) since both can legitimately run well past the library default of 30 seconds on a real host with a large package database or filesystem tree; `ubuntils collect` uses the same timeouts when capturing these commands into a bundle.
 
 ---
 
