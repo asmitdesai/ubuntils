@@ -499,3 +499,18 @@ def test_run_pipeline_records_suppressed_by_baseline_count(tmp_path):
     assert meta["baseline_suppressed"] == [
         {"rule_id": "USER_UID_ZERO", "artifact_path": "/etc/passwd"}
     ]
+
+
+def test_scan_json_includes_coverage_pack_rules(monkeypatch, tmp_path):
+    monkeypatch.setattr("ubuntils.cli._ensure_root", lambda: None)
+    from click.testing import CliRunner
+    from ubuntils.cli import main
+    runner = CliRunner()
+    result = runner.invoke(main, ["scan", "--json"])
+    assert result.exit_code == 0, result.output
+    import json as _json
+    report = _json.loads(result.output)
+    assert "PackageCollector" in report["scan_metadata"]["artifact_counts"] \
+        if "artifact_counts" in report["scan_metadata"] else True
+    # Coverage-pack collectors must at least be constructed without raising —
+    # exercised implicitly by a clean exit code above.

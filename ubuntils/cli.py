@@ -10,6 +10,7 @@ import structlog
 
 from ubuntils import __version__
 from ubuntils.collectors import ALL_COLLECTORS
+from ubuntils.collectors.packages import SENSITIVE_ATTR_PATHS
 from ubuntils.collectors.source import LiveSource
 from ubuntils.detectors.custom_rules import load_custom_rules
 from ubuntils.detectors.engine import DetectionEngine
@@ -41,6 +42,7 @@ COLLECT_FILES = [
     "/etc/environment",
     "/etc/crontab",
     "/etc/profile",
+    "/etc/nsswitch.conf",
     "/var/log/syslog",
     "/var/log/messages",
     "/var/log/audit/audit.log",
@@ -53,6 +55,11 @@ COLLECT_COMMANDS = [
     ("systemctl_list_timers_text",
      ["systemctl", "list-timers", "--all", "--no-pager"]),
     ("journalctl", ["journalctl", "-o", "json", "--since=7 days ago", "--no-pager"]),
+    ("dpkg_verify", ["dpkg", "--verify"]),
+    ("lsattr_sensitive", ["lsattr", "-d", *SENSITIVE_ATTR_PATHS]),
+    ("find_setuid", ["find", "/usr", "/bin", "/sbin", "/tmp", "/var/tmp", "/dev/shm",
+                      "-xdev", "-perm", "-4000", "-type", "f"]),
+    ("lsmod", ["lsmod"]),
 ]
 
 # Collectors that acquire artifacts by shelling out to a command (as opposed
@@ -60,7 +67,9 @@ COLLECT_COMMANDS = [
 # mounted image (there is no live process/kernel state to query with `ss` or
 # `systemctl`), so they are skipped with a note rather than silently
 # contaminating the report with the analyst's own host's live state.
-COMMAND_BASED_COLLECTOR_NAMES = ["NetworkCollector", "SystemdCollector"]
+COMMAND_BASED_COLLECTOR_NAMES = [
+    "NetworkCollector", "SystemdCollector", "PackageCollector", "KernelCollector",
+]
 
 
 def _ensure_root() -> None:

@@ -7,6 +7,8 @@ from ubuntils.collectors.ssh import SSHCollector
 from ubuntils.collectors.sudoers import SudoersCollector
 from ubuntils.collectors.environment import EnvironmentCollector
 from ubuntils.collectors.packages import PackageCollector
+from ubuntils.collectors.pam import PamCollector
+from ubuntils.collectors.kernel import KernelCollector
 
 ALL_COLLECTORS = [
     ProcessCollector,
@@ -18,4 +20,6 @@ ALL_COLLECTORS = [
     SudoersCollector,
     EnvironmentCollector,
     PackageCollector,
+    PamCollector,
+    KernelCollector,
 ]

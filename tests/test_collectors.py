@@ -749,7 +749,7 @@ def test_user_collector_reads_from_source(tmp_path):
 
 def test_all_collectors_registered():
     from ubuntils.collectors import ALL_COLLECTORS
-    assert len(ALL_COLLECTORS) == 9
+    assert len(ALL_COLLECTORS) == 11
 
 
 def test_all_collectors_are_base_collector_subclasses():

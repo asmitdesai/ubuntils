@@ -131,7 +131,9 @@ def test_analyze_root_skips_command_collectors_and_never_runs_live_commands(tmp_
 
     report = _json.loads(result.output)
     meta = report["scan_metadata"]
-    assert set(meta["command_collectors_skipped"]) == {"NetworkCollector", "SystemdCollector"}
+    assert set(meta["command_collectors_skipped"]) == {
+        "NetworkCollector", "SystemdCollector", "PackageCollector", "KernelCollector",
+    }
     assert calls == [], f"a live command was executed against --root: {calls}"
 
 

@@ -525,7 +525,7 @@ def test_uid_zero_no_users_key():
 
 
 def test_engine_all_rules_registered():
-    assert len(ALL_RULES) == 11
+    assert len(ALL_RULES) == 15
 
 
 def test_engine_runs_custom_rules_and_allowlist_suppresses_them():
@@ -611,6 +611,18 @@ def test_engine_includes_suspicious_connection_rule():
     from ubuntils.detectors.engine import ALL_RULES
     from ubuntils.detectors.rules import rule_process_suspicious_connection
     assert rule_process_suspicious_connection in ALL_RULES
+
+
+def test_coverage_pack_rules_are_registered_in_engine():
+    from ubuntils.detectors.engine import ALL_RULES
+    names = {r.__name__ for r in ALL_RULES}
+    assert {
+        "rule_package_tampered",
+        "rule_immutable_flag_set",
+        "rule_setuid_inventory",
+        "rule_pam_backdoor",
+        "rule_kernel_module_suspicious",
+    }.issubset(names)
 
 
 def test_systemd_timer_has_guided_remediation():
