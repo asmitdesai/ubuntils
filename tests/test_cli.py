@@ -505,6 +505,28 @@ def test_scan_json_includes_coverage_pack_rules(monkeypatch, tmp_path):
     monkeypatch.setattr("ubuntils.cli._ensure_root", lambda: None)
     from click.testing import CliRunner
     from ubuntils.cli import main
+
+    # `dpkg --verify` and `find ... -perm -4000 -o -perm -2000` walk the whole
+    # live package database / filesystem tree — this test previously invoked
+    # them for real against the test-runner's own host (harmless-by-accident
+    # on macOS, where `dpkg`/`find`'s argv shape differ or the tool is
+    # absent, but a real, potentially slow command execution on Linux CI).
+    # Stub `run_command` for just those two commands so CI runtime doesn't
+    # depend on the runner's real package database; every other command
+    # (ss, netstat, systemctl, lsmod, ...) still runs for real, unchanged
+    # from prior behavior.
+    import ubuntils.collectors.source as source_module
+    real_run_command = source_module.run_command
+
+    def _fake_run_command(cmd, timeout=30):
+        if cmd and cmd[0] == "dpkg" and "--verify" in cmd:
+            return "", "", 0
+        if cmd and cmd[0] == "find" and "-4000" in cmd:
+            return "", "", 0
+        return real_run_command(cmd, timeout=timeout)
+
+    monkeypatch.setattr(source_module, "run_command", _fake_run_command)
+
     runner = CliRunner()
     result = runner.invoke(main, ["scan", "--json"])
     assert result.exit_code == 0, result.output
