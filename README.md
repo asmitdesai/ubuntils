@@ -434,6 +434,11 @@ A summary view of the scan: detected Ubuntu version, architecture, scan duration
 | PROCESS_MASQUERADE | MEDIUM | No | Processes whose name matches a known system binary but whose executable path is outside /usr/bin, /usr/sbin, /bin, /sbin |
 | PROCESS_SUSPICIOUS_CONNECTION | HIGH / MEDIUM | No | Processes holding an outbound connection whose executable sits outside the standard binary directories (HIGH) or whose remote port is non-standard (MEDIUM) |
 | SHELL_RC_MODIFICATION | LOW | No | Shell init files (bashrc, profile, zshrc, etc.) modified within the last 48 hours for any user with a login shell |
+| PACKAGE_TAMPERED | HIGH | No | System-owned package files modified, missing, or whose content/mode/size mismatches the package manifest (via `dpkg --verify`) |
+| IMMUTABLE_FLAG_SET | MEDIUM | No | Immutable (`i`) or append-only (`a`) flags set on sensitive files like /etc/passwd, /etc/sudoers, or /etc/pam.d/* (detected via `lsattr`) |
+| PAM_BACKDOOR | HIGH | No | A literal `pam_permit.so` line in any /etc/pam.d/* file, or an NSS module in /etc/nsswitch.conf outside an allowlist (files/sss/ldap/winbind/...) |
+| KERNEL_MODULE_SUSPICIOUS | HIGH | No | Loaded kernel modules outside an allowlist of common built-in modules — note: hardware-heavy hosts (GPUs, Wi-Fi cards, proprietary drivers) will see false positives; add expected modules via `--config` |
+| SETUID_INVENTORY | LOW | No | Unexpected setuid or setgid binaries outside a known baseline set |
 
 ### Why each rule exists
 
@@ -544,6 +549,68 @@ Remediation:   not available
 Title:         Shell init file recently modified
 Artifact:      /root/.bashrc
 Raw value:     mtime=2024-01-15 14:22:01 (6 hours ago)
+Remediation:   not available
+```
+
+**PACKAGE_TAMPERED** — System-owned binaries and configuration files are the foundation of trust. This rule detects when package-owned files have been modified, deleted, or have content/mode/size mismatches using `dpkg --verify`. Conffile-only edits (expected local configuration changes) are excluded from reporting to avoid noise. Flag-only — tampering may be legitimate (custom local edits) or malicious (file replacement); deciding requires human judgment.
+
+*Example finding:*
+```
+[HIGH] PACKAGE_TAMPERED
+Title:         Package-owned file modified since installation
+Artifact:      /usr/bin/sshd
+Raw value:     ....5..T. (content and mtime differ)
+Remediation:   not available
+```
+
+**IMMUTABLE_FLAG_SET** — Attackers often set the immutable flag (`i`) or append-only flag (`a`) on files to prevent modification or deletion, even by root, including to hide tampering from further edits/log rotation. Setting these flags on sensitive system files like /etc/passwd, /etc/sudoers, /etc/pam.d/*, or the auth/syslog/wtmp/btmp log files is a strong indicator of attacker hardening. This rule detects immutable and append-only flags via `lsattr` against that fixed list of sensitive paths. Flag-only — flag changes require human review.
+
+*Example finding:*
+```
+[MEDIUM] IMMUTABLE_FLAG_SET
+Title:         Sensitive file has an unexpected chattr flag
+Artifact:      /etc/ld.so.preload
+Raw value:     ----i--------e---
+Remediation:   not available
+```
+
+**PAM_BACKDOOR** — PAM (Pluggable Authentication Modules) and NSS (Name Service Switch) are the core authentication and identity systems on Linux. This rule does NOT do mtime-based "was this file modified" detection — it pattern-matches file *content*: (1) a literal `pam_permit.so` line in any /etc/pam.d/* file (this module always succeeds and is a classic auth-bypass backdoor), or (2) an NSS module listed in /etc/nsswitch.conf that isn't in ubuntils' built-in allowlist. **Note:** the NSS check will false-positive on domain-joined/SSSD/LDAP/Winbind hosts using a module outside the built-in allowlist — it is intentionally scored at lower confidence than the pam_permit.so match for this reason; use `--config` to allowlist unrecognized module names for your environment. Flag-only — authentication configuration changes require careful verification.
+
+*Example findings:*
+```
+[HIGH] PAM_BACKDOOR
+Title:         PAM config unconditionally permits authentication
+Artifact:      /etc/pam.d/sshd
+Raw value:     auth required pam_permit.so
+Remediation:   not available
+```
+```
+[HIGH] PAM_BACKDOOR
+Title:         Unexpected NSS module in nsswitch.conf
+Artifact:      /etc/nsswitch.conf
+Raw value:     passwd: files evilmod
+Remediation:   not available
+```
+
+**KERNEL_MODULE_SUSPICIOUS** — Kernel modules run in ring 0 with unrestricted access. Attackers frequently load custom kernel modules for rootkits, packet sniffing, or process hiding. This rule compares currently loaded modules against a small allowlist of expected built-in modules (common to most systems). **Note:** hardware-heavy hosts with GPU drivers, Wi-Fi cards, or proprietary drivers will generate false positives. Responders should add their host's expected modules via `--config`, allowlisting by module name (used as the `artifact_path`). Flag-only — kernel module investigation requires forensic tools and human expertise.
+
+*Example finding:*
+```
+[HIGH] KERNEL_MODULE_SUSPICIOUS
+Title:         Loaded kernel module not in the expected set
+Artifact:      implant_rootkit
+Raw value:     {'name': 'implant_rootkit', 'size': '12288', 'used_by': []}
+Remediation:   not available
+```
+
+**SETUID_INVENTORY** — Setuid and setgid binaries escalate privileges automatically when executed. Attackers create custom setuid/setgid binaries to persist privilege escalation, most often outside the standard system binary directories (a mainstream install path like /opt, a user's own /home, /srv, or a world-writable temp dir). This rule inventories setuid/setgid binaries via `find -perm -4000 -o -perm -2000` across `/usr /bin /sbin /opt /home /srv /tmp /var/tmp /dev/shm` and flags any outside a known baseline set of legitimate system utilities. Flag-only — unexpected setuid/setgid binaries require investigation but may be legitimate application-installed binaries.
+
+*Example finding:*
+```
+[LOW] SETUID_INVENTORY
+Title:         Unexpected setuid binary
+Artifact:      /tmp/.hidden/backdoor
+Raw value:     setuid
 Remediation:   not available
 ```
 
@@ -689,6 +756,17 @@ If any step fails, remediation stops immediately, the system is left unchanged, 
 | SSHCollector | `~/.ssh/authorized_keys` for all users |
 | SudoersCollector | `/etc/sudoers` and all files under `/etc/sudoers.d/` |
 | EnvironmentCollector | `/etc/environment`, `/etc/profile.d/*`, user shell init files |
+| PackageCollector | System package integrity via `dpkg --verify`, immutable flag attributes via `lsattr`, and setuid/setgid binaries via `find` |
+| PamCollector | `/etc/pam.d/*` files and `/etc/nsswitch.conf` |
+| KernelCollector | Loaded kernel modules via `lsmod` |
+
+### Collector dependencies
+
+`PackageCollector` requires three standard Ubuntu tools on the live host (`dpkg`, `lsattr`, `find` — all present on stock Ubuntu installations). If any command is unavailable, `PackageCollector` gracefully produces empty data for that portion rather than crashing. Offline analysis (`analyze BUNDLE`) replays the captured command output from `collect` time, so command availability on the analyzer's host is not required.
+
+The setuid/setgid `find` scan passes `-xdev` to stay bounded — it does not descend into separately-mounted filesystems (a distinct mount under `/opt`, an NFS-mounted `/home`, etc.). This is a deliberate runtime-vs-coverage tradeoff: without `-xdev`, the scan could hang scanning network mounts or virtual filesystems. If your environment mounts these paths on separate filesystems, be aware they will not be scanned.
+
+`dpkg --verify` and the setuid/setgid `find` scan use generous non-default timeouts (10 minutes and 5 minutes respectively, see `ubuntils/collectors/packages.py`) since both can legitimately run well past the library default of 30 seconds on a real host with a large package database or filesystem tree; `ubuntils collect` uses the same timeouts when capturing these commands into a bundle.
 
 ---
 
@@ -741,7 +819,7 @@ VirusTotal hash lookups and MISP IOC export were dropped from this release. Viru
 - [x] `bundle_integrity` (`live`/`ok`/`mismatch`) surfaced in `scan_metadata`
 - [x] Documented detection-coverage gaps in offline mode (`PROCESS_MASQUERADE`, `PROCESS_SUSPICIOUS_CONNECTION`, and reduced coverage for cron/sudoers/SSH glob paths and systemd timer `ExecStart`)
 - [x] Trustworthy detection: confidence scoring (`confidence`/`confidence_band`/`signals`), `--baseline` suppression, replacing mtime-only heuristics in `SSH_UNAUTHORIZED_KEY`/`SHELL_RC_MODIFICATION` with ctime + content signals, and a real offline timeline for both `analyze BUNDLE` and `analyze --root`
-- [ ] Coverage pack: `PACKAGE_TAMPERED`, `IMMUTABLE_FLAG_SET`, `PAM_BACKDOOR`, `KERNEL_MODULE_SUSPICIOUS`, `SETUID_INVENTORY` — planned, not yet started
+- [x] Coverage pack: `PACKAGE_TAMPERED`, `IMMUTABLE_FLAG_SET`, `PAM_BACKDOOR`, `KERNEL_MODULE_SUSPICIOUS`, `SETUID_INVENTORY` (via `PackageCollector`, `PamCollector`, `KernelCollector`; all flag-only by design)
 
 **v3.0.0 / v4.0.0 (exploratory)**
 - Web dashboard for multi-host triage

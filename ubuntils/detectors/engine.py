@@ -14,6 +14,11 @@ from ubuntils.detectors.rules import (
     rule_sudoers_nopasswd,
     rule_suspicious_systemd_timer,
     rule_uid_zero_account,
+    rule_package_tampered,
+    rule_immutable_flag_set,
+    rule_setuid_inventory,
+    rule_pam_backdoor,
+    rule_kernel_module_suspicious,
 )
 from ubuntils.utils.baseline import Baseline
 from ubuntils.utils.config import Allowlist
@@ -29,6 +34,11 @@ ALL_RULES = [
     rule_process_suspicious_connection,
     rule_uid_zero_account,
     rule_shell_rc_modification,
+    rule_package_tampered,
+    rule_immutable_flag_set,
+    rule_setuid_inventory,
+    rule_pam_backdoor,
+    rule_kernel_module_suspicious,
 ]
 
 _log = logging.getLogger(__name__)

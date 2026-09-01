@@ -11,6 +11,9 @@ from ubuntils.utils.validators import (
     path_in_standard_libs,
     path_in_writable_tmp,
     uid_is_system,
+    KNOWN_SETUID_BINARIES,
+    ALLOWED_NSS_MODULES,
+    ALLOWED_KERNEL_MODULES,
 )
 
 KNOWN_SYSTEM_BINARIES = frozenset({
@@ -386,5 +389,229 @@ def rule_shell_rc_modification(artifacts: dict) -> List[Finding]:
             apply_signal(finding, "mtime_only", -20,
                          "recency is the only signal; ctime is not recent (mtime may be forged)")
 
+        findings.append(finding)
+    return findings
+
+
+def rule_package_tampered(artifacts: dict) -> List[Finding]:
+    findings = []
+    for entry in artifacts.get("dpkg_verify_entries", []):
+        path = entry.get("path", "")
+        flags = entry.get("flags", "")
+        missing = entry.get("missing", False)
+        is_conffile = entry.get("is_conffile", False)
+
+        if missing:
+            finding = Finding(
+                rule_id="PACKAGE_TAMPERED",
+                severity=Severity.HIGH,
+                title="Package-owned file is missing",
+                description=(
+                    f"'{path}' is owned by an installed package but is missing from disk "
+                    "(dpkg --verify reports it as absent)"
+                ),
+                artifact_path=path,
+                raw_value="missing",
+                remediation_available=False,
+                remediation_description=None,
+                guided_remediation=(
+                    f"Reinstall the owning package to restore '{path}': "
+                    f"dpkg -S {path} 2>/dev/null | cut -d: -f1 | xargs -r apt-get install --reinstall -y"
+                ),
+            )
+            apply_signal(finding, "missing_file", 35,
+                         "package-owned file absent from disk — cannot be an incidental edit")
+            findings.append(finding)
+            continue
+
+        # Conffiles are expected to be user-edited; only their content hash (5) matters
+        # for tamper detection, and even then it's routine — skip conffiles entirely to
+        # avoid drowning responders in expected local config edits.
+        if is_conffile:
+            continue
+
+        if any(ch in flags for ch in ("5", "M", "S")):
+            finding = Finding(
+                rule_id="PACKAGE_TAMPERED",
+                severity=Severity.HIGH,
+                title="Package-owned file modified since installation",
+                description=(
+                    f"'{path}' differs from the package manifest (dpkg --verify flags: '{flags}')"
+                ),
+                artifact_path=path,
+                raw_value=flags,
+                remediation_available=False,
+                remediation_description=None,
+                guided_remediation=(
+                    f"Compare against the package's known-good copy and reinstall if tampered: "
+                    f"dpkg -S {path} 2>/dev/null | cut -d: -f1 | xargs -r apt-get install --reinstall -y"
+                ),
+            )
+            apply_signal(finding, "content_match", 30,
+                         f"dpkg --verify reports a real content/mode/size mismatch (flags: '{flags}')")
+            findings.append(finding)
+    return findings
+
+
+def rule_immutable_flag_set(artifacts: dict) -> List[Finding]:
+    findings = []
+    for entry in artifacts.get("immutable_flags", []):
+        path = entry.get("path", "")
+        attrs = entry.get("attrs", "")
+        if "i" in attrs or "a" in attrs:
+            flag_name = "immutable (i)" if "i" in attrs else "append-only (a)"
+            finding = Finding(
+                rule_id="IMMUTABLE_FLAG_SET",
+                severity=Severity.MEDIUM,
+                title="Sensitive file has an unexpected chattr flag",
+                description=(
+                    f"'{path}' has the {flag_name} attribute set — attackers use this to protect "
+                    "implants or hide tampering from further edits/log rotation"
+                ),
+                artifact_path=path,
+                raw_value=attrs,
+                remediation_available=False,
+                remediation_description=None,
+                guided_remediation=f"Review then clear the flag if unexpected: chattr -i -a {path}",
+            )
+            apply_signal(finding, "content_match", 25,
+                         f"chattr attribute string '{attrs}' actually carries {flag_name} — "
+                         "stock Ubuntu does not set this on this file by default")
+            findings.append(finding)
+    return findings
+
+
+def rule_setuid_inventory(artifacts: dict) -> List[Finding]:
+    findings = []
+    for path in artifacts.get("setuid_binaries", []):
+        if path in KNOWN_SETUID_BINARIES:
+            continue
+        in_tmp = path_in_writable_tmp(path)
+        finding = Finding(
+            rule_id="SETUID_INVENTORY",
+            severity=Severity.LOW,
+            title="Unexpected setuid binary",
+            description=(
+                f"'{path}' has the setuid bit set and is not in the known-good baseline"
+                + (" (and is located in a world-writable temp directory)" if in_tmp else "")
+            ),
+            artifact_path=path,
+            raw_value="setuid",
+            remediation_available=False,
+            remediation_description=None,
+            guided_remediation=f"Review and, if unauthorized, remove the setuid bit: chmod u-s {path}",
+        )
+        apply_signal(finding, "baseline_deviation", 15,
+                     "setuid binary not present in ubuntils' known-good baseline")
+        if in_tmp:
+            apply_signal(finding, "writable_tmp_location", 25,
+                         "located under a world-writable temp directory — a common drop location "
+                         "for attacker-planted setuid binaries")
+        findings.append(finding)
+    return findings
+
+
+def rule_pam_backdoor(artifacts: dict) -> List[Finding]:
+    findings = []
+    for entry in artifacts.get("pam_files", []):
+        path = entry.get("path", "")
+        content = entry.get("content", "")
+        for line in content.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if "pam_permit.so" in stripped:
+                finding = Finding(
+                    rule_id="PAM_BACKDOOR",
+                    severity=Severity.HIGH,
+                    title="PAM config unconditionally permits authentication",
+                    description=(
+                        f"'{path}' loads pam_permit.so, which always succeeds — a common backdoor "
+                        "technique to bypass authentication for a service"
+                    ),
+                    artifact_path=path,
+                    raw_value=stripped,
+                    remediation_available=False,
+                    remediation_description=None,
+                    guided_remediation=f"Review and remove the pam_permit.so line from {path}",
+                )
+                apply_signal(finding, "content_match", 30,
+                             "pam_permit.so is present verbatim in the PAM stack — not inferred")
+                findings.append(finding)
+                break  # one finding per file is enough signal
+
+    nsswitch = artifacts.get("nsswitch_content", "")
+    for line in nsswitch.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or ":" not in stripped:
+            continue
+        _database, _sep, modules_str = stripped.partition(":")
+        # Strip trailing inline comments (anything after an unquoted #)
+        if "#" in modules_str:
+            modules_str = modules_str[:modules_str.index("#")]
+        for token in modules_str.split():
+            # Skip action clauses (tokens starting with [, like [NOTFOUND=return])
+            if token.startswith("["):
+                continue
+            module = token.split("=")[0]  # Extract module name (before any = option)
+            if not module or module in ALLOWED_NSS_MODULES:
+                continue
+            finding = Finding(
+                rule_id="PAM_BACKDOOR",
+                severity=Severity.HIGH,
+                title="Unexpected NSS module in nsswitch.conf",
+                description=(
+                    f"nsswitch.conf references NSS module '{module}', which is not in the "
+                    "standard Ubuntu module set — unexpected NSS modules can intercept lookups "
+                    "(e.g. name resolution or user auth) system-wide"
+                ),
+                artifact_path="/etc/nsswitch.conf",
+                raw_value=stripped,
+                remediation_available=False,
+                remediation_description=None,
+                guided_remediation="Review /etc/nsswitch.conf and remove the unexpected module",
+            )
+            # Deliberately a lower weight than the pam_permit.so branch above: this
+            # allowlist can't anticipate every legitimate environment (see README
+            # caveat), so an unrecognized-but-legitimate NSS module (e.g. a module
+            # this build's allowlist doesn't know about) shouldn't land at the same
+            # confidence as a literal, unambiguous pam_permit.so backdoor match.
+            apply_signal(finding, "content_match", 18,
+                         f"module name '{module}' is present verbatim in nsswitch.conf but is not "
+                         "in ubuntils' built-in NSS module allowlist")
+            findings.append(finding)
+    return findings
+
+
+def rule_kernel_module_suspicious(artifacts: dict) -> List[Finding]:
+    findings = []
+    for module in artifacts.get("kernel_modules", []):
+        name = module.get("name", "")
+        if name in ALLOWED_KERNEL_MODULES:
+            continue
+        finding = Finding(
+            rule_id="KERNEL_MODULE_SUSPICIOUS",
+            severity=Severity.HIGH,
+            title="Loaded kernel module not in the expected set",
+            description=(
+                f"Module '{name}' is loaded but is not in ubuntils' baseline of common built-in "
+                "modules. This may be a legitimate hardware/vendor driver (see README) or an "
+                "unexpected/malicious module — verify manually"
+            ),
+            artifact_path=name,
+            raw_value=str(module),
+            remediation_available=False,
+            remediation_description=None,
+            guided_remediation=(
+                f"Inspect the module and unload if unauthorized: modinfo {name} && rmmod {name}"
+            ),
+        )
+        # Deliberately a small weight: this baseline is intentionally narrow (see the README
+        # caveat and Global Constraints), so being unallowlisted alone is weak evidence —
+        # legitimate hardware/vendor drivers hit this constantly. Keep the finding at MEDIUM
+        # confidence by default; a responder's --config allowlist is the real fix for noise,
+        # not an inflated confidence score here.
+        apply_signal(finding, "unallowlisted_module", 10,
+                     "module name is not present in ubuntils' built-in module baseline")
         findings.append(finding)
     return findings

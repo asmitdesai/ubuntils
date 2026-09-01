@@ -9,8 +9,10 @@ from ubuntils.detectors.finding import Severity
 from ubuntils.detectors.rules import (
     rule_cron_root_exec,
     rule_cron_tmp_path,
+    rule_immutable_flag_set,
     rule_ld_preload_inject,
     rule_process_masquerade,
+    rule_setuid_inventory,
     rule_shell_rc_modification,
     rule_ssh_unauthorized_key,
     rule_sudoers_nopasswd,
@@ -523,7 +525,7 @@ def test_uid_zero_no_users_key():
 
 
 def test_engine_all_rules_registered():
-    assert len(ALL_RULES) == 10
+    assert len(ALL_RULES) == 15
 
 
 def test_engine_runs_custom_rules_and_allowlist_suppresses_them():
@@ -611,6 +613,18 @@ def test_engine_includes_suspicious_connection_rule():
     assert rule_process_suspicious_connection in ALL_RULES
 
 
+def test_coverage_pack_rules_are_registered_in_engine():
+    from ubuntils.detectors.engine import ALL_RULES
+    names = {r.__name__ for r in ALL_RULES}
+    assert {
+        "rule_package_tampered",
+        "rule_immutable_flag_set",
+        "rule_setuid_inventory",
+        "rule_pam_backdoor",
+        "rule_kernel_module_suspicious",
+    }.issubset(names)
+
+
 def test_systemd_timer_has_guided_remediation():
     from ubuntils.detectors.rules import rule_suspicious_systemd_timer
     artifacts = {"timers": [{"unit": "evil.timer", "exec_start": "/tmp/payload.sh"}]}
@@ -660,3 +674,176 @@ def test_engine_applies_baseline_before_allowlist_and_counts_suppressed():
     # the allowlist-suppressed one is not double-counted or miscounted.
     assert engine.suppressed_by_baseline == 1
     assert [f.rule_id for f in engine.baseline_suppressed_findings] == ["SSH_UNAUTHORIZED_KEY"]
+
+
+def test_rule_package_tampered_flags_content_mismatch_and_missing():
+    from ubuntils.detectors.rules import rule_package_tampered
+
+    artifacts = {
+        "dpkg_verify_entries": [
+            {"path": "/usr/bin/sshd", "flags": "", "is_conffile": False, "missing": True},
+            {"path": "/usr/bin/passwd", "flags": "....5..T.", "is_conffile": False, "missing": False},
+            {"path": "/etc/ssh/sshd_config", "flags": "??5??????", "is_conffile": True, "missing": False},
+        ]
+    }
+    findings = rule_package_tampered(artifacts)
+    triggered_paths = {f.artifact_path for f in findings}
+
+    assert "/usr/bin/sshd" in triggered_paths          # missing binary
+    assert "/usr/bin/passwd" in triggered_paths         # content (5) mismatch, non-conffile
+    assert "/etc/ssh/sshd_config" not in triggered_paths  # conffile content edits are expected/low-signal
+    assert all(f.rule_id == "PACKAGE_TAMPERED" for f in findings)
+    assert all(f.remediation_available is False for f in findings)
+
+    missing = next(f for f in findings if f.artifact_path == "/usr/bin/sshd")
+    assert missing.confidence_band == "HIGH"
+    assert any(s["name"] == "missing_file" for s in missing.signals)
+
+    tampered = next(f for f in findings if f.artifact_path == "/usr/bin/passwd")
+    assert tampered.confidence_band == "HIGH"
+    assert any(s["name"] == "content_match" for s in tampered.signals)
+
+
+def test_rule_package_tampered_ignores_conffile_only_mtime_changes():
+    from ubuntils.detectors.rules import rule_package_tampered
+
+    artifacts = {
+        "dpkg_verify_entries": [
+            {"path": "/etc/foo.conf", "flags": ".......T.", "is_conffile": True, "missing": False},
+        ]
+    }
+    assert rule_package_tampered(artifacts) == []
+
+
+def test_rule_immutable_flag_set_flags_immutable_and_append_only():
+    artifacts = {
+        "immutable_flags": [
+            {"path": "/etc/ld.so.preload", "attrs": "----i--------e---"},
+            {"path": "/etc/passwd", "attrs": "-------------e---"},
+            {"path": "/var/log/auth.log", "attrs": "-----a-------e---"},
+        ]
+    }
+    findings = rule_immutable_flag_set(artifacts)
+    triggered = {f.artifact_path for f in findings}
+
+    assert "/etc/ld.so.preload" in triggered   # 'i' set — suspicious
+    assert "/var/log/auth.log" in triggered    # 'a' set — suspicious (log-hiding tactic)
+    assert "/etc/passwd" not in triggered      # no i/a flag present
+    assert all(f.rule_id == "IMMUTABLE_FLAG_SET" and f.severity == Severity.MEDIUM for f in findings)
+    assert all(any(s["name"] == "content_match" for s in f.signals) for f in findings)
+
+
+def test_rule_setuid_inventory_flags_unknown_binaries_and_writable_tmp():
+    artifacts = {
+        "setuid_binaries": [
+            "/usr/bin/sudo",              # known-good, no finding
+            "/tmp/.hidden/backdoor",      # unknown + in writable tmp — most suspicious
+            "/usr/local/bin/mystery",     # unknown, outside writable tmp
+        ]
+    }
+    findings = rule_setuid_inventory(artifacts)
+    triggered = {f.artifact_path for f in findings}
+
+    assert "/usr/bin/sudo" not in triggered
+    assert "/tmp/.hidden/backdoor" in triggered
+    assert "/usr/local/bin/mystery" in triggered
+    assert all(f.rule_id == "SETUID_INVENTORY" and f.severity == Severity.LOW for f in findings)
+
+    in_tmp = next(f for f in findings if f.artifact_path == "/tmp/.hidden/backdoor")
+    outside_tmp = next(f for f in findings if f.artifact_path == "/usr/local/bin/mystery")
+    assert in_tmp.confidence > outside_tmp.confidence  # writable-tmp location raises confidence
+    assert any(s["name"] == "writable_tmp_location" for s in in_tmp.signals)
+    assert not any(s["name"] == "writable_tmp_location" for s in outside_tmp.signals)
+
+
+# ---------------------------------------------------------------------------
+# PAM_BACKDOOR
+# ---------------------------------------------------------------------------
+
+def test_rule_pam_backdoor_flags_pam_permit_and_unknown_nss_module():
+    from ubuntils.detectors.rules import rule_pam_backdoor
+
+    artifacts = {
+        "pam_files": [
+            {"path": "/etc/pam.d/sshd", "content": "auth sufficient pam_permit.so\n"},
+            {"path": "/etc/pam.d/common-auth", "content": "auth required pam_unix.so nullok\n"},
+        ],
+        "nsswitch_content": "passwd: files systemd evilmodule\n",
+    }
+    findings = rule_pam_backdoor(artifacts)
+    triggered_paths = {f.artifact_path for f in findings}
+
+    assert "/etc/pam.d/sshd" in triggered_paths
+    assert "/etc/pam.d/common-auth" not in triggered_paths
+    assert "/etc/nsswitch.conf" in triggered_paths
+    assert all(f.rule_id == "PAM_BACKDOOR" and f.severity == Severity.HIGH for f in findings)
+    assert all(any(s["name"] == "content_match" for s in f.signals) for f in findings)
+
+    # The pam_permit.so match is unambiguous — it stays at full confidence.
+    # The NSS-module match is deliberately scored lower: it can never be fully
+    # certain (see the domain-joined/SSSD false-positive risk) and must not
+    # land at the same confidence as a literal pam_permit.so backdoor.
+    pam_finding = next(f for f in findings if f.artifact_path == "/etc/pam.d/sshd")
+    nss_finding = next(f for f in findings if f.artifact_path == "/etc/nsswitch.conf")
+    assert pam_finding.confidence_band == "HIGH"
+    assert nss_finding.confidence < pam_finding.confidence
+    pam_weight = next(s["weight"] for s in pam_finding.signals if s["name"] == "content_match")
+    nss_weight = next(s["weight"] for s in nss_finding.signals if s["name"] == "content_match")
+    assert nss_weight < pam_weight
+
+
+def test_rule_pam_backdoor_clean_config_produces_no_findings():
+    from ubuntils.detectors.rules import rule_pam_backdoor
+
+    artifacts = {
+        "pam_files": [
+            {"path": "/etc/pam.d/common-auth", "content": "auth required pam_unix.so nullok\n"},
+        ],
+        "nsswitch_content": "passwd: files systemd\n",
+    }
+    assert rule_pam_backdoor(artifacts) == []
+
+
+def test_rule_pam_backdoor_ignores_standard_hosts_line_with_action_clause_and_mdns():
+    from ubuntils.detectors.rules import rule_pam_backdoor
+
+    artifacts = {
+        "pam_files": [],
+        "nsswitch_content": "hosts: files mdns4_minimal [NOTFOUND=return] dns\n",
+    }
+    assert rule_pam_backdoor(artifacts) == []
+
+
+def test_rule_pam_backdoor_ignores_trailing_comment_after_nss_line():
+    from ubuntils.detectors.rules import rule_pam_backdoor
+
+    artifacts = {
+        "pam_files": [],
+        "nsswitch_content": "passwd: files systemd  # standard\n",
+    }
+    assert rule_pam_backdoor(artifacts) == []
+
+
+# ─── KernelModuleSuspicious ──────────────────────────────────────────────────
+
+def test_rule_kernel_module_suspicious_flags_unknown_modules():
+    from ubuntils.detectors.rules import rule_kernel_module_suspicious
+
+    artifacts = {
+        "kernel_modules": [
+            {"name": "xt_conntrack", "size": "16384", "used_by": ["iptable_filter"]},
+            {"name": "evil_rootkit", "size": "12288", "used_by": []},
+        ]
+    }
+    findings = rule_kernel_module_suspicious(artifacts)
+
+    assert len(findings) == 1
+    assert findings[0].artifact_path == "evil_rootkit"
+    assert findings[0].rule_id == "KERNEL_MODULE_SUSPICIOUS"
+    assert findings[0].severity == Severity.HIGH
+    # Deliberately modest confidence: an unallowlisted module is common and legitimate on
+    # hardware-heavy hosts (see the README caveat), so this signal alone should not push a
+    # finding to HIGH confidence — severity (how bad if real) and confidence (how sure it's
+    # real) are orthogonal, and this rule is honest about being unsure.
+    assert findings[0].confidence_band == "MEDIUM"
+    assert any(s["name"] == "unallowlisted_module" for s in findings[0].signals)
