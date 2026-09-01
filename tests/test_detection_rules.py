@@ -777,8 +777,19 @@ def test_rule_pam_backdoor_flags_pam_permit_and_unknown_nss_module():
     assert "/etc/pam.d/common-auth" not in triggered_paths
     assert "/etc/nsswitch.conf" in triggered_paths
     assert all(f.rule_id == "PAM_BACKDOOR" and f.severity == Severity.HIGH for f in findings)
-    assert all(f.confidence_band == "HIGH" for f in findings)
     assert all(any(s["name"] == "content_match" for s in f.signals) for f in findings)
+
+    # The pam_permit.so match is unambiguous — it stays at full confidence.
+    # The NSS-module match is deliberately scored lower: it can never be fully
+    # certain (see the domain-joined/SSSD false-positive risk) and must not
+    # land at the same confidence as a literal pam_permit.so backdoor.
+    pam_finding = next(f for f in findings if f.artifact_path == "/etc/pam.d/sshd")
+    nss_finding = next(f for f in findings if f.artifact_path == "/etc/nsswitch.conf")
+    assert pam_finding.confidence_band == "HIGH"
+    assert nss_finding.confidence < pam_finding.confidence
+    pam_weight = next(s["weight"] for s in pam_finding.signals if s["name"] == "content_match")
+    nss_weight = next(s["weight"] for s in nss_finding.signals if s["name"] == "content_match")
+    assert nss_weight < pam_weight
 
 
 def test_rule_pam_backdoor_clean_config_produces_no_findings():

@@ -16,7 +16,10 @@ KNOWN_SETUID_BINARIES = frozenset({
 ALLOWED_NSS_MODULES = frozenset({
     "files", "compat", "systemd", "mymachines", "myhostname",
     "resolve", "dns", "nis", "nisplus", "db",
-    "mdns4", "mdns4_minimal", "mdns6", "mdns6_minimal",
+    "mdns", "mdns4", "mdns4_minimal", "mdns6", "mdns6_minimal",
+    # Domain-joined/LDAP-integrated hosts: SSSD, LDAP, and Samba/Winbind are
+    # extremely common on real Ubuntu fleets and are routine, not suspicious.
+    "sss", "ldap", "winbind", "wins",
 })
 
 # Common built-in modules on stock Ubuntu server/container hosts (networking,

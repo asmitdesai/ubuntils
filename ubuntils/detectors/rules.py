@@ -571,8 +571,14 @@ def rule_pam_backdoor(artifacts: dict) -> List[Finding]:
                 remediation_description=None,
                 guided_remediation="Review /etc/nsswitch.conf and remove the unexpected module",
             )
-            apply_signal(finding, "content_match", 30,
-                         f"module name '{module}' is present verbatim in nsswitch.conf, not inferred")
+            # Deliberately a lower weight than the pam_permit.so branch above: this
+            # allowlist can't anticipate every legitimate environment (see README
+            # caveat), so an unrecognized-but-legitimate NSS module (e.g. a module
+            # this build's allowlist doesn't know about) shouldn't land at the same
+            # confidence as a literal, unambiguous pam_permit.so backdoor match.
+            apply_signal(finding, "content_match", 18,
+                         f"module name '{module}' is present verbatim in nsswitch.conf but is not "
+                         "in ubuntils' built-in NSS module allowlist")
             findings.append(finding)
     return findings
 
