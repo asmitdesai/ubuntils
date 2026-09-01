@@ -510,7 +510,7 @@ def test_scan_json_includes_coverage_pack_rules(monkeypatch, tmp_path):
     assert result.exit_code == 0, result.output
     import json as _json
     report = _json.loads(result.output)
-    assert "PackageCollector" in report["scan_metadata"]["artifact_counts"] \
-        if "artifact_counts" in report["scan_metadata"] else True
-    # Coverage-pack collectors must at least be constructed without raising —
-    # exercised implicitly by a clean exit code above.
+    # The three new collectors (coverage pack) should appear in the artifact_counts
+    assert "PackageCollector" in report["artifact_counts"]
+    assert "PamCollector" in report["artifact_counts"]
+    assert "KernelCollector" in report["artifact_counts"]
