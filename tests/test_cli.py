@@ -536,3 +536,35 @@ def test_scan_json_includes_coverage_pack_rules(monkeypatch, tmp_path):
     assert "PackageCollector" in report["artifact_counts"]
     assert "PamCollector" in report["artifact_counts"]
     assert "KernelCollector" in report["artifact_counts"]
+
+
+class TestRunPipelineWazuhForwarding:
+    @patch("ubuntils.cli.write_wazuh_alerts")
+    @patch("ubuntils.cli.is_wazuh_agent_present", return_value=True)
+    @patch("ubuntils.cli.ALL_COLLECTORS", [])
+    def test_live_scan_forwards_to_wazuh_when_agent_present(self, mock_present, mock_write):
+        _run_pipeline(source=LiveSource(root="/"), remediate=False, confirm=False)
+        assert mock_write.called
+
+    @patch("ubuntils.cli.write_wazuh_alerts")
+    @patch("ubuntils.cli.is_wazuh_agent_present", return_value=False)
+    @patch("ubuntils.cli.ALL_COLLECTORS", [])
+    def test_live_scan_skips_wazuh_when_agent_absent(self, mock_present, mock_write):
+        _run_pipeline(source=LiveSource(root="/"), remediate=False, confirm=False)
+        assert not mock_write.called
+
+    @patch("ubuntils.cli.write_wazuh_alerts")
+    @patch("ubuntils.cli.is_wazuh_agent_present", return_value=True)
+    @patch("ubuntils.cli.ALL_COLLECTORS", [])
+    def test_offline_root_analysis_never_calls_wazuh_forwarding(self, mock_present, mock_write):
+        _run_pipeline(source=LiveSource(root="/", offline=True), remediate=False, confirm=False)
+        assert not mock_write.called
+
+    @patch("ubuntils.cli.write_wazuh_alerts")
+    @patch("ubuntils.cli.is_wazuh_agent_present", return_value=True)
+    @patch("ubuntils.cli.ALL_COLLECTORS", [])
+    def test_bundle_analysis_never_calls_wazuh_forwarding(self, mock_present, mock_write):
+        from ubuntils.collectors.source import BundleSource
+        source = BundleSource(root_dir="/nonexistent", command_index={})
+        _run_pipeline(source=source, remediate=False, confirm=False)
+        assert not mock_write.called

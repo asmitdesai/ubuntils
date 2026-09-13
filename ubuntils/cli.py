@@ -17,6 +17,7 @@ from ubuntils.detectors.engine import DetectionEngine
 from ubuntils.detectors.finding import Severity
 from ubuntils.detectors.scoring import apply_signal
 from ubuntils.formatters.json_formatter import JSONFormatter
+from ubuntils.integrations.wazuh import is_wazuh_agent_present, write_wazuh_alerts
 from ubuntils.remediators import REMEDIATOR_REGISTRY
 from ubuntils.timeline.builder import TimelineBuilder
 from ubuntils.timeline.correlator import correlate
@@ -180,6 +181,14 @@ def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=
     else:
         report_hostname = socket.gethostname()
         report_ubuntu_version = ubuntu_version
+
+    # Only a genuinely live scan describes the same host the local Wazuh
+    # agent is watching — an offline `--root` LiveSource and a BundleSource
+    # (isinstance check fails for BundleSource) both describe a different
+    # (possibly remote/dead) host and must never forward findings here.
+    is_live_scan = isinstance(source, LiveSource) and not getattr(source, "offline", False)
+    if is_live_scan and is_wazuh_agent_present():
+        write_wazuh_alerts(findings, report_hostname)
 
     stats = {
         "ubuntu_version": ubuntu_version,
