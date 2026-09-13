@@ -1,0 +1,9 @@
+<!--
+  Add this block inside <ossec_config> in /var/ossec/etc/ossec.conf on the
+  host running ubuntils, then restart the agent:
+    systemctl restart wazuh-agent
+-->
+<localfile>
+  <log_format>json</log_format>
+  <location>/var/log/ubuntils/wazuh-alerts.json</location>
+</localfile>

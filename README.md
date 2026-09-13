@@ -744,6 +744,42 @@ If any step fails, remediation stops immediately, the system is left unchanged, 
 
 ---
 
+## Wazuh Integration
+
+If a Wazuh agent is present on the host (`/var/ossec/bin/wazuh-agentd` or
+`/var/ossec/etc/ossec.conf` exists), `ubuntils scan` automatically appends
+each finding as one JSON line to `/var/log/ubuntils/wazuh-alerts.json` for
+the agent to pick up. No flag is required, and this never happens during
+offline `ubuntils analyze` (bundle or `--root`), since those findings
+describe a different host than the one running the Wazuh agent.
+
+To have Wazuh parse and alert on these findings, copy the example decoder
+and rules from `examples/wazuh/` onto your Wazuh manager, and add the
+`<localfile>` block from `examples/wazuh/ossec_localfile_snippet.xml` to
+the agent's `/var/ossec/etc/ossec.conf`:
+
+1. `examples/wazuh/local_decoder.xml` → manager's `/var/ossec/etc/decoders/`
+2. `examples/wazuh/local_rules.xml` → manager's `/var/ossec/etc/rules/`
+3. `examples/wazuh/ossec_localfile_snippet.xml`'s `<localfile>` block → agent's `/var/ossec/etc/ossec.conf`
+4. Restart both: `systemctl restart wazuh-manager` (manager), `systemctl restart wazuh-agent` (agent host)
+
+**JSON schema per line:**
+
+| Field | Type | Description |
+|---|---|---|
+| `timestamp` | string (ISO 8601) | When the finding was forwarded |
+| `hostname` | string | The scanned host |
+| `rule_id` | string | Matches ubuntils' detection rule ID (see Detection Rules table above) |
+| `severity` | string | `HIGH` \| `MEDIUM` \| `LOW` |
+| `title` | string | Short human-readable title |
+| `description` | string | Full finding description |
+| `artifact_path` | string | File/resource path where the issue was found |
+| `raw_value` | string | The raw line/value that triggered the rule |
+| `remediation_available` | bool | Whether ubuntils has a remediator for this rule |
+| `related_events` | array (optional) | Correlated timeline events, if any |
+
+---
+
 ## Collectors
 
 | Collector | Artifacts gathered |

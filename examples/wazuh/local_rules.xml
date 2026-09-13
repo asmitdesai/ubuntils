@@ -1,0 +1,32 @@
+<!--
+  Install to /var/ossec/etc/rules/local_rules.xml (or append if the file
+  already exists on your manager), then restart wazuh-manager.
+
+  Rule IDs 100100-100103 are chosen from Wazuh's user-reserved custom rule
+  ID range (100000+); adjust if they collide with other custom rules on
+  your manager.
+-->
+<group name="ubuntils,">
+  <rule id="100100" level="0">
+    <decoded_as>ubuntils</decoded_as>
+    <description>ubuntils finding forwarded from host agent</description>
+  </rule>
+
+  <rule id="100101" level="12">
+    <if_sid>100100</if_sid>
+    <field name="severity">HIGH</field>
+    <description>ubuntils HIGH severity finding: $(title)</description>
+  </rule>
+
+  <rule id="100102" level="7">
+    <if_sid>100100</if_sid>
+    <field name="severity">MEDIUM</field>
+    <description>ubuntils MEDIUM severity finding: $(title)</description>
+  </rule>
+
+  <rule id="100103" level="3">
+    <if_sid>100100</if_sid>
+    <field name="severity">LOW</field>
+    <description>ubuntils LOW severity finding: $(title)</description>
+  </rule>
+</group>
