@@ -108,6 +108,21 @@ class TestWriteWazuhAlerts:
 
         assert result is None
 
+    def test_non_oserror_failure_is_also_caught_and_returns_none(self, tmp_path, monkeypatch):
+        """A non-OSError exception (e.g. a bad json.dumps) must not escape write_wazuh_alerts --
+        its docstring promises "Never raises" regardless of failure mode."""
+        log_path = tmp_path / "wazuh" / "alerts.json"
+
+        def _boom(*args, **kwargs):
+            raise TypeError("Object of type X is not JSON serializable")
+
+        monkeypatch.setattr("json.dumps", _boom)
+
+        result = write_wazuh_alerts([_finding()], hostname="host1", log_path=str(log_path))
+
+        assert result is None
+        assert not log_path.exists()
+
     def test_symlinked_log_file_is_rejected_not_followed(self, tmp_path):
         real_target = tmp_path / "real_secret_file"
         real_target.write_text("do not touch")

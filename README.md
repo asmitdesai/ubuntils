@@ -753,15 +753,21 @@ the agent to pick up. No flag is required, and this never happens during
 offline `ubuntils analyze` (bundle or `--root`), since those findings
 describe a different host than the one running the Wazuh agent.
 
-To have Wazuh parse and alert on these findings, copy the example decoder
-and rules from `examples/wazuh/` onto your Wazuh manager, and add the
-`<localfile>` block from `examples/wazuh/ossec_localfile_snippet.xml` to
-the agent's `/var/ossec/etc/ossec.conf`:
+To have Wazuh parse and alert on these findings, copy the example rules
+from `examples/wazuh/` onto your Wazuh manager, and add the `<localfile>`
+block from `examples/wazuh/ossec_localfile_snippet.xml` to the agent's
+`/var/ossec/etc/ossec.conf`. No custom decoder install is needed: the
+localfile is configured with `log_format json`, so Wazuh's built-in JSON
+decoder parses each line and maps every top-level JSON key `k` to `data.k`,
+which `local_rules.xml` matches on directly.
 
-1. `examples/wazuh/local_decoder.xml` → manager's `/var/ossec/etc/decoders/`
-2. `examples/wazuh/local_rules.xml` → manager's `/var/ossec/etc/rules/`
-3. `examples/wazuh/ossec_localfile_snippet.xml`'s `<localfile>` block → agent's `/var/ossec/etc/ossec.conf`
-4. Restart both: `systemctl restart wazuh-manager` (manager), `systemctl restart wazuh-agent` (agent host)
+1. `examples/wazuh/local_rules.xml` → manager's `/var/ossec/etc/rules/`
+2. `examples/wazuh/ossec_localfile_snippet.xml`'s `<localfile>` block → agent's `/var/ossec/etc/ossec.conf`
+3. Restart both: `systemctl restart wazuh-manager` (manager), `systemctl restart wazuh-agent` (agent host)
+
+These are example templates only, provided as a starting point — they have
+not been tested against a live Wazuh manager and should be verified in a
+non-production environment before relying on them.
 
 **JSON schema per line:**
 

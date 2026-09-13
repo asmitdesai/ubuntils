@@ -73,7 +73,8 @@ def write_wazuh_alerts(findings: list, hostname: str,
         )
         with os.fdopen(fd, "a") as f:
             f.write("\n".join(lines) + "\n")
+        logger.info("wazuh_forwarded", count=len(findings), log_path=log_path)
         return log_path
-    except OSError as exc:
+    except Exception as exc:
         logger.warning("wazuh_forward_failed", log_path=log_path, error=str(exc))
         return None

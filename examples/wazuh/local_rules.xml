@@ -2,31 +2,39 @@
   Install to /var/ossec/etc/rules/local_rules.xml (or append if the file
   already exists on your manager), then restart wazuh-manager.
 
+  No custom decoder is needed: the localfile is configured with
+  <log_format>json</log_format> (see ossec_localfile_snippet.xml), so
+  Wazuh's built-in JSON decoder parses each line automatically and maps
+  every top-level JSON key `k` to `data.k`. Rule 100100 below matches on
+  `data.rule_id`, which is unique to ubuntils' JSONL schema on this
+  localfile path.
+
   Rule IDs 100100-100103 are chosen from Wazuh's user-reserved custom rule
   ID range (100000+); adjust if they collide with other custom rules on
   your manager.
 -->
 <group name="ubuntils,">
   <rule id="100100" level="0">
-    <decoded_as>ubuntils</decoded_as>
+    <decoded_as>json</decoded_as>
+    <field name="data.rule_id">.+</field>
     <description>ubuntils finding forwarded from host agent</description>
   </rule>
 
   <rule id="100101" level="12">
     <if_sid>100100</if_sid>
-    <field name="severity">HIGH</field>
-    <description>ubuntils HIGH severity finding: $(title)</description>
+    <field name="data.severity">HIGH</field>
+    <description>ubuntils HIGH severity finding: $(data.title)</description>
   </rule>
 
   <rule id="100102" level="7">
     <if_sid>100100</if_sid>
-    <field name="severity">MEDIUM</field>
-    <description>ubuntils MEDIUM severity finding: $(title)</description>
+    <field name="data.severity">MEDIUM</field>
+    <description>ubuntils MEDIUM severity finding: $(data.title)</description>
   </rule>
 
   <rule id="100103" level="3">
     <if_sid>100100</if_sid>
-    <field name="severity">LOW</field>
-    <description>ubuntils LOW severity finding: $(title)</description>
+    <field name="data.severity">LOW</field>
+    <description>ubuntils LOW severity finding: $(data.title)</description>
   </rule>
 </group>
