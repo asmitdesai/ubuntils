@@ -752,6 +752,59 @@ async def test_app_applies_allowlist_in_own_scan():
             assert all(f.rule_id != "USER_UID_ZERO" for f in screen._findings)
 
 
+class TestRunScanWazuhForwarding:
+    """UbuntilsApp._run_scan (the plain `scan` TUI path) must forward findings
+    to Wazuh when an agent is present on the live host, must skip forwarding
+    when it isn't, and must never forward a second time when results were
+    pre-computed by cli.py's _run_pipeline via _scan_override (which already
+    handles its own Wazuh forwarding)."""
+
+    async def test_forwards_to_wazuh_when_agent_present(self):
+        app = UbuntilsApp()
+        with (
+            patch("ubuntils.tui.app.ALL_COLLECTORS", []),
+            patch("ubuntils.tui.app.TimelineBuilder") as tb,
+            patch("ubuntils.tui.app.is_wazuh_agent_present", return_value=True),
+            patch("ubuntils.tui.app.write_wazuh_alerts") as mock_write,
+        ):
+            tb.return_value.build.return_value = []
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                await pilot.pause(delay=0.3)
+                assert isinstance(pilot.app.screen, _ResultsScreen)
+                assert mock_write.called
+
+    async def test_skips_wazuh_when_agent_absent(self):
+        app = UbuntilsApp()
+        with (
+            patch("ubuntils.tui.app.ALL_COLLECTORS", []),
+            patch("ubuntils.tui.app.TimelineBuilder") as tb,
+            patch("ubuntils.tui.app.is_wazuh_agent_present", return_value=False),
+            patch("ubuntils.tui.app.write_wazuh_alerts") as mock_write,
+        ):
+            tb.return_value.build.return_value = []
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                await pilot.pause(delay=0.3)
+                assert isinstance(pilot.app.screen, _ResultsScreen)
+                assert not mock_write.called
+
+    async def test_override_never_forwards_to_wazuh(self):
+        """The _scan_override early-return path (used by cli.py's --remediate
+        flow) must not call Wazuh forwarding again; cli.py's _run_pipeline
+        already forwarded these findings itself."""
+        app = UbuntilsApp(_scan_override=_override_factory())
+        with (
+            patch("ubuntils.tui.app.is_wazuh_agent_present", return_value=True),
+            patch("ubuntils.tui.app.write_wazuh_alerts") as mock_write,
+        ):
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                await pilot.pause(delay=0.3)
+                assert isinstance(pilot.app.screen, _ResultsScreen)
+                assert not mock_write.called
+
+
 async def test_app_applies_timeline_corroboration_signal_and_surfaces_baseline_suppression():
     """UbuntilsApp._run_scan must mirror cli.py's _run_pipeline: apply the
     timeline_corroboration signal after correlate(), and surface
