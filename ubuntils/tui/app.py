@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+import socket
 import time
 
 import structlog
@@ -13,6 +14,7 @@ from ubuntils.collectors.source import LiveSource
 from ubuntils.detectors.engine import DetectionEngine
 from ubuntils.detectors.finding import Finding, Severity
 from ubuntils.detectors.scoring import apply_signal
+from ubuntils.integrations.wazuh import is_wazuh_agent_present, write_wazuh_alerts
 from ubuntils.timeline.builder import TimelineBuilder, TimelineEvent
 from ubuntils.timeline.correlator import correlate
 from ubuntils.tui.results_screen import ResultsScreen
@@ -125,6 +127,10 @@ class UbuntilsApp(App):
             "timeline_count": len(timeline),
             "suppressed_by_baseline": engine.suppressed_by_baseline if engine else 0,
         }
+
+        if is_wazuh_agent_present():
+            write_wazuh_alerts(findings, socket.gethostname())
+
         self.post_message(
             ScanComplete(findings=findings, timeline=timeline, stats=stats)
         )
