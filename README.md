@@ -4,11 +4,14 @@ Forensic triage for live Ubuntu systems — automated artifact collection, persi
 
 [![CI](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml/badge.svg)](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
-![Tests](https://img.shields.io/badge/tests-357%20passing-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-93%25-green)
+![Tests](https://img.shields.io/badge/tests-400%20passing-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-93.79%25-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Arch](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-lightgrey)
 ![Ubuntu](https://img.shields.io/badge/ubuntu-20.04%20%7C%2022.04%20%7C%2024.04-orange)
+![Offline analysis](https://img.shields.io/badge/offline%20analysis-collect%20%2B%20analyze-blueviolet)
+![Detection rules](https://img.shields.io/badge/detection%20rules-15-informational)
+![SIEM](https://img.shields.io/badge/SIEM-Wazuh-yellow)
 
 ---
 
@@ -26,8 +29,8 @@ The gap is a tool that runs on the live system right now, covers the most common
 
 ubuntils runs in four sequential stages:
 
-1. **Collection** — Eight collectors gather forensic artifacts concurrently from `/proc`, cron tables, systemd units, SSH keys, sudoers files, and environment definitions. Takes roughly 2.5 seconds on a typical system.
-2. **Detection** — A detection engine runs all ten built-in rules — plus any custom rules loaded with `--rules` — over the collected artifacts, producing a ranked findings list in about one second.
+1. **Collection** — Eleven collectors gather forensic artifacts concurrently from `/proc`, cron tables, systemd units, SSH keys, sudoers files, environment definitions, package integrity (`dpkg --verify`), PAM/NSS config, and loaded kernel modules. Takes roughly 2.5 seconds on a typical system.
+2. **Detection** — A detection engine runs all fifteen built-in rules — plus any custom rules loaded with `--rules` — over the collected artifacts, producing a ranked, confidence-scored findings list in about one second.
 3. **Timeline** — A timeline builder reads syslog, journald, and auditd in parallel and correlates events chronologically, adding roughly 0.3 seconds. Each finding is then auto-correlated against the timeline, so it carries the nearby events that relate to it.
 4. **Output** — Results appear either in an interactive four-tab TUI (default) or as structured JSON on stdout (`--json`).
 
@@ -711,7 +714,7 @@ A `LOW`-band finding is not dismissed or hidden — it still appears in the find
 
 ## Remediation
 
-Five of the ten detection rules have automated remediation: `CRON_ROOT_EXEC`, `CRON_TMP_PATH`, `LD_PRELOAD_INJECT`, `SSH_UNAUTHORIZED_KEY`, and `SUDOERS_NOPASSWD`. The rest are flag-only and will never be auto-remediated, because acting on them safely needs a human to look first.
+Five of the fifteen detection rules have automated remediation: `CRON_ROOT_EXEC`, `CRON_TMP_PATH`, `LD_PRELOAD_INJECT`, `SSH_UNAUTHORIZED_KEY`, and `SUDOERS_NOPASSWD`. The rest are flag-only and will never be auto-remediated, because acting on them safely needs a human to look first.
 
 ### Guided remediation
 
@@ -746,12 +749,36 @@ If any step fails, remediation stops immediately, the system is left unchanged, 
 
 ## Wazuh Integration
 
+ubuntils is built for a single-host, point-in-time triage — you run it when
+you already suspect something's wrong, and it never phones home or keeps
+watching after the scan ends. That's deliberate, but it also means a finding
+from ubuntils lives only in that one report unless something carries it
+forward. Most teams running Ubuntu at any scale already have a SIEM doing
+the continuous side of detection, so rather than build ubuntils into its own
+long-running monitoring agent, it hands its findings to the one you likely
+already run: Wazuh.
+
 If a Wazuh agent is present on the host (`/var/ossec/bin/wazuh-agentd` or
 `/var/ossec/etc/ossec.conf` exists), `ubuntils scan` automatically appends
 each finding as one JSON line to `/var/log/ubuntils/wazuh-alerts.json` for
-the agent to pick up. No flag is required, and this never happens during
-offline `ubuntils analyze` (bundle or `--root`), since those findings
-describe a different host than the one running the Wazuh agent.
+the agent to pick up — this is a pure forwarder, not a Wazuh module: no
+network call, no API key, nothing but the same local artifact writes
+ubuntils already makes. It's auto-detected with no flag required, so a
+scripted or scheduled `ubuntils scan` on a fleet of agent-enrolled hosts
+starts feeding the SIEM immediately with no extra wiring. This never
+happens during offline `ubuntils analyze` (bundle or `--root`), since
+those findings describe a different host than the one running the local
+Wazuh agent — forwarding a bundle's findings to the analyst's own agent
+would misattribute them to the wrong machine.
+
+The intent is to fold ubuntils into an existing alerting/escalation
+pipeline instead of asking a responder to babysit a second tool: once the
+example rules below are loaded, a HIGH-severity ubuntils finding (a new
+UID-0 account, an LD_PRELOAD rootkit, a PAM backdoor) shows up as a normal
+Wazuh alert, inherits whatever notification routing the manager already
+has configured, and sits alongside every other signal in the same
+timeline instead of a standalone JSON file someone has to remember to
+check.
 
 To have Wazuh parse and alert on these findings, copy the example rules
 from `examples/wazuh/` onto your Wazuh manager, and add the `<localfile>`
@@ -862,10 +889,15 @@ VirusTotal hash lookups and MISP IOC export were dropped from this release. Viru
 - [x] Documented detection-coverage gaps in offline mode (`PROCESS_MASQUERADE`, `PROCESS_SUSPICIOUS_CONNECTION`, and reduced coverage for cron/sudoers/SSH glob paths and systemd timer `ExecStart`)
 - [x] Trustworthy detection: confidence scoring (`confidence`/`confidence_band`/`signals`), `--baseline` suppression, replacing mtime-only heuristics in `SSH_UNAUTHORIZED_KEY`/`SHELL_RC_MODIFICATION` with ctime + content signals, and a real offline timeline for both `analyze BUNDLE` and `analyze --root`
 - [x] Coverage pack: `PACKAGE_TAMPERED`, `IMMUTABLE_FLAG_SET`, `PAM_BACKDOOR`, `KERNEL_MODULE_SUSPICIOUS`, `SETUID_INVENTORY` (via `PackageCollector`, `PamCollector`, `KernelCollector`; all flag-only by design)
+- [x] 400 tests at 93.79% coverage
+
+**v2.1.0 — SIEM forwarding**
+- [x] Live `ubuntils scan` findings forwarded to a local Wazuh agent as JSONL, auto-detected (no flag required)
+- [x] Example Wazuh decoder/rules and `ossec.conf` `<localfile>` snippet (`examples/wazuh/`)
+- [x] Forwarding intentionally scoped to live `scan` only — never fires during offline `analyze`, since a bundle or image describes a different host than the one running the agent
 
 **v3.0.0 / v4.0.0 (exploratory)**
 - Web dashboard for multi-host triage
-- Wazuh integration for alert forwarding
 - macOS support
 
 ---
