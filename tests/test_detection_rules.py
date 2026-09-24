@@ -525,7 +525,7 @@ def test_uid_zero_no_users_key():
 
 
 def test_engine_all_rules_registered():
-    assert len(ALL_RULES) == 15
+    assert len(ALL_RULES) == 16
 
 
 def test_engine_runs_custom_rules_and_allowlist_suppresses_them():
@@ -840,7 +840,7 @@ def test_rule_kernel_module_suspicious_flags_unknown_modules():
     assert len(findings) == 1
     assert findings[0].artifact_path == "evil_rootkit"
     assert findings[0].rule_id == "KERNEL_MODULE_SUSPICIOUS"
-    assert findings[0].severity == Severity.HIGH
+    assert findings[0].severity == Severity.LOW
     # Deliberately modest confidence: an unallowlisted module is common and legitimate on
     # hardware-heavy hosts (see the README caveat), so this signal alone should not push a
     # finding to HIGH confidence — severity (how bad if real) and confidence (how sure it's

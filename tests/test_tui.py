@@ -628,9 +628,9 @@ async def test_remediate_request_triggers_worker_and_posts_done_on_success():
             received.append(msg)
 
     with patch("ubuntils.tui.results_screen.REMEDIATOR_REGISTRY") as mock_reg:
-        mock_remediator = MagicMock()
-        mock_remediator.remediate.return_value = mock_result
-        mock_reg.get.return_value = mock_remediator
+        mock_remediator_cls = MagicMock()
+        mock_remediator_cls.return_value.remediate.return_value = mock_result
+        mock_reg.get.return_value = mock_remediator_cls
 
         async with _App().run_test(size=(100, 30)) as pilot:
             await pilot.pause()
@@ -738,9 +738,9 @@ async def test_app_applies_allowlist_in_own_scan():
         ])
 
     with (
-        patch("ubuntils.tui.app.ALL_COLLECTORS", []),
+        patch("ubuntils.pipeline.ALL_COLLECTORS", []),
         patch("ubuntils.detectors.engine.DetectionEngine.run", fake_engine_run),
-        patch("ubuntils.tui.app.TimelineBuilder") as tb,
+        patch("ubuntils.pipeline.TimelineBuilder") as tb,
     ):
         tb.return_value.build.return_value = []
         async with app.run_test(size=(120, 40)) as pilot:
@@ -762,10 +762,10 @@ class TestRunScanWazuhForwarding:
     async def test_forwards_to_wazuh_when_agent_present(self):
         app = UbuntilsApp()
         with (
-            patch("ubuntils.tui.app.ALL_COLLECTORS", []),
-            patch("ubuntils.tui.app.TimelineBuilder") as tb,
-            patch("ubuntils.tui.app.is_wazuh_agent_present", return_value=True),
-            patch("ubuntils.tui.app.write_wazuh_alerts") as mock_write,
+            patch("ubuntils.pipeline.ALL_COLLECTORS", []),
+            patch("ubuntils.pipeline.TimelineBuilder") as tb,
+            patch("ubuntils.pipeline.is_wazuh_agent_present", return_value=True),
+            patch("ubuntils.pipeline.write_wazuh_alerts") as mock_write,
         ):
             tb.return_value.build.return_value = []
             async with app.run_test(size=(120, 40)) as pilot:
@@ -777,10 +777,10 @@ class TestRunScanWazuhForwarding:
     async def test_skips_wazuh_when_agent_absent(self):
         app = UbuntilsApp()
         with (
-            patch("ubuntils.tui.app.ALL_COLLECTORS", []),
-            patch("ubuntils.tui.app.TimelineBuilder") as tb,
-            patch("ubuntils.tui.app.is_wazuh_agent_present", return_value=False),
-            patch("ubuntils.tui.app.write_wazuh_alerts") as mock_write,
+            patch("ubuntils.pipeline.ALL_COLLECTORS", []),
+            patch("ubuntils.pipeline.TimelineBuilder") as tb,
+            patch("ubuntils.pipeline.is_wazuh_agent_present", return_value=False),
+            patch("ubuntils.pipeline.write_wazuh_alerts") as mock_write,
         ):
             tb.return_value.build.return_value = []
             async with app.run_test(size=(120, 40)) as pilot:
@@ -795,8 +795,8 @@ class TestRunScanWazuhForwarding:
         already forwarded these findings itself."""
         app = UbuntilsApp(_scan_override=_override_factory())
         with (
-            patch("ubuntils.tui.app.is_wazuh_agent_present", return_value=True),
-            patch("ubuntils.tui.app.write_wazuh_alerts") as mock_write,
+            patch("ubuntils.pipeline.is_wazuh_agent_present", return_value=True),
+            patch("ubuntils.pipeline.write_wazuh_alerts") as mock_write,
         ):
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
@@ -829,10 +829,10 @@ async def test_app_applies_timeline_corroboration_signal_and_surfaces_baseline_s
                 f.related_events.append("sentinel")
 
     with (
-        patch("ubuntils.tui.app.ALL_COLLECTORS", []),
+        patch("ubuntils.pipeline.ALL_COLLECTORS", []),
         patch("ubuntils.detectors.engine.DetectionEngine.run", fake_engine_run),
-        patch("ubuntils.tui.app.correlate", fake_correlate),
-        patch("ubuntils.tui.app.TimelineBuilder") as tb,
+        patch("ubuntils.pipeline.correlate", fake_correlate),
+        patch("ubuntils.pipeline.TimelineBuilder") as tb,
     ):
         tb.return_value.build.return_value = []
         async with app.run_test(size=(120, 40)) as pilot:

@@ -1,32 +1,29 @@
 import os
-import platform
 import socket
 import sys
-import time
+import tarfile
 from datetime import datetime, timezone
 
 import click
 import structlog
 
 from ubuntils import __version__
-from ubuntils.collectors import ALL_COLLECTORS
-from ubuntils.collectors.packages import SENSITIVE_ATTR_PATHS, SETUID_FIND_PATHS
+from ubuntils.collectors.packages import SENSITIVE_ATTR_PATHS, SETUID_FIND_ARGS
 from ubuntils.collectors.source import LiveSource
 from ubuntils.detectors.custom_rules import load_custom_rules
-from ubuntils.detectors.engine import DetectionEngine
-from ubuntils.detectors.finding import Severity
-from ubuntils.detectors.scoring import apply_signal
 from ubuntils.formatters.json_formatter import JSONFormatter
-from ubuntils.integrations.wazuh import is_wazuh_agent_present, write_wazuh_alerts
-from ubuntils.remediators import REMEDIATOR_REGISTRY
-from ubuntils.timeline.builder import TimelineBuilder
-from ubuntils.timeline.correlator import correlate
+from ubuntils.pipeline import DEFAULT_MIN_REMEDIATION_CONFIDENCE, run_scan
 from ubuntils.tui.app import UbuntilsApp
-from ubuntils.tui.stats_panel import get_ubuntu_version
 from ubuntils.utils.baseline import load_baseline
 from ubuntils.utils.config import load_allowlist
+from ubuntils.utils.host import get_ubuntu_version
 from ubuntils.utils.logging import configure_logging
+from ubuntils.utils.safe_io import write_private_text
+from ubuntils.utils.shell import resolve_command
 from ubuntils.utils.since_parser import parse_since
+
+# Exit status for `analyze` when the bundle fails integrity verification.
+EXIT_BUNDLE_TAMPERED = 3
 
 logger = structlog.get_logger()
 
@@ -44,6 +41,10 @@ COLLECT_FILES = [
     "/etc/crontab",
     "/etc/profile",
     "/etc/nsswitch.conf",
+    "/etc/os-release",
+    "/usr/lib/os-release",
+    "/etc/hostname",
+    "/etc/timezone",
     "/var/log/syslog",
     "/var/log/messages",
     "/var/log/audit/audit.log",
@@ -58,206 +59,48 @@ COLLECT_COMMANDS = [
     ("journalctl", ["journalctl", "-o", "json", "--since=7 days ago", "--no-pager"]),
     ("dpkg_verify", ["dpkg", "--verify"]),
     ("lsattr_sensitive", ["lsattr", "-d", *SENSITIVE_ATTR_PATHS]),
-    ("find_setuid", ["find", *SETUID_FIND_PATHS,
-                      "-xdev", "(", "-perm", "-4000", "-o", "-perm", "-2000", ")", "-type", "f"]),
+    ("find_setuid", ["find", *SETUID_FIND_ARGS]),
     ("lsmod", ["lsmod"]),
 ]
 
-# Collectors that acquire artifacts by shelling out to a command (as opposed
-# to reading files) — these cannot produce meaningful data against a dead,
-# mounted image (there is no live process/kernel state to query with `ss` or
-# `systemctl`), so they are skipped with a note rather than silently
-# contaminating the report with the analyst's own host's live state.
-COMMAND_BASED_COLLECTOR_NAMES = [
-    "NetworkCollector", "SystemdCollector", "PackageCollector", "KernelCollector",
-]
-
-
 def _ensure_root() -> None:
-    """Re-exec under sudo if not running as root, preserving the active venv/conda PATH."""
+    """Re-exec under sudo if not running as root.
+
+    The re-exec names this interpreter by absolute path (sys.executable) and
+    runs the CLI as a module, so the caller's PATH is never needed — and is
+    deliberately *not* forwarded: `sudo env PATH=<caller's PATH>` would defeat
+    sudo's secure_path. External commands are separately pinned to
+    utils.shell.SECURE_PATH.
+    """
     if os.geteuid() == 0:
         return
-    current_path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
-    # Pass PATH through so sudo finds this venv's Python and ubuntils script.
-    args = ["sudo", "env", f"PATH={current_path}", sys.argv[0]] + sys.argv[1:]
+    args = ["sudo", sys.executable, "-m", "ubuntils.cli"] + sys.argv[1:]
     print("ubuntils requires root — re-invoking with sudo…", file=sys.stderr)
     try:
-        os.execvp("sudo", args)
+        os.execv(resolve_command("sudo"), args)
     except FileNotFoundError:
         print("Error: sudo not found. Please run as root.", file=sys.stderr)
         sys.exit(1)
 
 
 def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=None,
-                  custom_rules=None, bundle_info=None, baseline=None) -> tuple:
+                  custom_rules=None, bundle_info=None, baseline=None,
+                  min_confidence: int = DEFAULT_MIN_REMEDIATION_CONFIDENCE,
+                  forward_wazuh: bool = True) -> tuple:
     """Run collectors → detection → timeline → optional remediation.
 
     Returns (findings, timeline, stats, scan_metadata, artifact_counts, remediation_results).
     """
-    start = time.monotonic()
-    artifacts: dict = {}
-    failures = 0
-    artifact_counts: dict = {}
-    collectors = [C(source=source) for C in ALL_COLLECTORS]
-
-    # Only a genuine --root (offline LiveSource over a mounted/extracted
-    # image) has *no* command output available — LiveSource.run() disables
-    # execution entirely in that mode (see collectors/source.py). A
-    # BundleSource replays real captured command output, so its collectors
-    # are NOT "skipped" — they produce genuine data from the collect step.
-    is_offline_root = isinstance(source, LiveSource) and getattr(source, "offline", False)
-    command_collectors_skipped = (
-        list(COMMAND_BASED_COLLECTOR_NAMES) if is_offline_root else []
+    r = run_scan(
+        source, allowlist=allowlist, since=since, custom_rules=custom_rules,
+        baseline=baseline, bundle_info=bundle_info, remediate=remediate,
+        confirm=confirm, min_confidence=min_confidence, forward_wazuh=forward_wazuh,
     )
-
-    for collector in collectors:
-        name = type(collector).__name__
-        try:
-            result = collector.collect()
-            artifacts.update(result)
-            artifact_counts[name] = sum(
-                len(v) if isinstance(v, (list, dict)) else 1
-                for v in result.values()
-            )
-        except Exception as exc:
-            logger.error("collector_failed", name=name, error=str(exc))
-            failures += 1
-
-    engine = None
-    try:
-        engine = DetectionEngine(allowlist=allowlist, custom_rules=custom_rules, baseline=baseline)
-        findings = engine.run(artifacts)
-        # TimelineBuilder now reads through the same `source` as every
-        # collector: a BundleSource replays captured logs/journald, an
-        # offline `--root` LiveSource reads real static log files on the
-        # mounted image (journald is empty there — no live journalctl to
-        # replay), and a live scan behaves exactly as before.
-        timeline = TimelineBuilder(source=source).build()
-        if since is not None:
-            timeline = [e for e in timeline if e.timestamp >= since]
-        correlate(findings, timeline)
-        for finding in findings:
-            if finding.related_events:
-                apply_signal(finding, "timeline_corroboration", 25,
-                             f"{len(finding.related_events)} nearby timeline event(s)")
-    except Exception as exc:
-        logger.error("scan_engine_failed", error=str(exc))
-        findings = []
-        timeline = []
-
-    duration = time.monotonic() - start
-
-    remediation_results = []
-    if remediate:
-        for finding in findings:
-            remediator_cls = REMEDIATOR_REGISTRY.get(finding.rule_id)
-            if remediator_cls is None:
-                continue
-            result = remediator_cls().remediate(finding, dry_run=not confirm)
-            remediation_results.append(result)
-            logger.info(
-                "remediation",
-                rule_id=finding.rule_id,
-                status=result.status.value,
-                message=result.message,
-                confidence=finding.confidence,
-                confidence_band=finding.confidence_band,
-            )
-
-    ubuntu_version = get_ubuntu_version()
-    arch = platform.machine()
-
-    # A bundle's manifest already records the *collected* host's own identity
-    # (hostname/ubuntu_version/run/timestamps). When analyzing a bundle, the
-    # report must describe the host that was collected, not the analyst's own
-    # machine running `analyze` — otherwise a bundle from victim-web01
-    # analyzed on analyst-laptop would misleadingly stamp analyst-laptop's
-    # hostname on the report. `--root` (no manifest) and live `scan` keep the
-    # local-host behavior, since there is no other host identity available.
-    manifest = (bundle_info or {}).get("manifest") if bundle_info else None
-    if manifest:
-        report_hostname = manifest.get("hostname") or socket.gethostname()
-        report_ubuntu_version = manifest.get("ubuntu_version") or ubuntu_version
-    else:
-        report_hostname = socket.gethostname()
-        report_ubuntu_version = ubuntu_version
-
-    # Only a genuinely live scan describes the same host the local Wazuh
-    # agent is watching — an offline `--root` LiveSource and a BundleSource
-    # (isinstance check fails for BundleSource) both describe a different
-    # (possibly remote/dead) host and must never forward findings here.
-    is_live_scan = isinstance(source, LiveSource) and not getattr(source, "offline", False)
-    if is_live_scan and is_wazuh_agent_present():
-        write_wazuh_alerts(findings, report_hostname)
-
-    stats = {
-        "ubuntu_version": ubuntu_version,
-        "architecture": arch,
-        "duration_s": duration,
-        "collector_count": len(collectors),
-        "collector_failures": failures,
-        "finding_counts": {
-            "HIGH": sum(1 for f in findings if f.severity == Severity.HIGH),
-            "MEDIUM": sum(1 for f in findings if f.severity == Severity.MEDIUM),
-            "LOW": sum(1 for f in findings if f.severity == Severity.LOW),
-        },
-        "timeline_count": len(timeline),
-    }
-
-    scan_metadata = {
-        "tool_version": __version__,
-        "hostname": report_hostname,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "ubuntu_version": report_ubuntu_version,
-        "architecture": arch,
-        "duration_s": duration,
-        "collector_failures": failures,
-        "bundle_integrity": (bundle_info or {}).get("bundle_integrity", "live"),
-        "command_collectors_skipped": command_collectors_skipped,
-        "suppressed_by_baseline": engine.suppressed_by_baseline if engine else 0,
-        "baseline_suppressed": (
-            [{"rule_id": f.rule_id, "artifact_path": f.artifact_path}
-             for f in engine.baseline_suppressed_findings] if engine else []
-        ),
-    }
-
-    if manifest:
-        scan_metadata["collection_run_id"] = manifest.get("run_id", "")
-        scan_metadata["collected_at_utc_start"] = manifest.get("collected_at_utc_start", "")
-        scan_metadata["collected_at_utc_end"] = manifest.get("collected_at_utc_end", "")
-
-    return findings, timeline, stats, scan_metadata, artifact_counts, remediation_results
+    return (r.findings, r.timeline, r.stats, r.scan_metadata, r.artifact_counts,
+            r.remediation_results)
 
 
-@click.group()
-def main():
-    """ubuntils - Ubuntu incident response tool."""
-    pass
-
-
-@main.command()
-@click.option("--json", "output_json", is_flag=True, help="Output JSON instead of launching TUI")
-@click.option("--remediate", is_flag=True, help="Run remediation engine after detection")
-@click.option("--confirm", is_flag=True, help="Required with --remediate to apply changes")
-@click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False),
-              help="YAML config with false-positive allowlist (rules/paths to suppress)")
-@click.option("--baseline", "baseline_path", type=click.Path(exists=True, dir_okay=False),
-              help="YAML baseline of environment-specific known-good fingerprints to suppress")
-@click.option("--output", "output_path", type=click.Path(dir_okay=False),
-              help="Write JSON report to FILE instead of stdout (implies --json)")
-@click.option("--since", "since_value",
-              help="Limit timeline to events since this time (e.g. '24h', '7d', '2026-05-20')")
-@click.option("--rules", "rules_path", type=click.Path(exists=True, dir_okay=False),
-              help="YAML file of custom pattern-match detection rules (adds detections)")
-@click.option("--verbose", is_flag=True, help="Enable verbose logging")
-def scan(output_json, remediate, confirm, config_path, baseline_path, output_path, since_value,
-         rules_path, verbose):
-    """Scan the system for forensic artifacts and suspicious activity."""
-    _ensure_root()
-    if output_path:
-        output_json = True
-    configure_logging(json_mode=output_json, verbose=verbose)
-
+def _load_inputs(config_path, baseline_path, rules_path, since_value) -> tuple:
     since = None
     if since_value:
         try:
@@ -286,34 +129,84 @@ def scan(output_json, remediate, confirm, config_path, baseline_path, output_pat
         except (ValueError, OSError) as exc:
             raise click.ClickException(f"Invalid rules file {rules_path}: {exc}")
 
+    return since, allowlist, baseline, custom_rules
+
+
+def _emit_report(report: str, output_path) -> None:
+    if output_path:
+        try:
+            write_private_text(output_path, report + "\n")
+        except OSError as exc:
+            raise click.ClickException(f"Cannot write report to {output_path}: {exc}")
+        click.echo(f"Report written to {output_path}", err=True)
+    else:
+        click.echo(report)
+
+
+@click.group()
+def main():
+    """ubuntils - Ubuntu incident response tool."""
+    pass
+
+
+@main.command()
+@click.option("--json", "output_json", is_flag=True, help="Output JSON instead of launching TUI")
+@click.option("--remediate", is_flag=True, help="Run remediation engine after detection")
+@click.option("--confirm", is_flag=True, help="Required with --remediate to apply changes")
+@click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False),
+              help="YAML config with false-positive allowlist (rules/paths to suppress)")
+@click.option("--baseline", "baseline_path", type=click.Path(exists=True, dir_okay=False),
+              help="YAML baseline of environment-specific known-good fingerprints to suppress")
+@click.option("--output", "output_path", type=click.Path(dir_okay=False),
+              help="Write JSON report to FILE instead of stdout (implies --json)")
+@click.option("--since", "since_value",
+              help="Limit timeline to events since this time (e.g. '24h', '7d', '2026-05-20')")
+@click.option("--rules", "rules_path", type=click.Path(exists=True, dir_okay=False),
+              help="YAML file of custom pattern-match detection rules (adds detections)")
+@click.option("--min-confidence", "min_confidence", type=click.IntRange(0, 100),
+              default=DEFAULT_MIN_REMEDIATION_CONFIDENCE, show_default=True,
+              help="Only auto-remediate findings at or above this confidence score")
+@click.option("--no-wazuh", "no_wazuh", is_flag=True,
+              help="Never forward findings to a local Wazuh agent, even if one is installed")
+@click.option("--verbose", is_flag=True, help="Enable verbose logging")
+def scan(output_json, remediate, confirm, config_path, baseline_path, output_path, since_value,
+         rules_path, min_confidence, no_wazuh, verbose):
+    """Scan the system for forensic artifacts and suspicious activity."""
+    _ensure_root()
+    if output_path:
+        output_json = True
+    configure_logging(json_mode=output_json, verbose=verbose)
+
+    since, allowlist, baseline, custom_rules = _load_inputs(
+        config_path, baseline_path, rules_path, since_value
+    )
+
     if output_json or remediate:
         findings, timeline, stats, scan_metadata, artifact_counts, remediation_results = \
             _run_pipeline(source=LiveSource(root="/"), remediate=remediate, confirm=confirm,
                           allowlist=allowlist, since=since, custom_rules=custom_rules,
-                          baseline=baseline)
+                          baseline=baseline, min_confidence=min_confidence,
+                          forward_wazuh=not no_wazuh)
 
         if output_json:
             report = JSONFormatter().format(
                 scan_metadata, artifact_counts, findings, timeline, remediation_results
             )
-            if output_path:
-                with open(output_path, "w") as f:
-                    f.write(report + "\n")
-                click.echo(f"Report written to {output_path}", err=True)
-            else:
-                click.echo(report)
+            _emit_report(report, output_path)
             return
 
-        # --remediate without --json: launch TUI with pre-computed results
+        # --remediate without --json: launch TUI with pre-computed results,
+        # including what remediation actually changed.
         def _override():
-            return (findings, timeline, stats)
+            return (findings, timeline, stats, remediation_results)
 
         UbuntilsApp(verbose=verbose, _scan_override=_override).run()
         return
 
     # Plain TUI mode: let the app run its own scan with live progress
     UbuntilsApp(verbose=verbose, allowlist=allowlist, since=since,
-                custom_rules=custom_rules, baseline=baseline).run()
+                custom_rules=custom_rules, baseline=baseline,
+                forward_wazuh=not no_wazuh).run()
 
 
 @main.command()
@@ -380,67 +273,58 @@ def analyze(bundle, root_path, output_json, output_path, config_path, baseline_p
         output_json = True
     configure_logging(json_mode=output_json, verbose=verbose)
 
-    from ubuntils.bundle import read_bundle
+    since, allowlist, baseline, custom_rules = _load_inputs(
+        config_path, baseline_path, rules_path, since_value
+    )
+
+    from ubuntils.bundle import BundleError, read_bundle
 
     bundle_info = None
     if bundle:
-        source, bundle_info = read_bundle(bundle)
+        try:
+            source, bundle_info = read_bundle(bundle)
+        except (BundleError, OSError, tarfile.TarError, ValueError, KeyError) as exc:
+            raise click.ClickException(f"Cannot read bundle {bundle}: {exc}")
     else:
         # A --root path is a mounted/extracted image, not the live host — no
         # command-based collector may run live against it (see
-        # LiveSource.offline / _run_pipeline's command_collectors_skipped).
+        # LiveSource.offline / pipeline's command_collectors_skipped).
         source = LiveSource(root=root_path, offline=True)
 
-    since = None
-    if since_value:
-        try:
-            since = parse_since(since_value)
-        except ValueError as exc:
-            raise click.ClickException(str(exc))
+    try:
+        findings, timeline, stats, scan_metadata, artifact_counts, remediation_results = \
+            _run_pipeline(source=source, remediate=False, confirm=False,
+                          allowlist=allowlist, since=since, custom_rules=custom_rules,
+                          bundle_info=bundle_info, baseline=baseline)
+    finally:
+        # The extracted bundle (which can include /etc/shadow) must not
+        # outlive the analysis in /tmp.
+        cleanup = getattr(source, "cleanup", None)
+        if cleanup is not None:
+            cleanup()
 
-    allowlist = None
-    if config_path:
-        try:
-            allowlist = load_allowlist(config_path)
-        except (ValueError, OSError) as exc:
-            raise click.ClickException(f"Invalid config {config_path}: {exc}")
-
-    baseline = None
-    if baseline_path:
-        try:
-            baseline = load_baseline(baseline_path)
-        except (ValueError, OSError) as exc:
-            raise click.ClickException(f"Invalid baseline {baseline_path}: {exc}")
-
-    custom_rules = None
-    if rules_path:
-        try:
-            custom_rules = load_custom_rules(rules_path)
-        except (ValueError, OSError) as exc:
-            raise click.ClickException(f"Invalid rules file {rules_path}: {exc}")
-
-    findings, timeline, stats, scan_metadata, artifact_counts, remediation_results = \
-        _run_pipeline(source=source, remediate=False, confirm=False,
-                      allowlist=allowlist, since=since, custom_rules=custom_rules,
-                      bundle_info=bundle_info, baseline=baseline)
+    tampered = (bundle_info or {}).get("bundle_integrity") == "mismatch"
+    if tampered:
+        click.secho(
+            "WARNING: bundle integrity check FAILED — its contents do not match the "
+            "manifest digests. Treat every result below as untrusted.",
+            err=True, fg="red", bold=True,
+        )
 
     if output_json:
         report = JSONFormatter().format(
             scan_metadata, artifact_counts, findings, timeline, remediation_results
         )
-        if output_path:
-            with open(output_path, "w") as f:
-                f.write(report + "\n")
-            click.echo(f"Report written to {output_path}", err=True)
-        else:
-            click.echo(report)
-        return
+        _emit_report(report, output_path)
+    else:
+        # Not --json: launch TUI with pre-computed results.
+        def _override():
+            return (findings, timeline, stats, remediation_results)
 
-    # Not --json: launch TUI with pre-computed results, mirroring scan --remediate's override.
-    def _override():
-        return (findings, timeline, stats)
+        UbuntilsApp(verbose=verbose, _scan_override=_override).run()
 
-    UbuntilsApp(verbose=verbose, _scan_override=_override).run()
+    if tampered:
+        sys.exit(EXIT_BUNDLE_TAMPERED)
 
 
 @main.command()

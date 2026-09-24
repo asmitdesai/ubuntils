@@ -49,18 +49,21 @@ class ResultsScreen(Screen):
         findings: list[Finding],
         timeline: list[TimelineEvent],
         stats: dict,
+        remediation_results: list[RemediationResult] | None = None,
     ) -> None:
         super().__init__()
         self._findings = findings
         self._timeline = timeline
         self._stats = stats
+        self._remediation_results = remediation_results or []
 
     def compose(self) -> ComposeResult:
         yield Header()
         with TabbedContent(initial="summary"):
             with TabPane("Summary", id="summary"):
                 yield Static(
-                    Text(_build_summary(self._findings, self._timeline, self._stats)),
+                    Text(_build_summary(self._findings, self._timeline, self._stats,
+                                        self._remediation_results)),
                     id="summary-body",
                 )
             with TabPane("Findings", id="findings"):
@@ -70,6 +73,23 @@ class ResultsScreen(Screen):
             with TabPane("Stats", id="stats"):
                 yield StatsPanel(self._stats)
         yield Footer()
+
+    def on_mount(self) -> None:
+        # Results from a pre-run `scan --remediate`: mark each remediated
+        # finding so the user sees what was changed (and how to roll it back).
+        if not self._remediation_results:
+            return
+        panel = self.query_one(FindingsPanel)
+        pending = list(self._remediation_results)
+        for finding in self._findings:
+            if not finding.remediation_available:
+                continue
+            for i, result in enumerate(pending):
+                if result.finding_rule_id == finding.rule_id:
+                    if result.status == RemediationStatus.SUCCESS:
+                        panel.mark_fixed(finding, result)
+                    del pending[i]
+                    break
 
     def action_show(self, tab_id: str) -> None:
         self.query_one(TabbedContent).active = tab_id
@@ -82,8 +102,8 @@ class ResultsScreen(Screen):
 
     @work(thread=True)
     def _run_remediation(self, finding: Finding) -> None:
-        remediator = REMEDIATOR_REGISTRY.get(finding.rule_id)
-        if remediator is None:
+        remediator_cls = REMEDIATOR_REGISTRY.get(finding.rule_id)
+        if remediator_cls is None:
             result = RemediationResult(
                 finding_rule_id=finding.rule_id,
                 status=RemediationStatus.FAILED,
@@ -91,7 +111,7 @@ class ResultsScreen(Screen):
             )
         else:
             try:
-                result = remediator.remediate(finding, dry_run=False)
+                result = remediator_cls().remediate(finding, dry_run=False)
             except Exception as exc:
                 result = RemediationResult(
                     finding_rule_id=finding.rule_id,

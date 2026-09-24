@@ -865,8 +865,11 @@ def test_package_collector_parses_setuid_binaries(tmp_path):
 
     result = PackageCollector(source=src).collect()
 
+    # Legacy bundle output (bare paths, no -printf mode): bit unknown, treated as setuid.
     assert result["setuid_binaries"] == [
-        "/usr/bin/sudo", "/usr/bin/passwd", "/tmp/.hidden/backdoor"
+        {"path": "/usr/bin/sudo", "setuid": True, "setgid": False},
+        {"path": "/usr/bin/passwd", "setuid": True, "setgid": False},
+        {"path": "/tmp/.hidden/backdoor", "setuid": True, "setgid": False},
     ]
     assert result["dpkg_verify_collection_failed"] is False
     assert result["setuid_collection_failed"] is False

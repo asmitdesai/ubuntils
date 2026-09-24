@@ -483,7 +483,13 @@ class TestRemediatorRegistry:
         assert "SSH_UNAUTHORIZED_KEY" in REMEDIATOR_REGISTRY
         assert "SUDOERS_NOPASSWD" in REMEDIATOR_REGISTRY
 
-    def test_registry_values_are_remediator_instances(self):
+    def test_registry_values_are_remediator_classes(self):
         from ubuntils.remediators.base import BaseRemediator
         for key, val in REMEDIATOR_REGISTRY.items():
-            assert isinstance(val, BaseRemediator), f"{key} is not a BaseRemediator"
+            assert isinstance(val, type) and issubclass(val, BaseRemediator), (
+                f"{key} is not a BaseRemediator subclass"
+            )
+
+    def test_registry_yields_independent_instances(self):
+        cls = REMEDIATOR_REGISTRY["CRON_TMP_PATH"]
+        assert cls() is not cls()

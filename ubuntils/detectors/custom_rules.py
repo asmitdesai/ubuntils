@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import fnmatch
 import re
-from dataclasses import dataclass
-from typing import Iterator, List, Tuple
+from dataclasses import dataclass, field
+from typing import Iterator, List, Optional, Pattern, Tuple
 
 import yaml
 
@@ -20,6 +20,13 @@ from ubuntils.detectors.finding import Finding, Severity
 _MATCH_TYPES = frozenset({"regex", "substring", "glob"})
 _VALID_SOURCES = frozenset({"cron", "environment", "ssh", "process", "network"})
 _REQUIRED_FIELDS = ("id", "severity", "title", "description", "source", "match", "pattern")
+
+# Regex rules run against attacker-controlled text (cmdlines, cron commands),
+# and Python's `re` has no timeout. Two guards against catastrophic
+# backtracking: reject the classic nested-quantifier shapes at load time, and
+# cap how much text any rule scans.
+_MAX_MATCH_TEXT = 4096
+_NESTED_QUANTIFIER_RE = re.compile(r"\((?:[^()\\]|\\.)*[+*}](?:[^()\\]|\\.)*\)\s*[+*{]")
 
 
 @dataclass
@@ -31,16 +38,29 @@ class CustomRule:
     source: str
     match: str  # one of _MATCH_TYPES
     pattern: str
+    compiled: Optional[Pattern] = field(default=None, repr=False, compare=False)
 
     def matches(self, path: str, text: str) -> bool:
         if self.match == "glob":
             return fnmatch.fnmatch(path or "", self.pattern)
+        text = (text or "")[:_MAX_MATCH_TEXT]
         if self.match == "substring":
-            return self.pattern in (text or "")
-        try:  # regex
-            return re.search(self.pattern, text or "") is not None
-        except re.error:
-            return False
+            return self.pattern in text
+        regex = self.compiled if self.compiled is not None else re.compile(self.pattern)
+        return regex.search(text) is not None
+
+
+def _compile_regex(rid: str, pattern: str) -> Pattern:
+    """Compile at load so a typo fails loudly instead of silently never matching."""
+    if _NESTED_QUANTIFIER_RE.search(pattern):
+        raise ValueError(
+            f"Rule {rid!r}: pattern {pattern!r} nests quantifiers (e.g. '(a+)+'), which can "
+            "backtrack catastrophically on attacker-controlled text — simplify it"
+        )
+    try:
+        return re.compile(pattern)
+    except re.error as exc:
+        raise ValueError(f"Rule {rid!r}: invalid regex {pattern!r}: {exc}")
 
 
 def _iter_items(source: str, artifacts: dict) -> Iterator[Tuple[str, str]]:
@@ -136,5 +156,6 @@ def load_custom_rules(path: str) -> List[CustomRule]:
             source=source,
             match=match,
             pattern=str(entry["pattern"]),
+            compiled=_compile_regex(rid, str(entry["pattern"])) if match == "regex" else None,
         ))
     return rules

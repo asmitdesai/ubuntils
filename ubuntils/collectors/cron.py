@@ -2,69 +2,102 @@ import os
 
 from ubuntils.collectors.base import BaseCollector
 
+# run-parts directories: every executable in them runs as root on the
+# directory's schedule.
+CRON_SCRIPT_DIRS = {
+    "/etc/cron.hourly": "@hourly",
+    "/etc/cron.daily": "@daily",
+    "/etc/cron.weekly": "@weekly",
+    "/etc/cron.monthly": "@monthly",
+}
+
+
+def _split_entry(line: str, has_user_field: bool):
+    """Split a crontab line into (schedule, run_as, command).
+
+    Handles both 5-field schedules and the @reboot/@daily/... specials (one
+    schedule token). run_as is None for user crontabs. Returns None for lines
+    that aren't a schedule entry.
+    """
+    schedule_fields = 1 if line.startswith("@") else 5
+    extra = 1 if has_user_field else 0
+    parts = line.split(None, schedule_fields + extra)
+    if len(parts) < schedule_fields + extra + 1:
+        return None
+    schedule = " ".join(parts[:schedule_fields])
+    run_as = parts[schedule_fields] if has_user_field else None
+    return schedule, run_as, parts[-1]
+
+
+def _is_variable_assignment(line: str) -> bool:
+    return "=" in line and not line[0].isdigit() and line[0] not in "*@"
+
 
 class CronCollector(BaseCollector):
     def collect(self) -> dict:
         entries = []
 
-        # System crontab (7-field: min hour dom mon dow user command)
+        # System crontab (min hour dom mon dow user command)
         for path in ["/etc/crontab"] + self.source.glob("/etc/cron.d/*"):
-            entries.extend(self._parse_system_crontab(path))
+            entries.extend(self._parse_crontab(path, owner="root", has_user_field=True))
 
-        # User crontabs (5-field: min hour dom mon dow command)
+        # User crontabs (min hour dom mon dow command)
         for path in self.source.glob("/var/spool/cron/crontabs/*"):
             owner = os.path.basename(path)
-            entries.extend(self._parse_user_crontab(path, owner))
+            entries.extend(self._parse_crontab(path, owner=owner, has_user_field=False))
+
+        for directory, schedule in CRON_SCRIPT_DIRS.items():
+            for path in self.source.glob(f"{directory}/*"):
+                entries.extend(self._parse_script(path, schedule))
 
         return {"cron_entries": entries}
 
-    def _parse_system_crontab(self, path: str) -> list:
+    def _parse_crontab(self, path: str, owner: str, has_user_field: bool) -> list:
         entries = []
         try:
-            for line in self.source.read_text(path).splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" in line and not line[0].isdigit() and not line[0] == "*":
-                    continue  # skip variable assignments
-                parts = line.split(None, 6)
-                if len(parts) < 7:
-                    continue
-                schedule = " ".join(parts[:5])
-                run_as = parts[5]
-                command = parts[6]
-                entries.append({
-                    "owner": "root",
-                    "run_as": run_as,
-                    "schedule": schedule,
-                    "command": command,
-                    "source": path,
-                })
+            text = self.source.read_text(path)
         except Exception:
-            pass
+            return entries
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or _is_variable_assignment(line):
+                continue
+            split = _split_entry(line, has_user_field)
+            if split is None:
+                continue
+            schedule, run_as, command = split
+            entries.append({
+                "owner": owner,
+                "run_as": run_as if has_user_field else owner,
+                "schedule": schedule,
+                "command": command,
+                "source": path,
+                "kind": "crontab",
+            })
         return entries
 
-    def _parse_user_crontab(self, path: str, owner: str) -> list:
+    def _parse_script(self, path: str, schedule: str) -> list:
+        """Each non-comment line of a run-parts script, as a root cron entry.
+
+        kind="script" tells rules these are shell-script lines, not crontab
+        entries: deleting one line out of a script is not a safe automatic
+        remediation, so findings on them are flag-only.
+        """
         entries = []
         try:
-            for line in self.source.read_text(path).splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" in line and not line[0].isdigit() and not line[0] == "*":
-                    continue
-                parts = line.split(None, 5)
-                if len(parts) < 6:
-                    continue
-                schedule = " ".join(parts[:5])
-                command = parts[5]
-                entries.append({
-                    "owner": owner,
-                    "run_as": owner,
-                    "schedule": schedule,
-                    "command": command,
-                    "source": path,
-                })
+            text = self.source.read_text(path)
         except Exception:
-            pass
+            return entries
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            entries.append({
+                "owner": "root",
+                "run_as": "root",
+                "schedule": schedule,
+                "command": line,
+                "source": path,
+                "kind": "script",
+            })
         return entries

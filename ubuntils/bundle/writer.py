@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from ubuntils.bundle.manifest import Manifest, FileEntry, CommandEntry
 from ubuntils.collectors.packages import DPKG_VERIFY_TIMEOUT, FIND_SETUID_TIMEOUT
 from ubuntils.collectors.source import ArtifactSource
+from ubuntils.utils.safe_io import open_private_for_write
 
 # Per-command timeouts for `collect`'s bundle-capture step. MUST match the
 # timeouts PackageCollector uses live (see collectors/packages.py) — a bundle
@@ -106,8 +107,9 @@ def write_bundle(
         # Create the archive with owner-only permissions up front — the default
         # umask-derived mode (typically 0644) would otherwise make a bundle
         # containing /etc/shadow world-readable the instant it's created.
-        fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        os.chmod(out_path, 0o600)
+        # open_private_for_write also refuses a symlink pre-planted at
+        # out_path (we run as root), and fchmods the fd rather than the path.
+        fd = open_private_for_write(out_path, 0o600)
         with os.fdopen(fd, "wb") as fh:
             with tarfile.open(fileobj=fh, mode="w:gz") as tf:
                 tf.add(work, arcname="bundle", filter=_restrict_tarinfo_permissions)

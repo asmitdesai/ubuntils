@@ -134,9 +134,9 @@ def test_pipeline_since_filters_timeline():
     )
     cutoff = dt.datetime(2050, 1, 1, tzinfo=dt.timezone.utc)
     with (
-        patch("ubuntils.cli.ALL_COLLECTORS", []),
-        patch("ubuntils.cli.DetectionEngine") as eng,
-        patch("ubuntils.cli.TimelineBuilder") as tb,
+        patch("ubuntils.pipeline.ALL_COLLECTORS", []),
+        patch("ubuntils.pipeline.DetectionEngine") as eng,
+        patch("ubuntils.pipeline.TimelineBuilder") as tb,
     ):
         eng.return_value.run.return_value = []
         tb.return_value.build.return_value = [old, recent]
@@ -201,11 +201,11 @@ async def test_tui_app_scan_worker_uses_livesource():
     # Monkeypatch ALL_COLLECTORS to use our recording collector
     # This must happen before creating the app so _run_scan uses it
     with (
-        patch("ubuntils.tui.app.ALL_COLLECTORS", [RecordingCollector]),
-        patch("ubuntils.tui.app.DetectionEngine") as mock_engine,
-        patch("ubuntils.tui.app.TimelineBuilder") as mock_tl,
-        patch("ubuntils.tui.app.correlate"),
-        patch("ubuntils.tui.app.get_ubuntu_version", return_value="22.04"),
+        patch("ubuntils.pipeline.ALL_COLLECTORS", [RecordingCollector]),
+        patch("ubuntils.pipeline.DetectionEngine") as mock_engine,
+        patch("ubuntils.pipeline.TimelineBuilder") as mock_tl,
+        patch("ubuntils.pipeline.correlate"),
+        patch("ubuntils.pipeline.get_ubuntu_version", return_value="22.04"),
     ):
         mock_engine.return_value.run.return_value = []
         mock_tl.return_value.build.return_value = []
@@ -237,16 +237,16 @@ def test_run_pipeline_handles_collector_failure():
     bad_collector.__class__.__name__ = "BadCollector"
 
     with (
-        patch("ubuntils.cli.ALL_COLLECTORS", [type(bad_collector)]),
-        patch(f"ubuntils.cli.DetectionEngine") as mock_engine,
-        patch(f"ubuntils.cli.TimelineBuilder") as mock_tl,
-        patch(f"ubuntils.cli.get_ubuntu_version", return_value="22.04"),
+        patch("ubuntils.pipeline.ALL_COLLECTORS", [type(bad_collector)]),
+        patch(f"ubuntils.pipeline.DetectionEngine") as mock_engine,
+        patch(f"ubuntils.pipeline.TimelineBuilder") as mock_tl,
+        patch(f"ubuntils.pipeline.get_ubuntu_version", return_value="22.04"),
     ):
         mock_engine.return_value.run.return_value = []
         mock_tl.return_value.build.return_value = []
         type(bad_collector).return_value = bad_collector
 
-        with patch("ubuntils.cli.ALL_COLLECTORS", [lambda source=None: bad_collector]):
+        with patch("ubuntils.pipeline.ALL_COLLECTORS", [lambda source=None: bad_collector]):
             findings, timeline, stats, meta, counts, remed = _run_pipeline(
                 source=LiveSource(), remediate=False, confirm=False
             )
@@ -257,10 +257,10 @@ def test_run_pipeline_handles_collector_failure():
 def test_run_pipeline_handles_engine_failure():
     """_run_pipeline should return empty results when engine crashes."""
     with (
-        patch("ubuntils.cli.ALL_COLLECTORS", []),
-        patch("ubuntils.cli.DetectionEngine") as mock_engine,
-        patch("ubuntils.cli.TimelineBuilder") as mock_tl,
-        patch("ubuntils.cli.get_ubuntu_version", return_value="22.04"),
+        patch("ubuntils.pipeline.ALL_COLLECTORS", []),
+        patch("ubuntils.pipeline.DetectionEngine") as mock_engine,
+        patch("ubuntils.pipeline.TimelineBuilder") as mock_tl,
+        patch("ubuntils.pipeline.get_ubuntu_version", return_value="22.04"),
     ):
         mock_engine.return_value.run.side_effect = RuntimeError("engine failure")
         mock_tl.return_value.build.return_value = []
@@ -295,11 +295,11 @@ def test_run_pipeline_remediation_dry_run():
     )
 
     with (
-        patch("ubuntils.cli.ALL_COLLECTORS", []),
-        patch("ubuntils.cli.DetectionEngine") as mock_engine,
-        patch("ubuntils.cli.TimelineBuilder") as mock_tl,
-        patch("ubuntils.cli.get_ubuntu_version", return_value="22.04"),
-        patch.dict("ubuntils.cli.REMEDIATOR_REGISTRY", {"CRON_TMP_PATH": mock_remediator}),
+        patch("ubuntils.pipeline.ALL_COLLECTORS", []),
+        patch("ubuntils.pipeline.DetectionEngine") as mock_engine,
+        patch("ubuntils.pipeline.TimelineBuilder") as mock_tl,
+        patch("ubuntils.pipeline.get_ubuntu_version", return_value="22.04"),
+        patch.dict("ubuntils.pipeline.REMEDIATOR_REGISTRY", {"CRON_TMP_PATH": mock_remediator}),
     ):
         mock_engine.return_value.run.return_value = [finding]
         mock_tl.return_value.build.return_value = []
@@ -391,9 +391,9 @@ def test_scan_rules_flag_loads_and_detects(runner, tmp_path):
     )
 
     with (
-        patch("ubuntils.cli.ALL_COLLECTORS", [FakeProcessCollector]),
-        patch("ubuntils.cli.TimelineBuilder") as mock_tl,
-        patch("ubuntils.cli.get_ubuntu_version", return_value="22.04"),
+        patch("ubuntils.pipeline.ALL_COLLECTORS", [FakeProcessCollector]),
+        patch("ubuntils.pipeline.TimelineBuilder") as mock_tl,
+        patch("ubuntils.pipeline.get_ubuntu_version", return_value="22.04"),
     ):
         mock_tl.return_value.build.return_value = []
         result = runner.invoke(main, ["scan", "--json", "--rules", str(rules)])
@@ -428,10 +428,11 @@ def test_pipeline_attaches_related_events(monkeypatch):
         timestamp=datetime.datetime(2026, 6, 1, 12, 0, 0, tzinfo=datetime.timezone.utc),
         source="journald", description="sshd: Accepted publickey for bob",
     )
-    monkeypatch.setattr(cli.DetectionEngine, "run", lambda self, artifacts: [finding])
-    monkeypatch.setattr(cli.TimelineBuilder, "build", lambda self: [event])
+    from ubuntils import pipeline
+    monkeypatch.setattr(pipeline.DetectionEngine, "run", lambda self, artifacts: [finding])
+    monkeypatch.setattr(pipeline.TimelineBuilder, "build", lambda self: [event])
 
-    with patch("ubuntils.cli.ALL_COLLECTORS", []):
+    with patch("ubuntils.pipeline.ALL_COLLECTORS", []):
         result = cli._run_pipeline(source=LiveSource(), remediate=False, confirm=False)
     findings = result[0]
     assert findings[0].related_events
@@ -452,7 +453,7 @@ def test_run_pipeline_applies_timeline_corroboration_signal(tmp_path, monkeypatc
             if f.rule_id == "USER_UID_ZERO":
                 f.related_events.append("sentinel")
 
-    monkeypatch.setattr("ubuntils.cli.correlate", _fake_correlate)
+    monkeypatch.setattr("ubuntils.pipeline.correlate", _fake_correlate)
 
     findings, *_ = _run_pipeline(source=src, remediate=False, confirm=False)
     uid_zero = next(f for f in findings if f.rule_id == "USER_UID_ZERO")
@@ -539,30 +540,30 @@ def test_scan_json_includes_coverage_pack_rules(monkeypatch, tmp_path):
 
 
 class TestRunPipelineWazuhForwarding:
-    @patch("ubuntils.cli.write_wazuh_alerts")
-    @patch("ubuntils.cli.is_wazuh_agent_present", return_value=True)
-    @patch("ubuntils.cli.ALL_COLLECTORS", [])
+    @patch("ubuntils.pipeline.write_wazuh_alerts")
+    @patch("ubuntils.pipeline.is_wazuh_agent_present", return_value=True)
+    @patch("ubuntils.pipeline.ALL_COLLECTORS", [])
     def test_live_scan_forwards_to_wazuh_when_agent_present(self, mock_present, mock_write):
         _run_pipeline(source=LiveSource(root="/"), remediate=False, confirm=False)
         assert mock_write.called
 
-    @patch("ubuntils.cli.write_wazuh_alerts")
-    @patch("ubuntils.cli.is_wazuh_agent_present", return_value=False)
-    @patch("ubuntils.cli.ALL_COLLECTORS", [])
+    @patch("ubuntils.pipeline.write_wazuh_alerts")
+    @patch("ubuntils.pipeline.is_wazuh_agent_present", return_value=False)
+    @patch("ubuntils.pipeline.ALL_COLLECTORS", [])
     def test_live_scan_skips_wazuh_when_agent_absent(self, mock_present, mock_write):
         _run_pipeline(source=LiveSource(root="/"), remediate=False, confirm=False)
         assert not mock_write.called
 
-    @patch("ubuntils.cli.write_wazuh_alerts")
-    @patch("ubuntils.cli.is_wazuh_agent_present", return_value=True)
-    @patch("ubuntils.cli.ALL_COLLECTORS", [])
+    @patch("ubuntils.pipeline.write_wazuh_alerts")
+    @patch("ubuntils.pipeline.is_wazuh_agent_present", return_value=True)
+    @patch("ubuntils.pipeline.ALL_COLLECTORS", [])
     def test_offline_root_analysis_never_calls_wazuh_forwarding(self, mock_present, mock_write):
         _run_pipeline(source=LiveSource(root="/", offline=True), remediate=False, confirm=False)
         assert not mock_write.called
 
-    @patch("ubuntils.cli.write_wazuh_alerts")
-    @patch("ubuntils.cli.is_wazuh_agent_present", return_value=True)
-    @patch("ubuntils.cli.ALL_COLLECTORS", [])
+    @patch("ubuntils.pipeline.write_wazuh_alerts")
+    @patch("ubuntils.pipeline.is_wazuh_agent_present", return_value=True)
+    @patch("ubuntils.pipeline.ALL_COLLECTORS", [])
     def test_bundle_analysis_never_calls_wazuh_forwarding(self, mock_present, mock_write):
         from ubuntils.collectors.source import BundleSource
         source = BundleSource(root_dir="/nonexistent", command_index={})

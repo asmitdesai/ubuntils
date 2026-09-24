@@ -11,14 +11,24 @@ Example baseline (YAML):
 
     baseline:
       - rule_id: SSH_UNAUTHORIZED_KEY
-        fingerprint: ci@ci-runner        # substring match against raw_value
+        fingerprint: ci@ci-runner        # whole-word match within raw_value
       - rule_id: SHELL_RC_MODIFICATION
         fingerprint: /home/deploy/.bashrc  # exact match against artifact_path
 """
+import re
 from dataclasses import dataclass, field
 from typing import List
 
 import yaml
+
+# Fingerprints match raw_value only on word boundaries ("ghost" matches
+# "ghost:x:0:0" but not "ghostly"), and must be at least this long — a bare
+# "a" or "ss" would otherwise silently suppress far more than intended.
+MIN_FINGERPRINT_LENGTH = 3
+
+
+def _fingerprint_in(fingerprint: str, text: str) -> bool:
+    return re.search(rf"(?<![\w.@-]){re.escape(fingerprint)}(?![\w.@-])", text) is not None
 
 
 @dataclass
@@ -32,7 +42,9 @@ class Baseline:
             fingerprint = entry.get("fingerprint", "")
             if not fingerprint:
                 continue
-            if fingerprint in finding.raw_value or fingerprint == finding.artifact_path:
+            if fingerprint == finding.artifact_path:
+                return True
+            if _fingerprint_in(fingerprint, finding.raw_value):
                 return True
         return False
 
@@ -66,5 +78,11 @@ def load_baseline(path: str) -> Baseline:
                 f"'baseline' entry {i} in {path!r} must be a mapping with "
                 "'rule_id' and 'fingerprint'"
             )
-        entries.append({"rule_id": str(e["rule_id"]), "fingerprint": str(e["fingerprint"])})
+        fingerprint = str(e["fingerprint"])
+        if len(fingerprint) < MIN_FINGERPRINT_LENGTH:
+            raise ValueError(
+                f"'baseline' entry {i} in {path!r}: fingerprint {fingerprint!r} is shorter "
+                f"than {MIN_FINGERPRINT_LENGTH} characters and would suppress too broadly"
+            )
+        entries.append({"rule_id": str(e["rule_id"]), "fingerprint": fingerprint})
     return Baseline(entries=entries)

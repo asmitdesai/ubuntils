@@ -15,6 +15,12 @@ logger = structlog.get_logger()
 _SYSLOG_RE = re.compile(
     r"^(\w{3}\s+\d+\s+\d{2}:\d{2}:\d{2})\s+\S+\s+\S+:\s+(.+)$"
 )
+# rsyslog's high-precision (RFC 3339) format, the default on newer Ubuntu:
+# "2026-09-23T10:00:00.123456+01:00 host prog[1]: message"
+_SYSLOG_RFC3339_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))"
+    r"\s+\S+\s+\S+:\s+(.+)$"
+)
 _AUDITD_RE = re.compile(r"^type=(\S+) msg=audit\((\d+\.\d+):\d+\): (.+)$")
 
 
@@ -31,34 +37,83 @@ class TimelineBuilder:
 
     def build(self, since_days: int = 7) -> list[TimelineEvent]:
         events: list[TimelineEvent] = []
+        # Each log source is isolated: one unreadable/escaping/garbled source
+        # (e.g. SourceContainmentError, which is not an OSError) must not
+        # take the rest of the timeline down with it.
         for path in ("/var/log/syslog", "/var/log/messages"):
-            if self.source.exists(path):
-                try:
-                    events.extend(self._parse_syslog(self.source.read_text(path)))
-                except OSError:
-                    pass
-        events.extend(self._parse_journald(since_days))
-        if self.source.exists("/var/log/audit/audit.log"):
             try:
+                if self.source.exists(path):
+                    events.extend(self._parse_syslog(self.source.read_text(path),
+                                                     reference=self._mtime(path)))
+            except Exception as exc:
+                logger.warning("timeline_source_failed", path=path, error=str(exc))
+        try:
+            events.extend(self._parse_journald(since_days))
+        except Exception as exc:
+            logger.warning("timeline_source_failed", path="journald", error=str(exc))
+        try:
+            if self.source.exists("/var/log/audit/audit.log"):
                 events.extend(self._parse_auditd(self.source.read_text("/var/log/audit/audit.log")))
-            except OSError:
-                pass
+        except Exception as exc:
+            logger.warning("timeline_source_failed", path="auditd", error=str(exc))
         return self._deduplicate(events)
 
-    def _parse_syslog(self, content: str) -> list[TimelineEvent]:
+    def _mtime(self, path: str) -> datetime.datetime | None:
+        try:
+            return datetime.datetime.fromtimestamp(self.source.lstat(path).st_mtime,
+                                                   tz=datetime.timezone.utc)
+        except Exception:
+            return None
+
+    def _host_timezone(self) -> datetime.tzinfo:
+        """Timezone of the host whose logs these are (syslog stamps are local
+        time with no offset). /etc/timezone is read through the source so an
+        offline bundle uses the collected host's zone, not the analyst's."""
+        try:
+            name = self.source.read_text("/etc/timezone").strip()
+            if name:
+                from zoneinfo import ZoneInfo
+                return ZoneInfo(name)
+        except Exception:
+            pass
+        if isinstance(self.source, LiveSource) and not self.source.offline:
+            return datetime.datetime.now().astimezone().tzinfo
+        return datetime.timezone.utc
+
+    def _parse_syslog(self, content: str,
+                      reference: datetime.datetime | None = None) -> list[TimelineEvent]:
+        """Traditional syslog stamps carry no year: assume the year of
+        ``reference`` (the log's mtime, i.e. its newest entry), and roll back a
+        year for any stamp that would land after it — so December entries read
+        in January stay in December of the previous year."""
         events = []
-        current_year = datetime.datetime.now().year
+        tz = self._host_timezone()
+        reference = reference or datetime.datetime.now(datetime.timezone.utc)
+        latest_allowed = reference + datetime.timedelta(days=1)
         for line in content.splitlines():
             line = line.strip()
             if not line:
+                continue
+            m = _SYSLOG_RFC3339_RE.match(line)
+            if m:
+                try:
+                    ts = dateutil_parser.isoparse(m.group(1))
+                except Exception:
+                    logger.warning("syslog_parse_failed", line=line)
+                    continue
+                events.append(TimelineEvent(timestamp=ts.astimezone(datetime.timezone.utc),
+                                            source="syslog", description=m.group(2).strip()))
                 continue
             m = _SYSLOG_RE.match(line)
             if not m:
                 continue
             raw_ts, description = m.group(1), m.group(2).strip()
             try:
-                ts = dateutil_parser.parse(f"{raw_ts} {current_year}")
-                ts = ts.replace(tzinfo=datetime.timezone.utc)
+                naive = dateutil_parser.parse(f"{raw_ts} {reference.year}")
+                ts = naive.replace(tzinfo=tz)
+                if ts > latest_allowed:
+                    ts = naive.replace(year=naive.year - 1, tzinfo=tz)
+                ts = ts.astimezone(datetime.timezone.utc)
             except Exception:
                 logger.warning("syslog_parse_failed", line=line)
                 continue

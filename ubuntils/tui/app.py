@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import platform
-import socket
-import time
-
 import structlog
 from textual import work
 from textual.app import App, ComposeResult
@@ -11,15 +7,11 @@ from textual.message import Message
 
 from ubuntils.collectors import ALL_COLLECTORS
 from ubuntils.collectors.source import LiveSource
-from ubuntils.detectors.engine import DetectionEngine
-from ubuntils.detectors.finding import Finding, Severity
-from ubuntils.detectors.scoring import apply_signal
-from ubuntils.integrations.wazuh import is_wazuh_agent_present, write_wazuh_alerts
-from ubuntils.timeline.builder import TimelineBuilder, TimelineEvent
-from ubuntils.timeline.correlator import correlate
+from ubuntils.detectors.finding import Finding, RemediationResult
+from ubuntils.pipeline import run_scan
+from ubuntils.timeline.builder import TimelineEvent
 from ubuntils.tui.results_screen import ResultsScreen
 from ubuntils.tui.scan_screen import ScanScreen
-from ubuntils.tui.stats_panel import get_ubuntu_version
 
 logger = structlog.get_logger()
 
@@ -39,10 +31,12 @@ class ScanComplete(Message):
         findings: list[Finding],
         timeline: list[TimelineEvent],
         stats: dict,
+        remediation_results: list[RemediationResult] | None = None,
     ) -> None:
         self.findings = findings
         self.timeline = timeline
         self.stats = stats
+        self.remediation_results = remediation_results or []
         super().__init__()
 
 
@@ -50,7 +44,8 @@ class UbuntilsApp(App):
     TITLE = "ubuntils"
 
     def __init__(self, verbose: bool = False, _scan_override=None,
-                 allowlist=None, since=None, custom_rules=None, baseline=None) -> None:
+                 allowlist=None, since=None, custom_rules=None, baseline=None,
+                 forward_wazuh: bool = True) -> None:
         super().__init__()
         self._verbose = verbose
         self._scan_override = _scan_override
@@ -58,6 +53,7 @@ class UbuntilsApp(App):
         self._since = since
         self._custom_rules = custom_rules
         self._baseline = baseline
+        self._forward_wazuh = forward_wazuh
 
     def on_mount(self) -> None:
         self.push_screen(
@@ -68,71 +64,30 @@ class UbuntilsApp(App):
     @work(thread=True)
     def _run_scan(self) -> None:
         if self._scan_override is not None:
-            findings, timeline, stats = self._scan_override()
-            self.post_message(ScanComplete(findings=findings, timeline=timeline, stats=stats))
+            # Overrides return (findings, timeline, stats[, remediation_results]).
+            result = tuple(self._scan_override())
+            findings, timeline, stats = result[:3]
+            remediation_results = result[3] if len(result) > 3 else []
+            self.post_message(ScanComplete(findings=findings, timeline=timeline, stats=stats,
+                                           remediation_results=remediation_results))
             return
 
-        start = time.monotonic()
-        artifacts: dict = {}
-        failures = 0
-        collectors = [C(source=LiveSource(root="/")) for C in ALL_COLLECTORS]
-
-        for i, collector in enumerate(collectors):
-            name = type(collector).__name__
-            success = True
-            try:
-                result = collector.collect()
-                artifacts.update(result)
-            except Exception as exc:
-                logger.error("collector_failed", name=name, error=str(exc))
-                failures += 1
-                success = False
+        def _progress(name: str, index: int, total: int, success: bool) -> None:
             self.post_message(
-                CollectorProgress(name=name, index=i + 1, total=len(collectors), success=success)
+                CollectorProgress(name=name, index=index, total=total, success=success)
             )
 
-        engine = None
-        try:
-            engine = DetectionEngine(
-                allowlist=self._allowlist, custom_rules=self._custom_rules,
-                baseline=self._baseline
-            )
-            findings = engine.run(artifacts)
-            timeline = TimelineBuilder().build()
-            if self._since is not None:
-                timeline = [e for e in timeline if e.timestamp >= self._since]
-            correlate(findings, timeline)
-            for finding in findings:
-                if finding.related_events:
-                    apply_signal(finding, "timeline_corroboration", 25,
-                                 f"{len(finding.related_events)} nearby timeline event(s)")
-        except Exception as exc:
-            logger.error("scan_engine_failed", error=str(exc))
-            findings = []
-            timeline = []
-
-        duration = time.monotonic() - start
-
-        stats = {
-            "ubuntu_version": get_ubuntu_version(),
-            "architecture": platform.machine(),
-            "duration_s": duration,
-            "collector_count": len(collectors),
-            "collector_failures": failures,
-            "finding_counts": {
-                "HIGH": sum(1 for f in findings if f.severity == Severity.HIGH),
-                "MEDIUM": sum(1 for f in findings if f.severity == Severity.MEDIUM),
-                "LOW": sum(1 for f in findings if f.severity == Severity.LOW),
-            },
-            "timeline_count": len(timeline),
-            "suppressed_by_baseline": engine.suppressed_by_baseline if engine else 0,
-        }
-
-        if is_wazuh_agent_present():
-            write_wazuh_alerts(findings, socket.gethostname())
-
+        result = run_scan(
+            LiveSource(root="/"),
+            allowlist=self._allowlist,
+            since=self._since,
+            custom_rules=self._custom_rules,
+            baseline=self._baseline,
+            forward_wazuh=self._forward_wazuh,
+            on_progress=_progress,
+        )
         self.post_message(
-            ScanComplete(findings=findings, timeline=timeline, stats=stats)
+            ScanComplete(findings=result.findings, timeline=result.timeline, stats=result.stats)
         )
 
     def on_collector_progress(self, message: CollectorProgress) -> None:
@@ -146,5 +101,6 @@ class UbuntilsApp(App):
                 findings=message.findings,
                 timeline=message.timeline,
                 stats=message.stats,
+                remediation_results=message.remediation_results,
             )
         )
