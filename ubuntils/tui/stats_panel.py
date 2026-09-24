@@ -5,17 +5,6 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 
-def get_ubuntu_version() -> str:
-    try:
-        with open("/etc/os-release") as f:
-            for line in f:
-                if line.startswith("PRETTY_NAME="):
-                    return line.split("=", 1)[1].strip().strip('"')
-    except OSError:
-        pass
-    return "Unknown"
-
-
 def format_stats(stats: dict) -> str:
     fc = stats.get("finding_counts", {})
     lines = [
@@ -29,6 +18,15 @@ def format_stats(stats: dict) -> str:
     suppressed = stats.get("suppressed_by_baseline", 0)
     if suppressed:
         lines.append(f"Suppressed by baseline: {suppressed}")
+    integrity = stats.get("bundle_integrity")
+    if integrity and integrity != "live":
+        lines.append(f"Bundle integrity: {integrity.upper()}")
+    for name, reasons in sorted((stats.get("collectors_degraded") or {}).items()):
+        lines.append(f"Degraded: {name} — {'; '.join(reasons)}")
+    if stats.get("rules_failed"):
+        lines.append(f"Rules failed: {', '.join(stats['rules_failed'])}")
+    if stats.get("timeline_error"):
+        lines.append(f"Timeline error: {stats['timeline_error']}")
     return "\n".join(lines)
 
 

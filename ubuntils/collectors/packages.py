@@ -15,6 +15,16 @@ SETUID_FIND_PATHS = [
     "/usr", "/bin", "/sbin", "/opt", "/home", "/srv", "/tmp", "/var/tmp", "/dev/shm",
 ]
 
+# Full find(1) argument list for the setuid/setgid scan, shared with
+# `ubuntils collect` (cli.COLLECT_COMMANDS) so live and bundle runs match.
+# -printf emits the octal mode so setuid (4000) and setgid (2000) can be told
+# apart — both are searched for, but they are different risks.
+SETUID_FIND_ARGS = [
+    *SETUID_FIND_PATHS,
+    "-xdev", "(", "-perm", "-4000", "-o", "-perm", "-2000", ")", "-type", "f",
+    "-printf", "%m %p\\n",
+]
+
 # dpkg --verify walks every installed package's file manifest and can take
 # well over the default 30s command timeout on a real host with a large
 # package database; find_setuid similarly walks large directory trees.
@@ -29,6 +39,10 @@ class PackageCollector(BaseCollector):
     def collect(self) -> dict:
         dpkg_entries, dpkg_failed = self._dpkg_verify_entries()
         setuid_entries, setuid_failed = self._setuid_binaries()
+        if dpkg_failed:
+            self.degraded.append("`dpkg --verify` failed or timed out")
+        if setuid_failed:
+            self.degraded.append("setuid/setgid `find` failed or timed out")
         return {
             "dpkg_verify_entries": dpkg_entries,
             "immutable_flags": self._immutable_flag_entries(),
@@ -96,14 +110,26 @@ class PackageCollector(BaseCollector):
     def _setuid_binaries(self) -> tuple:
         stdout, _stderr, rc = self.source.run(
             "find_setuid",
-            [
-                "find", *SETUID_FIND_PATHS,
-                "-xdev", "(", "-perm", "-4000", "-o", "-perm", "-2000", ")", "-type", "f",
-            ],
+            ["find", *SETUID_FIND_ARGS],
             timeout=FIND_SETUID_TIMEOUT,
         )
         if rc == -1:
             return [], True
         if not stdout:
             return [], False
-        return [line.strip() for line in stdout.splitlines() if line.strip()], False
+        return [_parse_setuid_line(line) for line in stdout.splitlines() if line.strip()], False
+
+
+def _parse_setuid_line(line: str) -> dict:
+    """"4755 /usr/bin/sudo" -> {"path", "setuid", "setgid"}.
+
+    Bundles collected before -printf was added hold bare paths; for those the
+    bit is unknown and the entry is treated as setuid (the old behaviour).
+    """
+    line = line.strip()
+    mode_str, _, path = line.partition(" ")
+    if path and mode_str.isdigit():
+        mode = int(mode_str, 8)
+        return {"path": path.strip(), "setuid": bool(mode & 0o4000),
+                "setgid": bool(mode & 0o2000)}
+    return {"path": line, "setuid": True, "setgid": False}

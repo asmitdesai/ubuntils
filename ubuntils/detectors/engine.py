@@ -1,5 +1,6 @@
-import logging
 from typing import List
+
+import structlog
 
 from ubuntils.detectors.custom_rules import apply_custom_rules
 from ubuntils.detectors.finding import Finding
@@ -14,6 +15,7 @@ from ubuntils.detectors.rules import (
     rule_sudoers_nopasswd,
     rule_suspicious_systemd_timer,
     rule_uid_zero_account,
+    rule_user_empty_password,
     rule_package_tampered,
     rule_immutable_flag_set,
     rule_setuid_inventory,
@@ -33,6 +35,7 @@ ALL_RULES = [
     rule_process_masquerade,
     rule_process_suspicious_connection,
     rule_uid_zero_account,
+    rule_user_empty_password,
     rule_shell_rc_modification,
     rule_package_tampered,
     rule_immutable_flag_set,
@@ -41,7 +44,7 @@ ALL_RULES = [
     rule_kernel_module_suspicious,
 ]
 
-_log = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 class DetectionEngine:
@@ -51,19 +54,25 @@ class DetectionEngine:
         self.baseline = baseline
         self.suppressed_by_baseline = 0
         self.baseline_suppressed_findings: List[Finding] = []
+        # Names of rules that raised during run() — surfaced in scan_metadata
+        # so a crashed rule can't masquerade as "nothing found".
+        self.rules_failed: List[str] = []
 
     def run(self, artifacts: dict) -> List[Finding]:
         findings = []
+        self.rules_failed = []
         for rule in ALL_RULES:
             try:
                 findings.extend(rule(artifacts))
             except Exception as exc:
-                _log.exception("Rule %s raised: %s", rule.__name__, exc)
+                logger.exception("rule_failed", rule=rule.__name__, error=str(exc))
+                self.rules_failed.append(rule.__name__)
         if self.custom_rules:
             try:
                 findings.extend(apply_custom_rules(self.custom_rules, artifacts))
             except Exception as exc:
-                _log.exception("Custom rules raised: %s", exc)
+                logger.exception("custom_rules_failed", error=str(exc))
+                self.rules_failed.append("custom_rules")
         self.baseline_suppressed_findings = []
         if self.baseline is not None:
             findings, self.baseline_suppressed_findings = self.baseline.filter(findings)

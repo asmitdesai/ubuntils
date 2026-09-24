@@ -5,6 +5,8 @@ class KernelCollector(BaseCollector):
     def collect(self) -> dict:
         stdout, _stderr, rc = self.source.run("lsmod", ["lsmod"])
         if not stdout:
+            if rc != 0:
+                self.degraded.append("`lsmod` failed")
             return {"kernel_modules": []}
 
         modules = []

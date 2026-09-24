@@ -1,6 +1,32 @@
 import json
+import os
 
 from ubuntils.collectors.base import BaseCollector
+
+# Where enabled/installable units live. Read as files through the source, so
+# this also works for offline bundle/--root analysis where `systemctl` can't run.
+UNIT_GLOBS = [
+    "/etc/systemd/system/*.service",
+    "/etc/systemd/system/*/*.service",
+    "/run/systemd/system/*.service",
+    "/usr/local/lib/systemd/system/*.service",
+    "/usr/lib/systemd/system/*.service",
+    "/lib/systemd/system/*.service",
+    "/etc/systemd/user/*.service",
+    "/root/.config/systemd/user/*.service",
+    "/home/*/.config/systemd/user/*.service",
+]
+_EXEC_KEYS = ("ExecStart", "ExecStartPre", "ExecStartPost", "ExecReload", "ExecStop")
+# systemd executable prefixes: @ - : + ! !!
+_EXEC_PREFIX_CHARS = "@-:+!"
+
+
+def exec_binary(exec_line: str) -> str:
+    """First token of an Exec*= value, minus systemd's special prefixes."""
+    tokens = exec_line.strip().split()
+    if not tokens:
+        return ""
+    return tokens[0].lstrip(_EXEC_PREFIX_CHARS)
 
 
 class SystemdCollector(BaseCollector):
@@ -9,7 +35,8 @@ class SystemdCollector(BaseCollector):
         if timers is None:
             timers = self._list_timers_text()
         if timers is None:
-            return {}
+            self.degraded.append("`systemctl list-timers` produced no output")
+            timers = []
 
         result = []
         for t in timers:
@@ -20,9 +47,52 @@ class SystemdCollector(BaseCollector):
                 "unit": unit,
                 "activates": activates,
                 "exec_start": exec_start,
+                "exec_owner_uid": self._owner_uid(exec_binary(exec_start)),
             })
 
-        return {"timers": result}
+        return {"timers": result, "services": self._service_units()}
+
+    def _owner_uid(self, path: str):
+        """UID owning ``path`` on the analyzed host, or None if unknown."""
+        if not path.startswith("/"):
+            return None
+        try:
+            return self.source.lstat(path).st_uid
+        except Exception:
+            return None
+
+    def _service_units(self) -> list:
+        units = []
+        seen: set = set()
+        for pattern in UNIT_GLOBS:
+            try:
+                paths = self.source.glob(pattern)
+            except Exception:
+                continue
+            for path in paths:
+                try:
+                    text = self.source.read_text(path)
+                except Exception:
+                    continue
+                unit = os.path.basename(path)
+                for line in text.splitlines():
+                    key, eq, value = line.strip().partition("=")
+                    if not eq or key.strip() not in _EXEC_KEYS:
+                        continue
+                    value = value.strip()
+                    binary = exec_binary(value)
+                    # The same unit is often visible via several dirs/.wants links.
+                    if not binary or (unit, value) in seen:
+                        continue
+                    seen.add((unit, value))
+                    units.append({
+                        "unit": unit,
+                        "unit_path": path,
+                        "exec_key": key.strip(),
+                        "exec_start": value,
+                        "exec_owner_uid": self._owner_uid(binary),
+                    })
+        return units
 
     def _list_timers_json(self):
         stdout, _, rc = self.source.run(

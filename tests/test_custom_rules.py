@@ -129,9 +129,29 @@ def test_regex_match_on_ssh_key_comment():
     assert findings[0].artifact_path == "/home/alice/.ssh/authorized_keys"
 
 
-def test_invalid_regex_never_matches_and_does_not_raise():
-    rule = _rule(match="regex", pattern="(unclosed")
-    artifacts = {"processes": [{"pid": 1, "name": "x", "exe": "/tmp/x", "cmdline": "(unclosed"}]}
+def test_invalid_regex_is_rejected_at_load(tmp_path):
+    p = tmp_path / "rules.yaml"
+    p.write_text(
+        "rules:\n  - id: BAD\n    severity: HIGH\n    title: t\n    description: d\n"
+        "    source: process\n    match: regex\n    pattern: '(unclosed'\n"
+    )
+    with pytest.raises(ValueError, match="invalid regex"):
+        load_custom_rules(str(p))
+
+
+def test_nested_quantifier_regex_is_rejected_at_load(tmp_path):
+    p = tmp_path / "rules.yaml"
+    p.write_text(
+        "rules:\n  - id: SLOW\n    severity: HIGH\n    title: t\n    description: d\n"
+        "    source: process\n    match: regex\n    pattern: '(a+)+$'\n"
+    )
+    with pytest.raises(ValueError, match="nests quantifiers"):
+        load_custom_rules(str(p))
+
+
+def test_regex_scans_at_most_capped_text():
+    rule = _rule(match="regex", pattern="NEEDLE")
+    artifacts = {"processes": [{"exe": "/x", "cmdline": "a" * 5000 + "NEEDLE"}]}
     assert apply_custom_rules([rule], artifacts) == []
 
 

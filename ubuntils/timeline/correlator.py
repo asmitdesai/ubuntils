@@ -31,6 +31,12 @@ _RULE_KEYWORDS = {
     "PROCESS_SUSPICIOUS_CONNECTION": ("connect", "exec"),
     "LD_PRELOAD_INJECT": ("ld.so", "ld_preload", "preload"),
     "SHELL_RC_MODIFICATION": (),
+    "USER_EMPTY_PASSWORD": ("passwd", "usermod", "chpasswd"),
+    "PACKAGE_TAMPERED": ("dpkg", "apt", "install"),
+    "IMMUTABLE_FLAG_SET": ("chattr",),
+    "SETUID_INVENTORY": ("chmod", "setuid"),
+    "PAM_BACKDOOR": ("pam_", "nsswitch"),
+    "KERNEL_MODULE_SUSPICIOUS": ("insmod", "modprobe", "module"),
 }
 
 
@@ -54,14 +60,15 @@ def correlate(findings: List[Finding], timeline: List[TimelineEvent]) -> List[Fi
     call-chaining; callers do not need to use it, since the input findings are
     modified directly.
     """
+    # Lower-case each description once, not once per finding.
+    lowered = [(event, event.description.lower()) for event in timeline]
     for finding in findings:
-        tokens = _path_tokens(finding)
-        keywords = _RULE_KEYWORDS.get(finding.rule_id, ())
+        needles = tuple(_path_tokens(finding)) + _RULE_KEYWORDS.get(finding.rule_id, ())
         matches = []
-        for event in timeline:
-            desc = event.description.lower()
-            if any(t in desc for t in tokens) or any(k in desc for k in keywords):
-                matches.append(event)
+        if needles:
+            for event, desc in lowered:
+                if any(n in desc for n in needles):
+                    matches.append(event)
         matches.sort(key=lambda e: e.timestamp, reverse=True)
         finding.related_events = matches[:_MAX_RELATED]
     return findings

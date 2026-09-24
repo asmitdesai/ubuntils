@@ -1,5 +1,6 @@
 import os
 import stat
+import tempfile
 from abc import ABC, abstractmethod
 from datetime import datetime
 
@@ -8,6 +9,10 @@ from ubuntils.detectors.finding import Finding, RemediationResult, RemediationSt
 
 class BaseRemediator(ABC):
     BACKUP_BASE = "/var/backups/ubuntils"
+
+    def __init__(self, backup_base: str = BACKUP_BASE):
+        self._backup_base = backup_base
+        self._dry_run = False
 
     # ------------------------------------------------------------------
     # Symlink-safe file I/O.
@@ -32,9 +37,57 @@ class BaseRemediator(ABC):
             return f.read()
 
     def _write_lines(self, path: str, lines: list) -> None:
-        fd = os.open(path, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW)
-        with os.fdopen(fd, "w") as f:
-            f.writelines(lines)
+        """Atomically replace ``path`` with ``lines``.
+
+        The new content goes to a sibling temp file (mkstemp opens it
+        O_CREAT|O_EXCL|O_NOFOLLOW) that inherits the original's mode and
+        ownership, is fsync'd, and is then rename()d over the original. A crash
+        mid-write leaves the original intact instead of a truncated
+        /etc/sudoers, and rename() replaces the directory entry itself — it
+        never follows a symlink swapped in at ``path``. The original is still
+        opened O_NOFOLLOW first, so a symlink there is refused outright.
+        """
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            st = os.fstat(fd)
+        finally:
+            os.close(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError(f"Refusing to write non-regular file: {path}")
+
+        directory = os.path.dirname(os.path.abspath(path))
+        tmp_fd, tmp_path = tempfile.mkstemp(prefix=".ubuntils-", dir=directory)
+        try:
+            with os.fdopen(tmp_fd, "w") as f:
+                f.writelines(lines)
+                f.flush()
+                os.fchmod(f.fileno(), stat.S_IMODE(st.st_mode))
+                if (st.st_uid, st.st_gid) != (os.geteuid(), os.getegid()):
+                    os.fchown(f.fileno(), st.st_uid, st.st_gid)
+                os.fsync(f.fileno())
+            os.rename(tmp_path, path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    @staticmethod
+    def _lines_without(lines: list, raw_value: str) -> list:
+        return [line for line in lines if line.rstrip("\n") != raw_value]
+
+    def _line_present(self, path: str, raw_value: str) -> bool:
+        """Line-exact membership test — the same comparison apply() uses, so
+        verify() can't report FAILED because raw_value happens to be a
+        substring of some other surviving line."""
+        return any(line.rstrip("\n") == raw_value for line in self._read_lines(path))
+
+    def _require_line(self, finding: Finding, what: str = "Line") -> None:
+        if not self._line_present(finding.artifact_path, finding.raw_value):
+            raise ValueError(
+                f"{what} not found in {finding.artifact_path}: {finding.raw_value!r}"
+            )
 
     def _create_backup(self, finding: Finding) -> str:
         """Copy the artifact to a timestamped, 0700 backup dir without ever
@@ -58,9 +111,9 @@ class BaseRemediator(ABC):
             dst.write(data)
         return dest
 
-    @abstractmethod
     def backup(self, finding: Finding) -> str:
         """Create a timestamped backup. Returns the backup path."""
+        return self._create_backup(finding)
 
     @abstractmethod
     def validate(self, finding: Finding) -> None:

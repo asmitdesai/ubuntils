@@ -3,10 +3,13 @@ from ubuntils.collectors.base import BaseCollector
 
 class NetworkCollector(BaseCollector):
     def collect(self) -> dict:
+        tool = "ss"
         stdout, _, returncode = self.source.run("ss", ["ss", "-tunap"])
         if returncode != 0:
+            tool = "netstat"
             stdout, _, returncode = self.source.run("netstat", ["netstat", "-tunap"])
         if returncode != 0:
+            self.degraded.append("neither `ss` nor `netstat` produced output")
             return {}
 
         known_protos = {"tcp", "tcp6", "udp", "udp6", "raw", "raw6"}
@@ -18,9 +21,18 @@ class NetworkCollector(BaseCollector):
             if len(parts) < 5:
                 continue
             proto = parts[0]
-            state = parts[1] if len(parts) > 5 else ""
-            local = parts[4] if len(parts) > 5 else parts[3]
-            remote = parts[5] if len(parts) > 5 else parts[4]
+            if tool == "ss":
+                # Netid State Recv-Q Send-Q Local Peer [Process]
+                if len(parts) < 6:
+                    continue
+                state, local, remote = parts[1], parts[4], parts[5]
+            else:
+                # Proto Recv-Q Send-Q Local Foreign [State] PID/Program —
+                # UDP rows have no State column.
+                local, remote = parts[3], parts[4]
+                state = ""
+                if len(parts) > 5 and "/" not in parts[5] and parts[5] != "-":
+                    state = parts[5]
 
             local_addr, local_port = self._split_addr(local)
             remote_addr, remote_port = self._split_addr(remote)

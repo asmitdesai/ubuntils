@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import tarfile
 import tempfile
 
@@ -50,7 +51,17 @@ def _safe_extract(tf: tarfile.TarFile, work: str) -> None:
 
 
 def read_bundle(path: str) -> tuple:
+    """Extract and verify a bundle. The returned BundleSource owns the
+    extraction directory — callers must call ``source.cleanup()`` when done."""
     work = tempfile.mkdtemp(prefix="ubuntils_analyze_")
+    try:
+        return _read_extracted(path, work)
+    except BaseException:
+        shutil.rmtree(work, ignore_errors=True)
+        raise
+
+
+def _read_extracted(path: str, work: str) -> tuple:
     with tarfile.open(path, "r:gz") as tf:
         _safe_extract(tf, work)
 
@@ -77,18 +88,21 @@ def read_bundle(path: str) -> tuple:
     if expected_digest != manifest.manifest_sha256():
         integrity = "mismatch"
     else:
-        for fe in manifest.files:
-            if fe.sha256 == "":
-                continue
-            disk = os.path.join(base, fe.bundle_path)
-            if not os.path.exists(disk) or _sha256_file(disk) != fe.sha256:
+        captured = [(fe.bundle_path, fe.sha256) for fe in manifest.files if fe.sha256 != ""]
+        # Command outputs are hashed at collection time too — a tampered
+        # dpkg_verify.txt must fail verification just like a tampered file.
+        captured += [(ce.bundle_path, ce.sha256) for ce in manifest.commands]
+        for bundle_path, digest in captured:
+            disk = os.path.join(base, bundle_path)
+            if not os.path.exists(disk) or _sha256_file(disk) != digest:
                 integrity = "mismatch"
                 break
 
     command_index = {
-        c.name: os.path.join(base, c.bundle_path)
+        c.name: (os.path.join(base, c.bundle_path), c.exit_code)
         for c in manifest.commands
     }
-    source = BundleSource(root_dir=os.path.join(base, "files"), command_index=command_index)
+    source = BundleSource(root_dir=os.path.join(base, "files"), command_index=command_index,
+                          cleanup_dir=work)
     info = {"bundle_integrity": integrity, "manifest": stored, "bundle_sha256": expected_digest}
     return source, info

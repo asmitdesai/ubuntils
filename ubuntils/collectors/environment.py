@@ -7,6 +7,7 @@ class EnvironmentCollector(BaseCollector):
         definitions = []
         shell_init_files = []
 
+        definitions.extend(self._read_ld_so_preload())
         definitions.extend(self._read_env_file("/etc/environment", "system"))
         definitions.extend(self._read_shell_init("/etc/profile", "system"))
         for path in self.source.glob("/etc/profile.d/*.sh"):
@@ -47,6 +48,32 @@ class EnvironmentCollector(BaseCollector):
                     yield username, home
         except Exception:
             return
+
+    def _read_ld_so_preload(self) -> list:
+        """/etc/ld.so.preload is a bare list of libraries (no VAR= syntax)
+        that the loader injects into *every* process — the primary LD_PRELOAD
+        rootkit vector. glibc splits it on whitespace and ':' and has no
+        comment syntax, so every non-blank line is live, including ones
+        starting with '#'. Each line becomes an LD_PRELOAD definition."""
+        path = "/etc/ld.so.preload"
+        entries = []
+        try:
+            text = self.source.read_text(path)
+        except Exception:
+            return entries
+        for line in text.splitlines():
+            raw = line.strip()
+            if not raw:
+                continue
+            entries.append({
+                "owner": "system",
+                "source": path,
+                "variable": "LD_PRELOAD",
+                "value": raw,
+                "raw_line": line.rstrip("\n"),
+                "kind": "ld.so.preload",
+            })
+        return entries
 
     def _read_env_file(self, path: str, owner: str) -> list:
         entries = []

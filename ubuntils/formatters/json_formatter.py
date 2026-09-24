@@ -25,12 +25,21 @@ class JSONFormatter:
             output["remediation_results"] = [self._remediation(r) for r in remediation_results]
         # Tamper-evidence: a SHA-256 over the canonical report content, so a
         # collected triage artifact can be verified later. Computed over the
-        # report with the digest field absent, then injected.
-        digest = hashlib.sha256(
-            json.dumps(output, indent=2, sort_keys=True).encode("utf-8")
-        ).hexdigest()
+        # report with the digest field absent, then injected. The report is
+        # emitted in the same canonical form (sort_keys=True, indent=2), so
+        # verifying is: load, pop "report_sha256", json.dumps(indent=2,
+        # sort_keys=True), sha256 — see README "Verifying a report".
+        digest = self.digest(output)
         output["report_sha256"] = digest
-        return json.dumps(output, indent=2)
+        return json.dumps(output, indent=2, sort_keys=True)
+
+    @staticmethod
+    def digest(report: dict) -> str:
+        """SHA-256 of a report dict in canonical form, excluding report_sha256."""
+        body = {k: v for k, v in report.items() if k != "report_sha256"}
+        return hashlib.sha256(
+            json.dumps(body, indent=2, sort_keys=True).encode("utf-8")
+        ).hexdigest()
 
     def _finding(self, f: Finding) -> dict:
         d = {

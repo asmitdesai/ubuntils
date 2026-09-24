@@ -1,5 +1,3 @@
-import os
-
 from ubuntils.collectors.base import BaseCollector
 
 
@@ -8,7 +6,8 @@ class ProcessCollector(BaseCollector):
         processes = []
         try:
             status_paths = self.source.glob("/proc/*/status")
-        except Exception:
+        except Exception as exc:
+            self.degraded.append(f"cannot enumerate /proc: {exc}")
             return {}
 
         for status_path in status_paths:
@@ -20,10 +19,10 @@ class ProcessCollector(BaseCollector):
             except Exception:
                 continue
 
-            # os.readlink has no ArtifactSource equivalent (the interface has no
-            # symlink-target primitive) so it always targets the live host, not
-            # an offline --root bundle. Degrade to "" rather than dropping the
-            # whole process entry when it's unavailable (e.g. under BundleSource).
+            # Read through the source, never the analyst's own /proc — a PID
+            # collision would otherwise attribute the analyst's exe to a
+            # process from the analyzed host. Degrades to "" when the source
+            # has no link target (bundles).
             exe = self._read_exe(pid)
             cmdline = self._read_cmdline(f"/proc/{pid}/cmdline")
             processes.append({
@@ -48,7 +47,7 @@ class ProcessCollector(BaseCollector):
 
     def _read_exe(self, pid: int) -> str:
         try:
-            return os.readlink(f"/proc/{pid}/exe")
+            return self.source.readlink(f"/proc/{pid}/exe")
         except Exception:
             return ""
 

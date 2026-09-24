@@ -6,11 +6,13 @@ from typing import List
 from ubuntils.detectors.finding import Finding, Severity
 from ubuntils.detectors.scoring import apply_signal
 from ubuntils.utils.validators import (
+    command_references_writable_tmp,
     is_login_shell,
     path_in_standard_bins,
     path_in_standard_libs,
     path_in_writable_tmp,
     uid_is_system,
+    KNOWN_SETGID_BINARIES,
     KNOWN_SETUID_BINARIES,
     ALLOWED_NSS_MODULES,
     ALLOWED_KERNEL_MODULES,
@@ -81,19 +83,29 @@ def rule_cron_tmp_path(artifacts: dict) -> List[Finding]:
     for entry in artifacts.get("cron_entries", []):
         command = entry.get("command", "")
         source = entry.get("source", "")
-        if path_in_writable_tmp(command) or any(
-            f" {p}" in command or command.startswith(p)
-            for p in ("/tmp", "/var/tmp", "/dev/shm")
-        ):
+        if command_references_writable_tmp(command):
+            # Lines inside /etc/cron.{hourly,...} scripts are flag-only:
+            # deleting one line from a shell script isn't a safe auto-fix.
+            is_script = entry.get("kind") == "script"
             findings.append(Finding(
                 rule_id="CRON_TMP_PATH",
                 severity=Severity.HIGH,
                 title="Cron job references writable temp path",
-                description="A cron job references a world-writable temporary directory",
+                description=(
+                    f"A {'cron script' if is_script else 'cron job'} "
+                    f"({entry.get('schedule', '')}) references a world-writable "
+                    "temporary directory"
+                ),
                 artifact_path=source,
                 raw_value=command,
-                remediation_available=True,
-                remediation_description="Remove the offending cron entry and create a backup",
+                remediation_available=not is_script,
+                remediation_description=(
+                    None if is_script else "Remove the offending cron entry and create a backup"
+                ),
+                guided_remediation=(
+                    f"Review {source} and remove or fix the offending line by hand."
+                    if is_script else None
+                ),
             ))
     return findings
 
@@ -105,48 +117,99 @@ def rule_ld_preload_inject(artifacts: dict) -> List[Finding]:
             continue
         value = defn.get("value", "")
         source = defn.get("source", "")
-        if not path_in_standard_libs(value):
-            findings.append(Finding(
-                rule_id="LD_PRELOAD_INJECT",
-                severity=Severity.HIGH,
-                title="LD_PRELOAD injection detected",
-                description=(
-                    "LD_PRELOAD is set to a path outside standard library directories"
-                ),
-                artifact_path=source,
-                raw_value=defn.get("raw_line", value),
-                remediation_available=True,
-                remediation_description="Comment out the LD_PRELOAD line with a backup",
-            ))
+        # LD_PRELOAD is a space/colon separated list — every element must be
+        # checked, or "/lib/ok.so:/tmp/evil.so" slips through on the first.
+        libs = [p for p in re.split(r"[\s:]+", value) if p]
+        outside = [p for p in libs if not path_in_standard_libs(p)]
+        preload_file = defn.get("kind") == "ld.so.preload"
+        # /etc/ld.so.preload is empty on stock Ubuntu and injects into every
+        # process, so any entry is reported; a library planted inside /lib
+        # (a common rootkit trick) must not hide it.
+        if not outside and not preload_file:
+            continue
+        if preload_file:
+            description = (
+                "/etc/ld.so.preload loads a library into every process on the system"
+                + (f" (outside standard library directories: {', '.join(outside)})"
+                   if outside else "")
+            )
+            remediation = "Remove the entry from /etc/ld.so.preload with a backup"
+        else:
+            description = (
+                "LD_PRELOAD is set to a path outside standard library directories: "
+                + ", ".join(outside)
+            )
+            remediation = "Comment out the LD_PRELOAD line with a backup"
+        finding = Finding(
+            rule_id="LD_PRELOAD_INJECT",
+            severity=Severity.HIGH,
+            title="LD_PRELOAD injection detected",
+            description=description,
+            artifact_path=source,
+            raw_value=defn.get("raw_line", value),
+            remediation_available=True,
+            remediation_description=remediation,
+        )
+        if outside:
+            apply_signal(finding, "outside_standard_libs", 20,
+                         f"preloaded from a non-library directory: {', '.join(outside)}")
+        if any(path_in_writable_tmp(p) for p in libs):
+            apply_signal(finding, "writable_tmp_location", 15,
+                         "preloaded library sits in a world-writable temp directory")
+        findings.append(finding)
     return findings
 
 
+def _systemd_exec_reasons(exec_start: str, owner_uid) -> list:
+    reasons = []
+    if path_in_writable_tmp(exec_start) or command_references_writable_tmp(exec_start):
+        reasons.append("references a world-writable temp directory")
+    if owner_uid is not None and owner_uid != 0:
+        reasons.append(f"runs a binary owned by uid {owner_uid}, not root")
+    return reasons
+
+
 def rule_suspicious_systemd_timer(artifacts: dict) -> List[Finding]:
+    """Timers (via systemctl) and service units (read from the unit dirs)
+    whose Exec* line runs from a writable temp dir or a non-root-owned binary."""
     findings = []
+    timer_services = set()
+    candidates = []
     for timer in artifacts.get("timers", []):
-        exec_start = timer.get("exec_start", "")
+        timer_services.add(timer.get("activates", ""))
+        candidates.append((timer.get("unit", ""), timer.get("unit", ""), timer, "timer"))
+    for svc in artifacts.get("services", []):
+        if svc.get("unit", "") in timer_services:
+            continue  # already reported via its timer
+        candidates.append((svc.get("unit", ""), svc.get("unit_path", ""), svc, "service"))
+
+    reported = set()
+    for unit, artifact_path, entry, kind in candidates:
+        exec_start = entry.get("exec_start", "")
         if not exec_start:
             continue
-        if path_in_writable_tmp(exec_start):
-            unit = timer.get("unit", "")
-            findings.append(Finding(
-                rule_id="SUSPICIOUS_SYSTEMD_TIMER",
-                severity=Severity.HIGH,
-                title="Systemd timer with suspicious ExecStart path",
-                description=(
-                    f"Systemd timer '{unit}' has ExecStart "
-                    "in a world-writable temp directory"
-                ),
-                artifact_path=unit,
-                raw_value=exec_start,
-                remediation_available=False,
-                remediation_description=None,
-                guided_remediation=(
-                    f"Inspect the unit, then disable it: "
-                    f"`systemctl disable --now {unit}` "
-                    f"(review `systemctl cat {unit}` first)."
-                ),
-            ))
+        reasons = _systemd_exec_reasons(exec_start, entry.get("exec_owner_uid"))
+        if not reasons or (unit, exec_start) in reported:
+            continue
+        reported.add((unit, exec_start))
+        finding = Finding(
+            rule_id="SUSPICIOUS_SYSTEMD_TIMER",
+            severity=Severity.HIGH,
+            title=f"Systemd {kind} with suspicious ExecStart",
+            description=f"Systemd {kind} '{unit}' ExecStart {'; '.join(reasons)}",
+            artifact_path=artifact_path,
+            raw_value=exec_start,
+            remediation_available=False,
+            remediation_description=None,
+            guided_remediation=(
+                f"Inspect the unit, then disable it: "
+                f"`systemctl disable --now {unit}` "
+                f"(review `systemctl cat {unit}` first)."
+            ),
+        )
+        for reason in reasons:
+            apply_signal(finding, "content_match", 15, f"ExecStart {reason}")
+        findings.append(finding)
     return findings
 
 
@@ -196,27 +259,61 @@ def rule_ssh_unauthorized_key(artifacts: dict) -> List[Finding]:
     return findings
 
 
+def _qualifies_for_nopasswd_check(user_info: dict) -> bool:
+    return not uid_is_system(user_info.get("uid", 0)) and is_login_shell(user_info.get("shell", ""))
+
+
 def rule_sudoers_nopasswd(artifacts: dict) -> List[Finding]:
     findings = []
-    users_by_name = {u["username"]: u for u in artifacts.get("users", [])}
+    users = artifacts.get("users", [])
+    users_by_name = {u["username"]: u for u in users}
 
     for rule in artifacts.get("sudoers_rules", []):
         options = rule.get("options", "")
         if "NOPASSWD" not in options:
             continue
-        username = rule.get("user", "")
-        user_info = users_by_name.get(username)
-        if user_info is None:
+        principal = rule.get("user", "")
+
+        if principal.startswith("%"):
+            # Group rule: resolve members (supplementary or primary group).
+            group = principal[1:]
+            members = sorted(
+                u["username"] for u in users
+                if (group in u.get("groups", []) or u.get("primary_group") == group)
+                and _qualifies_for_nopasswd_check(u)
+            )
+            if not members:
+                continue
+            # Flag-only: deleting a group-wide rule like %sudo can strip all
+            # sudo access from the system, which remediation must never do.
+            findings.append(Finding(
+                rule_id="SUDOERS_NOPASSWD",
+                severity=Severity.MEDIUM,
+                title="NOPASSWD sudoers entry for a group with non-system members",
+                description=(
+                    f"Group '{group}' has NOPASSWD sudo access; members: {', '.join(members)}"
+                ),
+                artifact_path=rule.get("source", ""),
+                raw_value=rule.get("raw_line", ""),
+                remediation_available=False,
+                remediation_description=None,
+                guided_remediation=(
+                    f"Edit with `visudo -f {rule.get('source', '')}` and drop the NOPASSWD tag "
+                    f"(or narrow the rule) — do not delete a group rule that may be the "
+                    f"system's only sudo access."
+                ),
+            ))
+            continue
+
+        user_info = users_by_name.get(principal)
+        if user_info is None or not _qualifies_for_nopasswd_check(user_info):
             continue
         uid = user_info.get("uid", 0)
-        shell = user_info.get("shell", "")
-        if uid_is_system(uid) or not is_login_shell(shell):
-            continue
         findings.append(Finding(
             rule_id="SUDOERS_NOPASSWD",
             severity=Severity.MEDIUM,
             title="NOPASSWD sudoers entry for non-system user",
-            description=f"User '{username}' (uid={uid}) has NOPASSWD sudo access",
+            description=f"User '{principal}' (uid={uid}) has NOPASSWD sudo access",
             artifact_path=rule.get("source", ""),
             raw_value=rule.get("raw_line", ""),
             remediation_available=True,
@@ -277,9 +374,11 @@ def rule_process_suspicious_connection(artifacts: dict) -> List[Finding]:
         outbound = [c for c in conns_by_pid.get(pid, []) if _is_outbound(c)]
         if not outbound:
             continue
-        suspicious_exe = bool(exe) and (
-            path_in_writable_tmp(exe) or not path_in_standard_bins(exe)
-        )
+        # HIGH only for exes in writable temp dirs or deleted from disk;
+        # an unusual-but-plausible install location (e.g. /opt) is MEDIUM.
+        exe_path = exe[:-len(" (deleted)")] if exe.endswith(" (deleted)") else exe
+        high_risk_exe = bool(exe) and (path_in_writable_tmp(exe_path) or exe != exe_path)
+        suspicious_exe = high_risk_exe or (bool(exe) and not path_in_standard_bins(exe_path))
         nonstandard = [c for c in outbound if c.get("remote_port", "") not in _COMMON_REMOTE_PORTS]
         if not (suspicious_exe or nonstandard):
             continue
@@ -287,7 +386,7 @@ def rule_process_suspicious_connection(artifacts: dict) -> List[Finding]:
         remote = f"{target.get('remote_addr', '')}:{target.get('remote_port', '')}"
         findings.append(Finding(
             rule_id="PROCESS_SUSPICIOUS_CONNECTION",
-            severity=Severity.HIGH if suspicious_exe else Severity.MEDIUM,
+            severity=Severity.HIGH if high_risk_exe else Severity.MEDIUM,
             title="Process with suspicious outbound connection",
             description=(
                 f"Process '{proc.get('name', '')}' (pid={pid}, exe={exe}) has an "
@@ -329,6 +428,34 @@ def rule_uid_zero_account(artifacts: dict) -> List[Finding]:
     return findings
 
 
+def rule_user_empty_password(artifacts: dict) -> List[Finding]:
+    """An account with an empty /etc/shadow password field and a login shell.
+
+    Ubuntu's default PAM stack (pam_unix ... nullok) accepts an empty
+    password, so anyone can log in to such an account without credentials.
+    """
+    findings = []
+    for user in artifacts.get("users", []):
+        if user.get("password_empty") is not True or not user.get("is_login_shell", False):
+            continue
+        username = user.get("username", "")
+        findings.append(Finding(
+            rule_id="USER_EMPTY_PASSWORD",
+            severity=Severity.HIGH,
+            title="Login account with no password",
+            description=(
+                f"Account '{username}' has an empty password field in /etc/shadow and a "
+                "login shell — with PAM's default nullok, it can log in with no password."
+            ),
+            artifact_path="/etc/shadow",
+            raw_value=f"{username}::",
+            remediation_available=False,
+            remediation_description=None,
+            guided_remediation=f"Lock the account until reviewed: `passwd -l {username}`",
+        ))
+    return findings
+
+
 _CURL_TO_SHELL_RE = re.compile(r"\b(curl|wget)\b[^\n|]*\|\s*(sudo\s+)?(ba)?sh\b")
 _BASE64_DECODE_RE = re.compile(r"\bbase64\b\s+(-d|--decode)\b")
 
@@ -339,7 +466,13 @@ def _rc_content_is_suspicious(content: str) -> bool:
     if _BASE64_DECODE_RE.search(content):
         return True
     for line in content.splitlines():
-        if line.strip().startswith(("PATH=", "export PATH=")) and path_in_writable_tmp(line):
+        stripped = line.strip()
+        if stripped.startswith("export "):
+            stripped = stripped[len("export "):].strip()
+        if not stripped.startswith("PATH="):
+            continue
+        value = stripped[len("PATH="):].strip().strip("\"'")
+        if any(path_in_writable_tmp(p) for p in value.split(":")):
             return True
     return False
 
@@ -483,26 +616,39 @@ def rule_immutable_flag_set(artifacts: dict) -> List[Finding]:
 
 def rule_setuid_inventory(artifacts: dict) -> List[Finding]:
     findings = []
-    for path in artifacts.get("setuid_binaries", []):
-        if path in KNOWN_SETUID_BINARIES:
+    for entry in artifacts.get("setuid_binaries", []):
+        if isinstance(entry, str):  # legacy shape: bare path, bit unknown
+            entry = {"path": entry, "setuid": True, "setgid": False}
+        path = entry.get("path", "")
+        unexpected = []
+        if entry.get("setuid") and path not in KNOWN_SETUID_BINARIES:
+            unexpected.append("setuid")
+        if entry.get("setgid") and path not in KNOWN_SETGID_BINARIES \
+                and path not in KNOWN_SETUID_BINARIES:
+            unexpected.append("setgid")
+        if not unexpected:
             continue
+        bits = "+".join(unexpected)
         in_tmp = path_in_writable_tmp(path)
+        chmod_flags = ",".join({"setuid": "u-s", "setgid": "g-s"}[bit] for bit in unexpected)
         finding = Finding(
             rule_id="SETUID_INVENTORY",
             severity=Severity.LOW,
-            title="Unexpected setuid binary",
+            title=f"Unexpected {bits} binary",
             description=(
-                f"'{path}' has the setuid bit set and is not in the known-good baseline"
+                f"'{path}' has the {bits} bit set and is not in the known-good baseline"
                 + (" (and is located in a world-writable temp directory)" if in_tmp else "")
             ),
             artifact_path=path,
-            raw_value="setuid",
+            raw_value=bits,
             remediation_available=False,
             remediation_description=None,
-            guided_remediation=f"Review and, if unauthorized, remove the setuid bit: chmod u-s {path}",
+            guided_remediation=(
+                f"Review and, if unauthorized, remove the bit: chmod {chmod_flags} {path}"
+            ),
         )
         apply_signal(finding, "baseline_deviation", 15,
-                     "setuid binary not present in ubuntils' known-good baseline")
+                     f"{bits} binary not present in ubuntils' known-good baseline")
         if in_tmp:
             apply_signal(finding, "writable_tmp_location", 25,
                          "located under a world-writable temp directory — a common drop location "
@@ -541,6 +687,7 @@ def rule_pam_backdoor(artifacts: dict) -> List[Finding]:
                 break  # one finding per file is enough signal
 
     nsswitch = artifacts.get("nsswitch_content", "")
+    reported_modules = set()
     for line in nsswitch.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or ":" not in stripped:
@@ -554,8 +701,10 @@ def rule_pam_backdoor(artifacts: dict) -> List[Finding]:
             if token.startswith("["):
                 continue
             module = token.split("=")[0]  # Extract module name (before any = option)
-            if not module or module in ALLOWED_NSS_MODULES:
+            if not module or module in ALLOWED_NSS_MODULES or module in reported_modules:
                 continue
+            # One finding per unknown module, not one per database line.
+            reported_modules.add(module)
             finding = Finding(
                 rule_id="PAM_BACKDOOR",
                 severity=Severity.HIGH,
@@ -591,7 +740,10 @@ def rule_kernel_module_suspicious(artifacts: dict) -> List[Finding]:
             continue
         finding = Finding(
             rule_id="KERNEL_MODULE_SUSPICIOUS",
-            severity=Severity.HIGH,
+            # LOW: the baseline is intentionally narrow and legitimate
+            # hardware/vendor drivers miss it constantly — HIGH flooded every
+            # laptop/desktop scan. Allowlist known modules via --config.
+            severity=Severity.LOW,
             title="Loaded kernel module not in the expected set",
             description=(
                 f"Module '{name}' is loaded but is not in ubuntils' baseline of common built-in "

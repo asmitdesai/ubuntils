@@ -40,7 +40,8 @@ class SSHCollector(BaseCollector):
         entries = []
         try:
             passwd_lines = self.source.read_text("/etc/passwd").splitlines()
-        except Exception:
+        except Exception as exc:
+            self.degraded.append(f"cannot read /etc/passwd: {exc}")
             return {}
 
         for line in passwd_lines:
