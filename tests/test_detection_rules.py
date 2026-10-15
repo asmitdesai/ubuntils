@@ -1041,7 +1041,7 @@ def test_package_tampered_groups_findings_by_package():
     by_pkg = {f.artifact_path: f for f in findings}
     assert set(by_pkg) == {"wazuh-manager", "wazuh-indexer"}
     mgr = by_pkg["wazuh-manager"]
-    assert "1162 modified" in mgr.description and "1 missing" in mgr.description
+    assert "1162 modified files and 1 missing file" in mgr.description
     assert "missing     /etc/init.d/wazuh-manager" in mgr.raw_value
     # The file listing is capped so one noisy package can't bloat the report.
     assert "more" in mgr.raw_value.splitlines()[-1]
@@ -1093,7 +1093,7 @@ def test_package_tampered_package_with_only_missing_directories_is_low():
     assert f.severity == Severity.LOW
     assert "missing_directory" in [s["name"] for s in f.signals]
     assert "missing_file" not in [s["name"] for s in f.signals]
-    assert "1 missing director" in f.description
+    assert f.description == "Package 'apparmor' has 1 missing directory compared to its dpkg manifest"
 
 
 def test_package_tampered_missing_file_still_high_alongside_missing_dirs():

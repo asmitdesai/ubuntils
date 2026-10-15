@@ -793,11 +793,13 @@ def test_package_collector_parses_dpkg_verify(tmp_path):
 
     result = PackageCollector(source=src).collect()
 
-    entries = result["dpkg_verify_entries"]
+    parsed_keys = ("path", "flags", "is_conffile", "missing")
+    entries = [{k: e[k] for k in parsed_keys} for e in result["dpkg_verify_entries"]]
+    assert {"path": "/etc/ssh/sshd_config", "flags": "??5??????", "is_conffile": True, "missing": False} in entries
+    assert {"path": "/usr/bin/sshd", "flags": "", "is_conffile": False, "missing": True} in entries
+    assert {"path": "/usr/bin/passwd", "flags": "....5..T.", "is_conffile": False, "missing": False} in entries
     # This bundle predates dpkg_owners capture, so ownership is unknown.
-    assert {"path": "/etc/ssh/sshd_config", "flags": "??5??????", "is_conffile": True, "missing": False, "package": None, "is_directory": None} in entries
-    assert {"path": "/usr/bin/sshd", "flags": "", "is_conffile": False, "missing": True, "package": None, "is_directory": None} in entries
-    assert {"path": "/usr/bin/passwd", "flags": "....5..T.", "is_conffile": False, "missing": False, "package": None, "is_directory": None} in entries
+    assert all(e["package"] is None for e in result["dpkg_verify_entries"])
 
 
 def test_package_collector_parses_lsattr_immutable_flags(tmp_path):

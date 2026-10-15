@@ -458,3 +458,61 @@ def test_W2_allowlist_suppressions_are_counted(tmp_path):
     assert not any(f.rule_id == "USER_UID_ZERO" for f in result.findings)
     assert result.scan_metadata["suppressed_by_allowlist"] >= 1
     assert result.stats["suppressed_by_allowlist"] >= 1
+
+
+# ─── Live 26.04 follow-up: removed-but-not-purged packages ───────────────────
+
+_DPKG_STATUS = """\
+Package: python3-twisted
+Status: deinstall ok config-files
+Priority: optional
+Architecture: all
+
+Package: libc6
+Status: install ok installed
+Architecture: arm64
+Multi-Arch: same
+
+Package: apparmor
+Status: install ok installed
+Architecture: arm64
+"""
+
+
+def test_package_collector_records_package_state_from_dpkg_status(tmp_path):
+    from ubuntils.collectors.packages import PackageCollector
+    from ubuntils.collectors.source import LiveSource
+
+    info = tmp_path / "var" / "lib" / "dpkg"
+    info.mkdir(parents=True)
+    (info / "status").write_text(_DPKG_STATUS)
+
+    class _Src(LiveSource):
+        def run(self, name, argv, timeout=30):
+            return {
+                "dpkg_verify": ("missing     /usr/lib/python3/dist-packages/twisted/plugins\n"
+                                "??5??????   /usr/lib/aarch64-linux-gnu/libc.so.6\n", "", 1),
+                "dpkg_owners": ("python3-twisted: /usr/lib/python3/dist-packages/twisted/plugins\n"
+                                "libc6:arm64: /usr/lib/aarch64-linux-gnu/libc.so.6\n", "", 0),
+            }.get(name, ("", "", 0))
+
+    entries = {e["path"]: e for e in
+               PackageCollector(source=_Src(root=str(tmp_path))).collect()["dpkg_verify_entries"]}
+    assert entries["/usr/lib/python3/dist-packages/twisted/plugins"]["package_state"] == "config-files"
+    assert entries["/usr/lib/aarch64-linux-gnu/libc.so.6"]["package_state"] == "installed"
+
+
+def test_package_tampered_ignores_leftovers_of_removed_packages():
+    from ubuntils.detectors.rules import rule_package_tampered
+    findings = rule_package_tampered({"dpkg_verify_entries": [
+        {"path": "/usr/lib/python3/dist-packages/twisted/plugins", "flags": "", "missing": True,
+         "is_conffile": False, "package": "python3-twisted", "package_state": "config-files"},
+        {"path": "/usr/bin/passwd", "flags": "??5??????", "missing": False,
+         "is_conffile": False, "package": "passwd", "package_state": "installed"},
+    ]})
+    assert [f.artifact_path for f in findings] == ["passwd"]
+
+
+def test_bundles_capture_dpkg_status():
+    from ubuntils.cli import COLLECT_FILES
+    assert "/var/lib/dpkg/status" in COLLECT_FILES

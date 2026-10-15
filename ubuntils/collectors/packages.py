@@ -120,10 +120,41 @@ class PackageCollector(BaseCollector):
                 "package ownership lookup (`dpkg-query -S`) unavailable — "
                 "PACKAGE_TAMPERED reported per file"
             )
+        states = self._package_states()
         md5sums_cache: dict = {}
         for entry in entries:
             entry["package"] = owners.get(entry["path"])
+            entry["package_state"] = states.get(entry["package"]) if entry["package"] else None
             entry["is_directory"] = self._missing_is_directory(entry, md5sums_cache)
+
+    def _package_states(self) -> dict:
+        """Package name -> dpkg state ("installed", "config-files", …).
+
+        A package removed but not purged ("config-files") keeps its .list, so
+        dpkg --verify still checks — and reports missing — the directory
+        skeleton it left behind; that's not tampering. Read from the status
+        file rather than a command so offline analysis gets it too. Both
+        "libc6" and the Multi-Arch form dpkg-query prints ("libc6:arm64") map.
+        """
+        try:
+            text = self.source.read_text("/var/lib/dpkg/status")
+        except Exception:
+            return {}
+        states: dict = {}
+        for stanza in text.split("\n\n"):
+            fields = {}
+            for line in stanza.splitlines():
+                key, sep, value = line.partition(":")
+                if sep and not line.startswith((" ", "\t")):
+                    fields[key] = value.strip()
+            name, status = fields.get("Package"), fields.get("Status", "")
+            if not name or not status:
+                continue
+            state = status.split()[-1]  # "install ok installed" -> "installed"
+            states[name] = state
+            if fields.get("Architecture"):
+                states[f"{name}:{fields['Architecture']}"] = state
+        return states
 
     def _missing_is_directory(self, entry: dict, cache: dict):
         """True if a missing, owned, non-conffile path is a directory (or
