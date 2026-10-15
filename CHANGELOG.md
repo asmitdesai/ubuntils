@@ -51,6 +51,10 @@ Validated on a live Ubuntu 26.04 LTS arm64 host. A clean VM that produced 1,243 
 - Timeline events carry the logging `program` (syslog tag / journald identifier), in JSON and the TUI.
 - Copies of journald messages that rsyslog also wrote to syslog are collapsed; repeats within one source are kept.
 
+### Added — hostile-host harness
+- `tools/hostile-host/harness.py` runs any IR tool against a hostile host — FIFO, `/dev/zero` and sparse-file traps, symlink leaks of a root-only canary, a trojaned working directory, terminal-escape and forged-line injection, and five stealthy persistence techniques — and tabulates the outcome per tool. Profiles for ubuntils, UAC, chkrootkit, rkhunter and Cat-Scale.
+- `SHELL_RC_MODIFICATION` reports the offending line as its raw value instead of the file path, and ignores commented-out lines.
+
 ### Added — demo lab
 - `tools/lab/seed-lab.sh plant|status|clean` plants inert artifacts that trip 14 of the 16 rules on a disposable Ubuntu VM, and removes them exactly. Nothing it plants can execute or grant access.
 

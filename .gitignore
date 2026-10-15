@@ -60,3 +60,6 @@ docs/*
 
 # Scan reports (contain host details — never commit)
 report*.json
+
+# Hostile-host harness results (contain run outputs from the test VM)
+hh-results/

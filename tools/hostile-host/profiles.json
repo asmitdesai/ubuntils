@@ -1,0 +1,23 @@
+{
+  "ubuntils": {
+    "cmd": ["{repo}/.venv/bin/ubuntils", "scan", "--json", "--no-wazuh", "--output", "{out}/report.json"],
+    "notes": "This repo's tool, from the venv used for VM testing."
+  },
+  "uac": {
+    "cmd": ["{uac_dir}/uac", "-p", "ir_triage", "{out}"],
+    "notes": "Unix-like Artifacts Collector. Pass --set uac_dir=/path/to/uac (the unpacked release)."
+  },
+  "chkrootkit": {
+    "cmd": ["chkrootkit"],
+    "notes": "apt install chkrootkit"
+  },
+  "rkhunter": {
+    "cmd": ["rkhunter", "--check", "--skip-keypress", "--nocolors"],
+    "extra_outputs": ["/var/log/rkhunter.log"],
+    "notes": "apt install rkhunter; run `rkhunter --propupd` once beforehand."
+  },
+  "catscale": {
+    "cmd": ["bash", "{catscale_dir}/Cat-Scale.sh"],
+    "notes": "WithSecure Cat-Scale; writes its archive to the working directory. Pass --set catscale_dir=..."
+  }
+}
