@@ -51,6 +51,9 @@ Validated on a live Ubuntu 26.04 LTS arm64 host. A clean VM that produced 1,243 
 - Timeline events carry the logging `program` (syslog tag / journald identifier), in JSON and the TUI.
 - Copies of journald messages that rsyslog also wrote to syslog are collapsed; repeats within one source are kept.
 
+### Added — demo lab
+- `tools/lab/seed-lab.sh plant|status|clean` plants inert artifacts that trip 14 of the 16 rules on a disposable Ubuntu VM, and removes them exactly. Nothing it plants can execute or grant access.
+
 ### Docs
 - `SECURITY.md` describes how ubuntils protects itself on a hostile host, and no longer claims mtime-only rules or zero network egress.
 - Install instructions work with pipx: run `ubuntils scan` as your user (it escalates itself) rather than `sudo ubuntils scan`, which can't find a pipx-installed command.

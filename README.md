@@ -4,7 +4,7 @@ Forensic triage for live Ubuntu systems — automated artifact collection, persi
 
 [![CI](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml/badge.svg)](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
-![Tests](https://img.shields.io/badge/tests-503%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-506%20passing-brightgreen)
 ![Coverage](https://img.shields.io/badge/coverage-94.59%25-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Arch](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-lightgrey)
@@ -887,6 +887,38 @@ The setuid/setgid `find` scan passes `-xdev` to stay bounded — it does not des
 
 ---
 
+## Demo lab: plant something to find
+
+`tools/lab/seed-lab.sh` plants inert, attacker-style artifacts on a **disposable** Ubuntu VM so you can watch ubuntils find them — for demos, workshops, or checking a build end to end.
+
+```bash
+sudo tools/lab/seed-lab.sh plant      # asks for confirmation; UBUNTILS_LAB_YES=1 skips it
+ubuntils scan                         # or: ubuntils scan --json --output lab.json
+sudo tools/lab/seed-lab.sh clean      # removes everything it planted
+```
+
+| Rule it trips | What gets planted |
+|---|---|
+| `USER_UID_ZERO` | `ubuntils-lab-root`, a locked UID-0 alias with a `nologin` shell (its `useradd` log line also earns timeline corroboration) |
+| `CRON_TMP_PATH` | `/etc/cron.d/ubuntils-lab` running a `/tmp` script — scheduled for 31 February, so it never fires |
+| `CRON_ROOT_EXEC` | a crontab for the locked `ubuntils-lab` user that calls `sudo` (same never-firing schedule) |
+| `SUDOERS_NOPASSWD` | `/etc/sudoers.d/ubuntils-lab` — NOPASSWD for the locked user, `visudo`-checked |
+| `SSH_UNAUTHORIZED_KEY` | a `command=` key in `authorized_keys` and a second key in `authorized_keys2` — generated fresh, private half destroyed |
+| `SHELL_RC_MODIFICATION`, `LD_PRELOAD_INJECT` | a `curl … \| bash` line and a `/tmp` `LD_PRELOAD` in the locked user's `.bashrc` |
+| `SUSPICIOUS_SYSTEMD_TIMER` | a unit running from `/tmp`, and a drop-in override that pipes `curl` into `bash` — neither enabled nor started |
+| `PAM_BACKDOOR` | `/etc/pam.d/ubuntils-lab` with `auth sufficient pam_permit.so`, a service no program uses |
+| `PROCESS_MASQUERADE` | two renamed `sleep` copies: `kworker` from `/dev/shm` (fake kernel thread, HIGH) and `sshd` from `/var/tmp` |
+| `SETUID_INVENTORY` | a setuid copy of `true` in `/opt/ubuntils-lab` |
+| `IMMUTABLE_FLAG_SET` | the append-only flag on `/var/log/btmp` |
+| `PACKAGE_TAMPERED` | one comment line appended to `base-files`' `/usr/share/base-files/dot.bashrc` (restored on `clean`) |
+| `KERNEL_MODULE_SUSPICIOUS` | the harmless `dummy` network module |
+
+Nothing it plants can run or let anyone in: cron entries never fire, units are never enabled, the lab accounts are locked, no private key exists, and URLs use the reserved `.invalid` domain. Every action is recorded in `/var/lib/ubuntils-lab/actions`, and `clean` undoes them in reverse. `PROCESS_SUSPICIOUS_CONNECTION` is left out because it needs a live outbound connection; `USER_EMPTY_PASSWORD` needs a genuinely passwordless login, so it's only planted with `plant --with-empty-password`.
+
+The remediable findings make a good in-TUI remediation demo: press **R** on the cron, sudoers, SSH or `LD_PRELOAD` finding. Backups from those fixes stay in `/var/backups/ubuntils/` after `clean`.
+
+---
+
 ## Compatibility
 
 | | Supported |
@@ -960,7 +992,8 @@ VirusTotal hash lookups and MISP IOC export were dropped from this release. Viru
 - [x] Confidence scoring: timeline corroboration only for events that name the artifact; whole-word, program-aware correlation; syslog/journald duplicates collapsed
 - [x] Pre-conference security audit: no working-directory imports on the root re-exec, contained bundle reads, bounded reads of user-controlled files, markup-safe TUI
 - [x] New coverage: `authorized_keys2`/`AuthorizedKeysFile`, systemd drop-ins, `/etc/bash.bashrc` and zsh files, kernel-thread impersonation; mtime *or* ctime for timestamp rules
-- [x] 503 tests at 94.59% coverage
+- [x] `tools/lab/seed-lab.sh` demo lab that trips 14 of 16 rules with inert artifacts
+- [x] 506 tests at 94.59% coverage
 
 **v3.0.0 / v4.0.0 (exploratory)**
 - Web dashboard for multi-host triage
