@@ -45,6 +45,8 @@ sudo python3 tools/hostile-host/harness.py run --tool uac --set uac_dir=/opt/uac
 
 Each tool gets a baseline run with nothing planted, then one run per group. Results land in `hh-results/<timestamp>/`: `summary.md` is a trap × tool table, `summary.json` has every run's outcome, duration, peak memory and disk use, and each run's stdout, stderr and output directory are kept beside it. `--group leak --group cwd` runs just those groups; `--timeout` caps each run (default 900 s).
 
+**A run only counts if the tool actually worked.** Profiles list the exit codes a healthy run returns (`ok_returncodes`, default `[0]`) and outputs it always produces (`expect_output`, globs). A run that misses either is reported as **BROKEN-RUN** instead of PASS or MISSED — a tool that dies at startup would otherwise "survive" every trap and "miss" every technique. If the baseline run is broken, that tool is skipped.
+
 Tools are described in `profiles.json`: a command with `{out}` (a per-run output directory), `{cwd}` (the per-run working directory), `{repo}` and any `--set key=value` placeholders, plus optional `env` and `extra_outputs` (log files the tool writes elsewhere; only the part appended during the run is captured). Add a profile to test another tool.
 
 ## Safety

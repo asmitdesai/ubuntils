@@ -1,23 +1,64 @@
 {
   "ubuntils": {
-    "cmd": ["{repo}/.venv/bin/ubuntils", "scan", "--json", "--no-wazuh", "--output", "{out}/report.json"],
-    "notes": "This repo's tool, from the venv used for VM testing."
+    "cmd": [
+      "{repo}/.venv/bin/ubuntils",
+      "scan",
+      "--json",
+      "--no-wazuh",
+      "--output",
+      "{out}/report.json"
+    ],
+    "notes": "This repo's tool, from the venv used for VM testing.",
+    "expect_output": [
+      "{out}/report.json"
+    ]
   },
   "uac": {
-    "cmd": ["{uac_dir}/uac", "-p", "ir_triage", "{out}"],
-    "notes": "Unix-like Artifacts Collector. Pass --set uac_dir=/path/to/uac (the unpacked release)."
+    "cmd": [
+      "{uac_dir}/uac",
+      "-p",
+      "ir_triage",
+      "{out}"
+    ],
+    "notes": "Unix-like Artifacts Collector. Pass --set uac_dir=/path/to/uac (the unpacked release).",
+    "expect_output": [
+      "{out}/uac-*"
+    ]
   },
   "chkrootkit": {
-    "cmd": ["chkrootkit"],
-    "notes": "apt install chkrootkit"
+    "cmd": [
+      "chkrootkit"
+    ],
+    "notes": "apt install chkrootkit",
+    "ok_returncodes": [
+      0,
+      1
+    ]
   },
   "rkhunter": {
-    "cmd": ["rkhunter", "--check", "--skip-keypress", "--nocolors"],
-    "extra_outputs": ["/var/log/rkhunter.log"],
-    "notes": "apt install rkhunter; run `rkhunter --propupd` once beforehand."
+    "cmd": [
+      "rkhunter",
+      "--check",
+      "--skip-keypress",
+      "--nocolors"
+    ],
+    "extra_outputs": [
+      "/var/log/rkhunter.log"
+    ],
+    "notes": "apt install rkhunter; run `rkhunter --propupd` once beforehand. Exits 1 when it has warnings.",
+    "ok_returncodes": [
+      0,
+      1
+    ]
   },
   "catscale": {
-    "cmd": ["bash", "{catscale_dir}/Cat-Scale.sh"],
-    "notes": "WithSecure Cat-Scale; writes its archive to the working directory. Pass --set catscale_dir=..."
+    "cmd": [
+      "bash",
+      "{catscale_dir}/Cat-Scale.sh"
+    ],
+    "notes": "WithSecure Cat-Scale; writes its archive to the working directory. Pass --set catscale_dir=...",
+    "expect_output": [
+      "{cwd}/catscale_*"
+    ]
   }
 }

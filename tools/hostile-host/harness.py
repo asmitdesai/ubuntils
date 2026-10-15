@@ -30,6 +30,7 @@ Standard library only; Python 3.9+.
 from __future__ import annotations
 
 import argparse
+import glob
 import gzip
 import json
 import os
@@ -575,10 +576,29 @@ def read_capped(path: Path, cap: int = 64 * 2**20) -> bytes:
 GOOD = {"PASS", "SEEN"}
 
 
-def judge(trap: Trap, run: RunResult, terminal: bytes, found: set, hijacked: List[str]) -> str:
+def run_problem(profile: dict, values: Dict[str, str], run: RunResult) -> str:
+    """Why this run can't be trusted to have done its job, or "" if it can.
+
+    A tool that died at startup "passes" every robustness trap and "misses"
+    every technique — so a run counts only if it exited with an expected code
+    and produced the output its profile says it always produces.
+    """
+    if run.outcome == "exited" and run.returncode not in profile.get("ok_returncodes", [0]):
+        return f"exit code {run.returncode}"
+    for pattern in profile.get("expect_output", []):
+        if not glob.glob(pattern.format(**values)):
+            return f"no {pattern.format(**values)}"
+    return ""
+
+
+def judge(trap: Trap, run: RunResult, terminal: bytes, found: set, hijacked: List[str],
+          broken: str = "") -> str:
     unfinished = "" if run.outcome == "exited" else f" (run ended: {run.outcome})"
     if run.outcome == "error":
         return "ERROR"
+    if broken and run.outcome == "exited" and trap.oracle in ("survive", "visible"):
+        # Exiting early isn't surviving, and no output isn't missing.
+        return f"BROKEN-RUN ({broken})"
     if trap.oracle == "survive":
         return {"exited": "PASS", "timeout": "HANG", "memory": "MEMORY", "disk": "DISK"}[run.outcome]
     if trap.oracle == "leak":
@@ -651,11 +671,12 @@ def run_group(tool: str, profile: dict, group: Group, run_dir: Path, values: Dic
                 src.seek(offset)
                 dst.write(src.read(64 * 2**20))
     terminal = read_capped(work / "stdout.txt") + read_capped(work / "stderr.txt")
+    broken = run_problem(profile, {**values, "out": str(out_dir), "cwd": str(cwd)}, run)
     found = scan_outputs([work], [t.marker.encode() for t in traps.values()]
                          + [b"\x1b]2;" + t.marker.encode() for t in traps.values()])
     rows = []
     for trap in traps.values():
-        verdict = judge(trap, run, terminal, found, hijacked)
+        verdict = judge(trap, run, terminal, found, hijacked, broken)
         rows.append({"tool": tool, "trap": trap.id, "group": group.name, "title": trap.title,
                      "verdict": verdict, "run": asdict(run)})
         log(f"  {trap.id:3} {verdict:28} {trap.title}"
@@ -706,7 +727,9 @@ def cmd_run(args) -> None:
     preflight(args)
     profiles = load_profiles(Path(args.profiles))
     values = {"repo": str(REPO), **dict(kv.split("=", 1) for kv in args.set)}
-    run_dir = Path(args.results) / time.strftime("%Y%m%d-%H%M%S")
+    # Absolute: each tool runs inside its own per-run cwd, so a relative
+    # {out} would point somewhere else and every run would silently fail.
+    run_dir = Path(args.results).resolve() / time.strftime("%Y%m%d-%H%M%S")
     run_dir.mkdir(parents=True)
     groups = [g for g in GROUPS if not args.group or g.name in args.group]
     rows: List[dict] = []
@@ -735,6 +758,13 @@ def cmd_run(args) -> None:
                         env={**os.environ, **profile.get("env", {})})
         baselines[tool] = asdict(base)
         log(f"  baseline: {base.outcome} rc={base.returncode} in {base.duration_s}s")
+        problem = run_problem(profile, {**values, "out": str(base_dir / "out"),
+                                        "cwd": str(base_dir / "cwd")}, base)
+        if base.outcome != "exited" or problem:
+            log(f"  ! baseline run failed ({problem or base.outcome}) — skipping {tool}; "
+                f"see {base_dir}/stderr.txt")
+            baselines[tool]["outcome"] = f"broken: {problem or base.outcome}"
+            continue
         for group in groups:
             log(f" [{group.category}/{group.name}]")
             rows += run_group(tool, profile, group, run_dir, values, args)
