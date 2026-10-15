@@ -39,3 +39,18 @@ def test_lab_resolves_binaries_by_path_not_builtin_name():
     # that broke `plant` on a real 26.04 host. Use `type -P` for files.
     script = open(LAB).read()
     assert not re.search(r'install[^\n]*\$\(command -v', script)
+
+
+def test_lab_never_makes_a_real_binary_setuid():
+    # A setuid-root copy of the uutils multi-call binary (Ubuntu 25.10+'s
+    # /usr/bin/true) would run as root under any name — a real backdoor.
+    script = open(LAB).read()
+    assert not re.search(r"install[^\n]*-m\s*[2467]\d{3}[^\n]*type -P", script)
+    assert "chmod 4755 \"/opt/$MARK/beacon\"" in script
+    assert "#!/bin/sh" in script
+
+
+def test_lab_decoys_are_not_multicall_binaries():
+    # Renamed uutils binaries (sleep, true, …) exit immediately: they dispatch
+    # on their own name. Seen live on 26.04.
+    assert '"$(type -P bash)" "$1"' in open(LAB).read()

@@ -22,8 +22,9 @@ that may already be compromised:
   ubuntils report as *necessary, not sufficient*.
 - **Time-based rules are evadable — less easily than before.**
   `SSH_UNAUTHORIZED_KEY` and `SHELL_RC_MODIFICATION` check both mtime and ctime.
-  `touch` can backdate mtime but not ctime, and a recent ctime behind an old
-  mtime is itself reported. An attacker with root can still reset ctime (by
+  `touch` can backdate mtime but not ctime, so a backdated file is still caught
+  by its ctime (copies made with preserved timestamps look the same, so this
+  is scored as weak evidence, not proof). An attacker with root can still reset ctime (by
   changing the system clock), so a quiet timestamp proves nothing. Content
   checks (dangerous key options, download-and-execute lines) don't depend on
   timestamps at all.

@@ -299,7 +299,7 @@ def test_D1_timestomped_authorized_keys_is_still_flagged():
     month_ago = _time.time() - 30 * 86400
     findings = rule_ssh_unauthorized_key({"authorized_keys": [_key(mtime=month_ago)]})
     assert len(findings) == 1
-    assert "mtime_backdated" in [s["name"] for s in findings[0].signals]
+    assert "mtime_predates_ctime" in [s["name"] for s in findings[0].signals]
 
 
 def test_D3_authorized_keys2_and_custom_AuthorizedKeysFile_are_read(tmp_path):
@@ -387,7 +387,9 @@ def test_D1_timestomped_rc_file_is_flagged():
     findings = rule_shell_rc_modification({"shell_init_files": [{
         "owner": "eve", "source": "/home/eve/.profile", "mtime": _time.time() - 30 * 86400,
         "ctime": _time.time(), "content": "alias ll='ls -l'\n"}]})
-    assert [s["name"] for s in findings[0].signals] == ["mtime_backdated"]
+    assert [s["name"] for s in findings[0].signals] == ["mtime_predates_ctime"]
+    # Weak on its own: useradd copying /etc/skel looks identical (seen live on 26.04).
+    assert findings[0].confidence == 60
 
 
 def test_D5_system_bashrc_and_zsh_files_are_collected(tmp_path):

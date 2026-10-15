@@ -4,8 +4,8 @@ Forensic triage for live Ubuntu systems — automated artifact collection, persi
 
 [![CI](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml/badge.svg)](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
-![Tests](https://img.shields.io/badge/tests-506%20passing-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-94.59%25-green)
+![Tests](https://img.shields.io/badge/tests-509%20passing-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-94.65%25-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Arch](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-lightgrey)
 ![Ubuntu](https://img.shields.io/badge/ubuntu-20.04%20%7C%2022.04%20%7C%2024.04%20%7C%2026.04-orange)
@@ -512,7 +512,7 @@ Raw value:     ExecStart=/tmp/.sys/update
 Remediation:   not available
 ```
 
-**SSH_UNAUTHORIZED_KEY** — A newly added SSH key grants persistent remote access independent of passwords. Keys are read from every file sshd would consult: `~/.ssh/authorized_keys`, the legacy `~/.ssh/authorized_keys2` (still honoured by default, and a classic hiding place — any key there is reported whatever its age), and every `AuthorizedKeysFile` in `sshd_config` and `sshd_config.d`, with `%h`/`%u` expanded. The 7-day window checks both mtime and ctime: `touch -d` can backdate mtime but not ctime, so a recent ctime behind an old mtime is reported as `mtime_backdated` rather than missed. File timestamps can't say *which* key in a file was added, so when a file holds several keys and none has a dangerous option, each is scored below the auto-remediation gate (`ambiguous_key`) — `--remediate --confirm` won't strip the admin's keys along with the attacker's. Remediation removes the exact line, options included.
+**SSH_UNAUTHORIZED_KEY** — A newly added SSH key grants persistent remote access independent of passwords. Keys are read from every file sshd would consult: `~/.ssh/authorized_keys`, the legacy `~/.ssh/authorized_keys2` (still honoured by default, and a classic hiding place — any key there is reported whatever its age), and every `AuthorizedKeysFile` in `sshd_config` and `sshd_config.d`, with `%h`/`%u` expanded. The 7-day window checks both mtime and ctime: `touch -d` can backdate mtime but not ctime, so a key whose mtime was pushed back is still reported. A recent ctime behind an old mtime adds only a weak `mtime_predates_ctime` signal (+10), since `useradd -m`, `cp -p`, `tar` and `rsync -a` produce the same pattern legitimately. File timestamps can't say *which* key in a file was added, so when a file holds several keys and none has a dangerous option, each is scored below the auto-remediation gate (`ambiguous_key`) — `--remediate --confirm` won't strip the admin's keys along with the attacker's. Remediation removes the exact line, options included.
 
 *Example finding:*
 ```
@@ -907,8 +907,8 @@ sudo tools/lab/seed-lab.sh clean      # removes everything it planted
 | `SHELL_RC_MODIFICATION`, `LD_PRELOAD_INJECT` | a `curl … \| bash` line and a `/tmp` `LD_PRELOAD` in the locked user's `.bashrc` |
 | `SUSPICIOUS_SYSTEMD_TIMER` | a unit running from `/tmp`, and a drop-in override that pipes `curl` into `bash` — neither enabled nor started |
 | `PAM_BACKDOOR` | `/etc/pam.d/ubuntils-lab` with `auth sufficient pam_permit.so`, a service no program uses |
-| `PROCESS_MASQUERADE` | two renamed `sleep` copies: `kworker` from `/dev/shm` (fake kernel thread, HIGH) and `sshd` from `/var/tmp` |
-| `SETUID_INVENTORY` | a setuid copy of `true` in `/opt/ubuntils-lab` |
+| `PROCESS_MASQUERADE` | two renamed copies of `bash` that only sleep: `kworker` from `/dev/shm` (fake kernel thread, HIGH) and `sshd` from `/var/tmp` |
+| `SETUID_INVENTORY` | `/opt/ubuntils-lab/beacon`, a setuid-bit shell script — Linux ignores setuid on scripts, so it grants nothing |
 | `IMMUTABLE_FLAG_SET` | the append-only flag on `/var/log/btmp` |
 | `PACKAGE_TAMPERED` | one comment line appended to `base-files`' `/usr/share/base-files/dot.bashrc` (restored on `clean`) |
 | `KERNEL_MODULE_SUSPICIOUS` | the harmless `dummy` network module |
@@ -993,7 +993,7 @@ VirusTotal hash lookups and MISP IOC export were dropped from this release. Viru
 - [x] Pre-conference security audit: no working-directory imports on the root re-exec, contained bundle reads, bounded reads of user-controlled files, markup-safe TUI
 - [x] New coverage: `authorized_keys2`/`AuthorizedKeysFile`, systemd drop-ins, `/etc/bash.bashrc` and zsh files, kernel-thread impersonation; mtime *or* ctime for timestamp rules
 - [x] `tools/lab/seed-lab.sh` demo lab that trips 14 of 16 rules with inert artifacts
-- [x] 506 tests at 94.59% coverage
+- [x] 509 tests at 94.65% coverage
 
 **v3.0.0 / v4.0.0 (exploratory)**
 - Web dashboard for multi-host triage
