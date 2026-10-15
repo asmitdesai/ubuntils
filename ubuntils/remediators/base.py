@@ -1,4 +1,5 @@
 import os
+import shlex
 import stat
 import tempfile
 from abc import ABC, abstractmethod
@@ -99,17 +100,25 @@ class BaseRemediator(ABC):
         dest_dir = os.path.join(self._backup_base, ts)
         os.makedirs(dest_dir, mode=0o700, exist_ok=True)
         safe_name = artifact.lstrip("/").replace("/", "_")
-        dest = os.path.join(dest_dir, safe_name)
 
         src_fd = os.open(artifact, os.O_RDONLY | os.O_NOFOLLOW)
         with os.fdopen(src_fd, "rb") as src:
             data = src.read()
         # O_EXCL: never overwrite or follow an existing/pre-staged destination.
         # 0o600: backups of shadow/sudoers must not become world-readable.
-        dst_fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(dst_fd, "wb") as dst:
-            dst.write(data)
-        return dest
+        # Two fixes to one file within a second (two bad lines in one crontab)
+        # get .1, .2… instead of failing on the second.
+        for attempt in range(100):
+            dest = os.path.join(dest_dir, safe_name if attempt == 0 else f"{safe_name}.{attempt}")
+            try:
+                dst_fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                 0o600)
+            except FileExistsError:
+                continue
+            with os.fdopen(dst_fd, "wb") as dst:
+                dst.write(data)
+            return dest
+        raise FileExistsError(f"too many backups of {artifact} in {dest_dir}")
 
     def backup(self, finding: Finding) -> str:
         """Create a timestamped backup. Returns the backup path."""
@@ -128,6 +137,25 @@ class BaseRemediator(ABC):
         """Verify the change was applied. Raises ValueError if verification fails."""
 
     def remediate(self, finding: Finding, dry_run: bool = True) -> RemediationResult:
+        if dry_run:
+            # A preview must not touch the disk — no backup of /etc/sudoers
+            # into /var/backups, and no rollback command for a change that
+            # was never made.
+            try:
+                self.validate(finding)
+                message = self.apply(finding, dry_run=True)
+            except Exception as e:
+                return RemediationResult(
+                    finding_rule_id=finding.rule_id,
+                    status=RemediationStatus.FAILED,
+                    message=str(e),
+                )
+            return RemediationResult(
+                finding_rule_id=finding.rule_id,
+                status=RemediationStatus.SUCCESS,
+                message=message,
+            )
+
         try:
             st = os.lstat(finding.artifact_path)
             if stat.S_ISLNK(st.st_mode):
@@ -148,7 +176,7 @@ class BaseRemediator(ABC):
                 message=str(e),
             )
 
-        rollback_command = f"cp {backup_path} {finding.artifact_path}"
+        rollback_command = f"cp {shlex.quote(backup_path)} {shlex.quote(finding.artifact_path)}"
 
         try:
             self.validate(finding)

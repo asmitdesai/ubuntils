@@ -1,7 +1,6 @@
 import datetime
 from unittest.mock import patch
 
-import pytest
 
 from ubuntils.collectors.source import BundleSource, LiveSource
 from ubuntils.timeline.builder import TimelineBuilder, TimelineEvent
@@ -217,3 +216,45 @@ def test_build_sorted_ascending():
     assert sorted_events[0].description == "earliest"
     assert sorted_events[1].description == "middle"
     assert sorted_events[2].description == "latest"
+
+
+def test_parse_syslog_keeps_program_name():
+    builder = TimelineBuilder()
+    events = builder._parse_syslog(SYSLOG_SNIPPET)
+    assert [e.program for e in events] == ["cron", "sshd", "sudo"]
+    rfc = builder._parse_syslog(
+        "2026-10-15T20:42:47.123456+00:00 host sudo[42]: root : COMMAND=/usr/bin/apt install pipx\n")
+    assert rfc[0].program == "sudo"
+    assert rfc[0].description.startswith("root : COMMAND")
+
+
+def test_parse_journald_keeps_program_name():
+    builder = TimelineBuilder()
+    with patch.object(LiveSource, "run") as mock_run:
+        mock_run.return_value = (JOURNALD_JSON_OUTPUT, "", 0)
+        events = builder._parse_journald(since_days=7)
+    assert [e.program for e in events] == ["systemd", "sudo"]
+
+
+def test_deduplicate_collapses_syslog_and_journald_copies():
+    # rsyslog forwards journald messages, so each one appears twice with
+    # timestamps that differ by microseconds.
+    builder = TimelineBuilder()
+    t = datetime.datetime(2026, 10, 15, 20, 35, 2, 331000, tzinfo=datetime.timezone.utc)
+    syslog = TimelineEvent(timestamp=t, source="syslog", description="Accepted publickey for alice")
+    journald = TimelineEvent(timestamp=t.replace(microsecond=331870), source="journald",
+                             description="Accepted publickey for alice")
+    assert len(builder._deduplicate([syslog, journald])) == 1
+
+
+def test_deduplicate_keeps_repeats_within_one_source():
+    # A burst of identical failures in the same second is evidence (brute
+    # force), not duplication — only cross-source copies collapse.
+    builder = TimelineBuilder()
+    t = datetime.datetime(2026, 10, 15, 20, 0, 0, tzinfo=datetime.timezone.utc)
+    burst = [TimelineEvent(timestamp=t.replace(microsecond=i * 1000), source="journald",
+                           description="authentication failure; user=root") for i in range(4)]
+    copies = [TimelineEvent(timestamp=t.replace(microsecond=i * 1000 + 7), source="syslog",
+                            description="authentication failure; user=root") for i in range(4)]
+    merged = builder._deduplicate(burst + copies)
+    assert len(merged) == 4

@@ -1,14 +1,14 @@
 # ubuntils
 
-Forensic triage for live Ubuntu systems — automated artifact collection, persistence detection, and guided remediation in under 5 seconds.
+Forensic triage for live Ubuntu systems — automated artifact collection, persistence detection, and guided remediation in about a minute.
 
 [![CI](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml/badge.svg)](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
-![Tests](https://img.shields.io/badge/tests-444%20passing-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-94.29%25-green)
+![Tests](https://img.shields.io/badge/tests-500%20passing-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-94.56%25-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Arch](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-lightgrey)
-![Ubuntu](https://img.shields.io/badge/ubuntu-20.04%20%7C%2022.04%20%7C%2024.04-orange)
+![Ubuntu](https://img.shields.io/badge/ubuntu-20.04%20%7C%2022.04%20%7C%2024.04%20%7C%2026.04-orange)
 ![Offline analysis](https://img.shields.io/badge/offline%20analysis-collect%20%2B%20analyze-blueviolet)
 ![Detection rules](https://img.shields.io/badge/detection%20rules-16-informational)
 ![SIEM](https://img.shields.io/badge/SIEM-Wazuh-yellow)
@@ -29,7 +29,7 @@ The gap is a tool that runs on the live system right now, covers the most common
 
 ubuntils runs in four sequential stages:
 
-1. **Collection** — Eleven collectors gather forensic artifacts concurrently from `/proc`, cron tables, systemd units, SSH keys, sudoers files, environment definitions, package integrity (`dpkg --verify`), PAM/NSS config, and loaded kernel modules. Takes roughly 2.5 seconds on a typical system.
+1. **Collection** — Eleven collectors gather forensic artifacts concurrently from `/proc`, cron tables, systemd units, SSH keys, sudoers files, environment definitions, package integrity (`dpkg --verify`), PAM/NSS config, and loaded kernel modules. Most collectors finish in a second or two; `dpkg --verify`, which re-checks every installed package file, dominates — a full scan took 29–68 seconds on an Ubuntu 26.04 arm64 desktop VM.
 2. **Detection** — A detection engine runs all sixteen built-in rules — plus any custom rules loaded with `--rules` — over the collected artifacts, producing a ranked, confidence-scored findings list in about one second.
 3. **Timeline** — A timeline builder reads syslog, journald, and auditd in parallel and correlates events chronologically, adding roughly 0.3 seconds. Each finding is then auto-correlated against the timeline, so it carries the nearby events that relate to it.
 4. **Output** — Results appear either in an interactive four-tab TUI (default) or as structured JSON on stdout (`--json`).
@@ -48,9 +48,19 @@ Ubuntu 22.04+ blocks system-wide `pip install`. Use `pipx` — it handles the en
 
 ```bash
 sudo apt install pipx -y
+pipx ensurepath            # then open a new shell
+git clone https://github.com/asmitdesai/ubuntils.git
 cd ubuntils
 pipx install -e .
-ubuntils scan
+ubuntils scan              # not `ubuntils scan` — see below
+```
+
+Run it as your normal user: `scan` and `collect` re-invoke themselves under `sudo`. Typing `ubuntils …` yourself fails with `command not found`, because sudo's `secure_path` doesn't include `~/.local/bin` where pipx puts the command. If you need to start it from a root shell, call the installed binary by path (`~youruser/.local/bin/ubuntils scan`), or install into a virtual environment instead:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e .
+.venv/bin/ubuntils scan
 ```
 
 **Older systems / manual install:**
@@ -71,25 +81,25 @@ ubuntils requires root for full artifact access. If you run `ubuntils scan` as a
 **Detection only — interactive TUI:**
 
 ```bash
-sudo ubuntils scan
+ubuntils scan
 ```
 
 **Detection with JSON output saved to file:**
 
 ```bash
-sudo ubuntils scan --json > /tmp/triage-$(hostname)-$(date +%Y%m%d).json
+ubuntils scan --json > /tmp/triage-$(hostname)-$(date +%Y%m%d).json
 ```
 
 **Detection with CLI remediation preview (dry run — no changes applied):**
 
 ```bash
-sudo ubuntils scan --remediate
+ubuntils scan --remediate
 ```
 
 **Detection with CLI remediation applied:**
 
 ```bash
-sudo ubuntils scan --remediate --confirm
+ubuntils scan --remediate --confirm
 ```
 
 **Print version:**
@@ -101,7 +111,7 @@ ubuntils version
 **Collect a tamper-evident bundle for later or offline analysis:**
 
 ```bash
-sudo ubuntils collect --output /path/to/bundle.tar.gz
+ubuntils collect --output /path/to/bundle.tar.gz
 ```
 
 **Analyze a previously collected bundle (no root required):**
@@ -168,7 +178,7 @@ allowlist:
 ```
 
 ```bash
-sudo ubuntils scan --json --config allowlist.yaml
+ubuntils scan --json --config allowlist.yaml
 ```
 
 Suppression is always explicit — by rule id and/or exact artifact path. There is no blanket "ignore everything" switch. A sample lives at [`examples/allowlist.yaml`](examples/allowlist.yaml).
@@ -187,7 +197,7 @@ baseline:
 ```
 
 ```bash
-sudo ubuntils scan --json --baseline baseline.yaml
+ubuntils scan --json --baseline baseline.yaml
 ```
 
 A baseline entry matches by `rule_id` plus a `fingerprint` tested as a substring of the finding's `raw_value` or an exact match against its `artifact_path`. A match drops the finding from the report entirely — suppression is never silent, though: the number of findings a baseline removed is always visible in `scan_metadata.suppressed_by_baseline`. Allowlist (`--config`) suppression still applies on top of baseline suppression. Works identically on `scan` and `analyze`. A sample lives at [`examples/baseline.yaml`](examples/baseline.yaml).
@@ -211,7 +221,7 @@ rules:
 ```
 
 ```bash
-sudo ubuntils scan --json --rules custom_rules.yaml
+ubuntils scan --json --rules custom_rules.yaml
 ```
 
 | `source` | Matched against |
@@ -226,7 +236,7 @@ sudo ubuntils scan --json --rules custom_rules.yaml
 
 ### Report integrity
 
-Every `--json` report carries a `report_sha256` field — a SHA-256 over the canonical report content. This makes a collected triage artifact tamper-evident and lets you reference a specific scan by digest in a case file. The report also records `tool_version`, `hostname`, and a UTC `generated_at` timestamp under `scan_metadata`. For `scan`, `hostname`/`ubuntu_version` describe the machine `ubuntils` is running on; for `analyze --root` they are read from the image's own `/etc/hostname` and `/etc/os-release`. For `analyze BUNDLE`, they instead come from the bundle's own manifest — the host that was *collected*, not the host running `analyze` — along with `collection_run_id` and the collection's `collected_at_utc_start`/`collected_at_utc_end`, so the report's chain-of-custody record follows the evidence rather than the analyst's workstation.
+Every `--json` report carries a `report_sha256` field — a SHA-256 over the canonical report content. It lets you reference a specific scan by digest in a case file and detects accidental corruption or a casual edit. It is an unkeyed hash, not a signature: someone who edits the report can recompute it, so for chain of custody record the digest somewhere the report's holder can't change (your case notes, a ticket) at the time of the scan. The report also records `tool_version`, `hostname`, and a UTC `generated_at` timestamp under `scan_metadata`. For `scan`, `hostname`/`ubuntu_version` describe the machine `ubuntils` is running on; for `analyze --root` they are read from the image's own `/etc/hostname` and `/etc/os-release`. For `analyze BUNDLE`, they instead come from the bundle's own manifest — the host that was *collected*, not the host running `analyze` — along with `collection_run_id` and the collection's `collected_at_utc_start`/`collected_at_utc_end`, so the report's chain-of-custody record follows the evidence rather than the analyst's workstation.
 
 **Verifying a report.** The report is emitted in canonical form (keys sorted, 2-space indent), and the digest covers everything except `report_sha256` itself:
 
@@ -246,7 +256,7 @@ assert hashlib.sha256(json.dumps(doc, indent=2, sort_keys=True).encode()).hexdig
 ### `ubuntils collect`
 
 ```bash
-sudo ubuntils collect --output /path/to/bundle.tar.gz
+ubuntils collect --output /path/to/bundle.tar.gz
 ```
 
 Requires root, like `scan`. Reads a fixed list of files (`/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/sudoers`, `/etc/ld.so.preload`, `/etc/environment`, `/etc/crontab`, `/etc/profile`, `/var/log/syslog`, `/var/log/messages`, `/var/log/audit/audit.log`) and runs a fixed list of commands (`ss -tunap`, `netstat -tunap`, `systemctl list-timers` in both JSON and text form, and `journalctl -o json` for the last 7 days), hashes each captured item, and writes everything plus a `manifest.json` into a `.tar.gz` bundle. The captured log files and journalctl output are what let `analyze BUNDLE` build a real timeline offline. If `--output` is omitted, the bundle is written to `./ubuntils-bundle-<UTC timestamp>.tar.gz` in the current directory.
@@ -306,7 +316,8 @@ bundle/
 `analyze`'s `scan_metadata.bundle_integrity` reports one of three values:
 
 - `"live"` — `scan` and `analyze --root` report this; there is no bundle to verify.
-- `"ok"` — `analyze BUNDLE` verified `bundle_sha256` against the manifest and every captured file's SHA-256 against its bundle content; nothing has been altered since `collect` wrote it.
+- `"ok"` — `analyze BUNDLE` verified `bundle_sha256` against the manifest and every captured file's SHA-256 against its bundle content. That rules out corruption and naive edits. The digests are unkeyed, though: someone who rewrites a file *and* the manifest can make a forged bundle verify, so record `sha256sum bundle.tar.gz` out-of-band when you collect it.
+- `analyze` also refuses a bundle whose manifest names a path outside the bundle, and never follows a path from the bundle's own files (its `/etc/passwd` home directories, its sudoers includes) out of the extraction directory — analysing a hostile host's bundle can't read the analyst's files.
 - `"mismatch"` — the manifest digest, a captured file's hash, or a captured command output's hash didn't match. Something in the bundle was modified, truncated, or corrupted after collection, and nothing derived from it should be trusted as chain-of-custody-clean. `analyze` still produces its report, but prints a red warning to stderr, shows an integrity banner at the top of the TUI Summary tab, and **exits with status 3**, so scripts can't mistake a tampered bundle's results for authoritative ones.
 
 ### ⚠️ Offline analysis has real detection gaps — read this before relying on it
@@ -318,13 +329,13 @@ bundle/
 - **`CRON_TMP_PATH`, `SUDOERS_NOPASSWD`, and `SSH_UNAUTHORIZED_KEY` are limited or absent from bundle-sourced analysis.** `collect`'s file list is static and cannot glob-expand `/etc/cron.d/*`, `/etc/sudoers.d/*`, `/etc/profile.d/*`, or per-user `~/.ssh/authorized_keys` — only `/etc/crontab`, `/etc/sudoers`, and `/etc/environment`/`/etc/profile` are captured. (`--root` against a full mounted filesystem tree does not have this gap, since the real directories are present on disk.) When `SSH_UNAUTHORIZED_KEY` or `SHELL_RC_MODIFICATION` *do* fire (live scan, or `--root` with the real per-user directories present), they now also score confidence from ctime and file content, not mtime alone — see [Confidence scoring](#json-output) below. That improves how much you should trust a finding that does fire; it doesn't change whether the rule fires offline in the first place.
 - **`SUSPICIOUS_SYSTEMD_TIMER` detection is weakened for bundles.** Service units are read straight from the unit directories (`/etc/systemd/system`, `/usr/lib/systemd/system`, per-user `~/.config/systemd/user`, …), so `--root` gets full service coverage. A bundle doesn't capture those directories, though: timers show up from the captured `systemctl list-timers` output, but each timer's `ExecStart` comes from a per-unit `systemctl show` call that `collect` doesn't make, so the rule can't evaluate what a bundled timer runs.
 
-**When it matters:** if you're triaging a live, reachable host, use `sudo ubuntils scan` — it has full detection coverage. Use `collect`/`analyze` when you need to acquire once and analyze elsewhere, need to analyze without root, or are working from a disk image where `scan` isn't an option at all — and treat a clean `analyze` result for the rules above as "not checked," not "checked and clean."
+**When it matters:** if you're triaging a live, reachable host, use `ubuntils scan` — it has full detection coverage. Use `collect`/`analyze` when you need to acquire once and analyze elsewhere, need to analyze without root, or are working from a disk image where `scan` isn't an option at all — and treat a clean `analyze` result for the rules above as "not checked," not "checked and clean."
 
 ---
 
 ## The TUI
 
-Running `sudo ubuntils scan` (without `--json`) launches a full-terminal interactive TUI.
+Running `ubuntils scan` (without `--json`) launches a full-terminal interactive TUI.
 
 ### Scan screen
 
@@ -426,7 +437,7 @@ Press `Esc` to collapse the detail pane.
 
 ### Timeline tab (key `3`)
 
-A scrollable chronological list of correlated log events. Each row shows timestamp, source, and description. Events are pulled from syslog, journald, and auditd and deduplicated.
+A scrollable chronological list of correlated log events. Each row shows timestamp, source, the logging program, and the message. Events are pulled from syslog, journald, and auditd and deduplicated — including the copy rsyslog makes of every journald message, which otherwise doubles a large share of the timeline. Identical messages repeated within a single source (a burst of failed logins) are kept.
 
 ### Stats tab (key `4`)
 
@@ -441,15 +452,15 @@ A summary view of the scan: detected Ubuntu version, architecture, scan duration
 | CRON_ROOT_EXEC | HIGH | Yes | Non-root user crontabs running commands in root-owned paths or inlining sudo |
 | CRON_TMP_PATH | HIGH | Yes* | Any cron job (including `@reboot`/`@daily` entries and scripts in `/etc/cron.{hourly,daily,weekly,monthly}`) referencing /tmp, /var/tmp, or /dev/shm. *Script lines are flag-only |
 | LD_PRELOAD_INJECT | HIGH | Yes | Any entry in /etc/ld.so.preload (empty on stock Ubuntu), or LD_PRELOAD in any shell init file with any listed library outside /lib, /usr/lib, /lib64, /usr/lib64 |
-| SUSPICIOUS_SYSTEMD_TIMER | HIGH | No | Systemd timers and service units whose ExecStart references a world-writable directory or runs a binary not owned by root |
-| SSH_UNAUTHORIZED_KEY | MEDIUM | Yes | authorized_keys files modified within the last 7 days |
+| SUSPICIOUS_SYSTEMD_TIMER | HIGH | No | Systemd timers, service units and drop-in overrides whose `Exec*=` references a world-writable directory, runs a binary not owned by root, pipes a download into a shell, or decodes base64 |
+| SSH_UNAUTHORIZED_KEY | MEDIUM | Yes | Keys in any file sshd reads (`authorized_keys`, `authorized_keys2`, every `AuthorizedKeysFile`) changed within 7 days by mtime *or* ctime, and any key in the legacy `authorized_keys2` |
 | USER_UID_ZERO | HIGH | No | Any account other than `root` with UID 0 (a hidden second superuser) |
 | USER_EMPTY_PASSWORD | HIGH | No | A login-shell account whose /etc/shadow password field is empty (Ubuntu's default PAM `nullok` lets it log in with no password) |
 | SUDOERS_NOPASSWD | MEDIUM | Yes* | NOPASSWD sudoers grants for users with UID ≥ 1000 and a login shell, directly or via a `%group` rule; included files are followed. *Group rules are flag-only (removing `%sudo` could remove all sudo access) |
-| PROCESS_MASQUERADE | MEDIUM | No | Processes whose name matches a known system binary but whose executable is outside the standard system directories (/usr/bin, /usr/sbin, /bin, /sbin, /usr/local/{bin,sbin}, /usr/lib, /usr/libexec, /lib, /snap) |
+| PROCESS_MASQUERADE | HIGH / MEDIUM | No | HIGH: a userspace process named like a kernel thread (`[kworker/0:1]`). MEDIUM: processes whose name matches a known system binary but whose executable is outside the standard system directories (/usr/bin, /usr/sbin, /bin, /sbin, /usr/local/{bin,sbin}, /usr/lib, /usr/libexec, /lib, /snap) |
 | PROCESS_SUSPICIOUS_CONNECTION | HIGH / MEDIUM | No | Processes holding a non-loopback connection whose executable is in a world-writable temp dir or deleted from disk (HIGH), or is outside the standard system directories, or that make an outbound connection to a non-standard remote port (MEDIUM). Inbound connections (on a listening port) skip the port check |
-| SHELL_RC_MODIFICATION | LOW | No | Shell init files (bashrc, profile, zshrc, etc.) modified within the last 48 hours for any user with a login shell |
-| PACKAGE_TAMPERED | HIGH / MEDIUM | No | Package-owned files modified, missing, or whose content/mode/size mismatches the package manifest (via `dpkg --verify`), one finding per package; MEDIUM when every changed file is under `/var` |
+| SHELL_RC_MODIFICATION | LOW / MEDIUM | No | System and per-user shell init files (`/etc/bash.bashrc`, `/etc/profile.d/*`, `~/.bashrc`, `~/.zshenv`, …) changed within 48 hours by mtime or ctime (LOW), or containing a download-and-execute, base64-decode or writable-tmp `PATH` line at any age (MEDIUM) |
+| PACKAGE_TAMPERED | HIGH / MEDIUM / LOW | No | Package-owned files modified, missing, or whose content/mode/size mismatches the package manifest (via `dpkg --verify`), one finding per package; MEDIUM when every changed file is under `/var`, LOW when only directories are missing |
 | IMMUTABLE_FLAG_SET | MEDIUM | No | Immutable (`i`) or append-only (`a`) flags set on sensitive files like /etc/passwd, /etc/sudoers, or /etc/pam.d/* (detected via `lsattr`) |
 | PAM_BACKDOOR | HIGH | No | A `pam_permit.so` line in an /etc/pam.d/* auth/account stack that can grant access on its own (`sufficient`/`success=done`, or no `pam_deny`-style gate in that stack), or an NSS module in /etc/nsswitch.conf outside an allowlist (files/sss/ldap/winbind/...) |
 | KERNEL_MODULE_SUSPICIOUS | LOW | No | Loaded kernel modules outside an allowlist of common built-in modules — note: hardware-heavy hosts (GPUs, Wi-Fi cards, proprietary drivers) will see false positives; add expected modules via `--config` |
@@ -490,7 +501,7 @@ Raw value:     export LD_PRELOAD=/tmp/.libssl.so
 Remediation:   available
 ```
 
-**SUSPICIOUS_SYSTEMD_TIMER** — Systemd timers are more persistent and less visible than cron jobs to most responders. A timer — or a plain `.service` unit, which is the more common persistence and needs no timer at all — whose ExecStart references a temp directory or runs a binary not owned by root is a sign of attacker-created persistence. Service units are read directly from the unit directories, including per-user `~/.config/systemd/user`. Flag-only — systemd unit removal requires human judgment.
+**SUSPICIOUS_SYSTEMD_TIMER** — Systemd timers are more persistent and less visible than cron jobs to most responders. A timer — or a plain `.service` unit, which is the more common persistence and needs no timer at all — whose ExecStart references a temp directory, runs a binary not owned by root, pipes `curl`/`wget` into a shell, or decodes base64 is a sign of attacker-created persistence. Service units are read directly from the unit directories, including per-user `~/.config/systemd/user`, and so are **drop-in overrides** (`<unit>.service.d/*.conf`): an override can swap a legitimate service's command for a backdoor while the unit file itself stays pristine. Flag-only — systemd unit removal requires human judgment.
 
 *Example finding:*
 ```
@@ -501,7 +512,7 @@ Raw value:     ExecStart=/tmp/.sys/update
 Remediation:   not available
 ```
 
-**SSH_UNAUTHORIZED_KEY** — A newly added SSH key grants persistent remote access independent of passwords. The 7-day window catches recent additions while avoiding noise from initial provisioning on older systems. Note: the rule uses file mtime, which reflects the last write to the authorized_keys file, not the insertion timestamp of each individual key.
+**SSH_UNAUTHORIZED_KEY** — A newly added SSH key grants persistent remote access independent of passwords. Keys are read from every file sshd would consult: `~/.ssh/authorized_keys`, the legacy `~/.ssh/authorized_keys2` (still honoured by default, and a classic hiding place — any key there is reported whatever its age), and every `AuthorizedKeysFile` in `sshd_config` and `sshd_config.d`, with `%h`/`%u` expanded. The 7-day window checks both mtime and ctime: `touch -d` can backdate mtime but not ctime, so a recent ctime behind an old mtime is reported as `mtime_backdated` rather than missed. File timestamps can't say *which* key in a file was added, so when a file holds several keys and none has a dangerous option, each is scored below the auto-remediation gate (`ambiguous_key`) — `--remediate --confirm` won't strip the admin's keys along with the attacker's. Remediation removes the exact line, options included.
 
 *Example finding:*
 ```
@@ -523,7 +534,7 @@ Raw value:     alice ALL=(ALL) NOPASSWD: ALL
 Remediation:   available
 ```
 
-**PROCESS_MASQUERADE** — Naming a malicious binary after a known system process (sshd, python3, bash) is a basic technique to avoid detection in `ps` output. This rule cross-references the process name from `/proc/<pid>/status` against the resolved exe path from `/proc/<pid>/exe`. Standard locations include `/usr/local/{bin,sbin}`, `/usr/lib`, `/usr/libexec`, and `/snap`, so systemd (`/usr/lib/systemd/systemd`) and snap packages don't trip it. Flag-only — killing a process requires human judgment.
+**PROCESS_MASQUERADE** — Naming a malicious binary after a known system process (sshd, python3, bash) is a basic technique to avoid detection in `ps` output. This rule cross-references the process name from `/proc/<pid>/status` against the resolved exe path from `/proc/<pid>/exe`. Standard locations include `/usr/local/{bin,sbin}`, `/usr/lib`, `/usr/libexec`, and `/snap`, so systemd (`/usr/lib/systemd/systemd`) and snap packages don't trip it. It also catches the most common Linux masquerade: an implant that names itself after a kernel thread (`kworker/0:1`, or a bracketed `[kworker/0:1]` command line). Real kernel threads have no executable, so a kernel-thread name backed by a file on disk is reported HIGH. Flag-only — killing a process requires human judgment.
 
 *Example finding:*
 ```
@@ -567,7 +578,7 @@ Raw value:     203.0.113.9:4444
 Remediation:   not available
 ```
 
-**SHELL_RC_MODIFICATION** — Shell init files are a reliable persistence vector because they execute on every user login. This rule surfaces recent modifications for human review. Flag-only — shell RC content requires reading before acting on it.
+**SHELL_RC_MODIFICATION** — Shell init files are a reliable persistence vector because they execute on every login or interactive shell. The rule reads the system-wide files (`/etc/profile`, `/etc/profile.d/*.sh`, `/etc/bash.bashrc`, `/etc/zsh/*`) and each login user's `.bashrc`, `.bash_profile`, `.bash_login`, `.profile`, `.zshenv`, `.zprofile`, `.zshrc` and `.zlogin`. Recent changes (mtime or ctime within 48 hours) are LOW; a download-and-execute, base64-decode or writable-tmp `PATH` line is MEDIUM however old the file is. Flag-only — shell RC content requires reading before acting on it.
 
 *Example finding:*
 ```
@@ -578,7 +589,7 @@ Raw value:     mtime=2024-01-15 14:22:01 (6 hours ago)
 Remediation:   not available
 ```
 
-**PACKAGE_TAMPERED** — System-owned binaries and configuration files are the foundation of trust. This rule detects when package-owned files have been modified, deleted, or have content/mode/size mismatches using `dpkg --verify`. Conffile-only edits (expected local configuration changes) are excluded from reporting to avoid noise. Changed files are grouped into **one finding per owning package** (looked up with `dpkg-query -S`), listing up to 20 of the files; the artifact is the package name, so a known-noisy package can be allowlisted by name with `--config`. A package whose changed files are all under `/var` is reported as MEDIUM with lower confidence, because packages such as a Wazuh manager keep runtime data there that `dpkg` still lists in their manifest — a single Wazuh host otherwise produced 1,100+ HIGH findings. If ownership can't be determined (an older bundle, or the lookup failed) the rule falls back to one finding per file and the scan notes the degraded lookup. Flag-only — tampering may be legitimate (custom local edits) or malicious (file replacement); deciding requires human judgment.
+**PACKAGE_TAMPERED** — System-owned binaries and configuration files are the foundation of trust. This rule detects when package-owned files have been modified, deleted, or have content/mode/size mismatches using `dpkg --verify`. Conffile-only edits (expected local configuration changes) are excluded from reporting to avoid noise. Changed files are grouped into **one finding per owning package** (looked up with `dpkg-query -S`), listing up to 20 of the files; the artifact is the package name, so a known-noisy package can be allowlisted by name with `--config`. A package whose changed files are all under `/var` is reported as MEDIUM with lower confidence, because packages such as a Wazuh manager keep runtime data there that `dpkg` still lists in their manifest — a single Wazuh host otherwise produced 1,100+ HIGH findings. A missing path that isn't in the package's `/var/lib/dpkg/info/<pkg>.md5sums` (which lists only regular files) is a directory or symlink: it gets a weak `missing_directory` signal instead of `missing_file`, and a package whose only problem is missing directories is reported as LOW — an empty directory going away is housekeeping, not tampering. Missing conffiles are still treated as files. Bundles don't capture `.md5sums`, so offline every missing path counts as a file. If ownership can't be determined (an older bundle, or the lookup failed) the rule falls back to one finding per file and the scan notes the degraded lookup. Flag-only — tampering may be legitimate (custom local edits) or malicious (file replacement); deciding requires human judgment.
 
 *Example finding:*
 ```
@@ -650,7 +661,7 @@ Remediation:   not available
 ```json
 {
   "scan_metadata": {
-    "tool_version": "2.1.0",
+    "tool_version": "2.2.0",
     "hostname": "web-01",
     "generated_at": "2026-06-10T08:22:03.114523+00:00",
     "ubuntu_version": "Ubuntu 22.04.3 LTS",
@@ -688,13 +699,14 @@ Remediation:   not available
         {
           "timestamp": "2024-01-15T08:20:00+00:00",
           "source": "syslog",
-          "description": "CRON[2841]: (root) CMD (/tmp/.update)"
+          "program": "CRON",
+          "description": "(root) CMD (/tmp/.update)"
         }
       ],
       "confidence": 75,
       "confidence_band": "HIGH",
       "signals": [
-        {"name": "timeline_corroboration", "weight": 25, "detail": "1 nearby timeline event(s)"}
+        {"name": "timeline_corroboration", "weight": 25, "detail": "1 timeline event(s) name this artifact alongside related activity"}
       ]
     },
     {
@@ -715,23 +727,24 @@ Remediation:   not available
     {
       "timestamp": "2024-01-15T08:22:01+00:00",
       "source": "syslog",
-      "description": "sshd: Accepted publickey for alice from 10.0.0.42 port 52341"
+      "program": "sshd",
+      "description": "Accepted publickey for alice from 10.0.0.42 port 52341"
     }
   ],
   "report_sha256": "a3f1c9…(64 hex chars)"
 }
 ```
 
-`remediation_results` appears as an additional top-level key only when `--remediate` is passed. `report_sha256` is always present and is computed over the rest of the document. `scan_metadata.bundle_integrity` is `"live"` for `scan` and `analyze --root`, `"ok"` for a verified bundle passed to `analyze`, and `"mismatch"` if a bundle's content doesn't match its manifest — see [Bundle integrity in JSON output](#bundle-integrity-in-json-output). `scan_metadata.command_collectors_skipped` names any command-based collectors (`NetworkCollector`, `SystemdCollector`, `PackageCollector`, `KernelCollector`) skipped for a `--root` run — always empty for `scan` and `analyze BUNDLE`. `scan_metadata.suppressed_by_baseline` is the count of findings a `--baseline` file removed from this report — see [Known-good baselining](#known-good-baselining---baseline). `scan_metadata.collectors_degraded` maps a collector name to the reasons its data is incomplete (a command that failed or timed out, an unreadable file, a skipped malformed line), `rules_failed` lists any detection rule that crashed, and `timeline_error` is set if the timeline couldn't be built. All three are empty on a healthy run. Check them before reading an empty findings list as "clean".
+`remediation_results` appears as an additional top-level key only when `--remediate` is passed. `report_sha256` is always present and is computed over the rest of the document. `scan_metadata.bundle_integrity` is `"live"` for `scan` and `analyze --root`, `"ok"` for a verified bundle passed to `analyze`, and `"mismatch"` if a bundle's content doesn't match its manifest — see [Bundle integrity in JSON output](#bundle-integrity-in-json-output). `scan_metadata.command_collectors_skipped` names any command-based collectors (`NetworkCollector`, `SystemdCollector`, `PackageCollector`, `KernelCollector`) skipped for a `--root` run — always empty for `scan` and `analyze BUNDLE`. `scan_metadata.suppressed_by_baseline` is the count of findings a `--baseline` file removed from this report — see [Known-good baselining](#known-good-baselining---baseline) — and `suppressed_by_allowlist` the count a `--config` allowlist removed, so a report always shows that findings were hidden. `scan_metadata.collectors_degraded` maps a collector name to the reasons its data is incomplete (a command that failed or timed out, an unreadable file, a skipped malformed line), `rules_failed` lists any detection rule that crashed, and `timeline_error` is set if the timeline couldn't be built. All three are empty on a healthy run. Check them before reading an empty findings list as "clean".
 
-`related_events` and `guided_remediation` appear on a finding only when they have content. `related_events` holds up to five timeline events matched to the finding by artifact path and rule keywords, most recent first — a surfacing aid, not a causal claim. `guided_remediation` is a reviewed command sequence for you to run by hand; ubuntils never executes it.
+`related_events` and `guided_remediation` appear on a finding only when they have content. `related_events` holds up to five timeline events matched to the finding, most recent first — a surfacing aid, not a causal claim. Matching is on whole words against each event's program and message: identifying tokens from the finding (a path basename, a `/home/<user>` name, a package, module or account name) and a few per-rule activity keywords (`sshd`, `cron`, `dpkg`, …). Events that name the artifact *and* show that activity come first. Findings with no identifying token (the `PROCESS_*` rules, whose artifact is `/proc/<pid>/exe`) get keyword matches only, as context. Every timeline event carries a `program` field (the syslog tag or journald `SYSLOG_IDENTIFIER`, empty for auditd). `guided_remediation` is a reviewed command sequence for you to run by hand; ubuntils never executes it.
 
 ### Confidence scoring
 
 Every finding carries a `confidence` score (0–100, default 50) and a `confidence_band` (`HIGH` ≥ 75, `MEDIUM` ≥ 40, `LOW` below that), plus a `signals` list showing exactly how that score was reached — each entry is `{"name", "weight", "detail"}`, so the score is always explainable, never a black box. Signals are additive on top of a base confidence of 50 and are applied by whichever rule or pipeline stage produced them:
 
 - Detection rules apply their own signals at finding time — e.g. `SSH_UNAUTHORIZED_KEY` and `SHELL_RC_MODIFICATION` add `content_match` (+30) when the artifact's content matches a known-dangerous pattern (a dangerous SSH key option; a curl/wget-to-shell or base64-decode line in a shell RC file), `ctime_corroborates_mtime` (+20) when the file's ctime is also inside the detection window (harder to forge than mtime alone), or `mtime_only` (−20) when recency is the *only* signal and ctime doesn't corroborate it — a cue the mtime may have been backdated.
-- The pipeline applies `timeline_corroboration` (+25) after finding↔timeline correlation, when a finding has one or more `related_events`.
+- Correlation applies `timeline_corroboration` (+25) only when at least one event names the finding's artifact alongside the rule's kind of activity — e.g. `useradd` logging the UID-0 account by name, or `dpkg` touching the tampered package. Keyword-only context events are never scored: on a busy host, words like `exec` or `connect` match thousands of unrelated lines, and an earlier version gave every finding this bonus.
 
 A `LOW`-band finding is not dismissed or hidden — it still appears in the findings list and JSON output exactly like any other — but the band tells you how much weight to put on it before investigating further. This replaces the old mtime-only heuristic for `SSH_UNAUTHORIZED_KEY`/`SHELL_RC_MODIFICATION`, where a stale but legitimately-touched file (e.g. a config management tool rewriting `.bashrc` on every run) looked identical to a genuinely new backdoor.
 
@@ -753,14 +766,14 @@ Select any finding with a remediation in the Findings tab, then press `R`. A con
 
 ### From the CLI
 
-`--remediate` without `--confirm` is a safe dry run: backups are created and validation runs, but no changes are applied. Pass both flags to actually make changes. The pipeline runs before the TUI launches in this mode, and the Summary tab lists every remediation outcome with its backup path and rollback command.
+`--remediate` without `--confirm` is a safe dry run: validation runs and each result says what would change, but nothing is written — no change and no backup. Pass both flags to actually make changes. The pipeline runs before the TUI launches in this mode, and the Summary tab lists every remediation outcome with its backup path and rollback command.
 
 `--remediate --confirm` only acts on findings with a confidence score of at least 40 (the MEDIUM band) — a low-confidence, mtime-only `SSH_UNAUTHORIZED_KEY` is reported as `SKIPPED` rather than having its key deleted. Adjust the gate with `--min-confidence N`.
 
 ```bash
-sudo ubuntils scan --remediate          # dry run
-sudo ubuntils scan --remediate --confirm # apply changes, then open TUI
-sudo ubuntils scan --remediate --confirm --min-confidence 75  # only HIGH-confidence findings
+ubuntils scan --remediate          # dry run
+ubuntils scan --remediate --confirm # apply changes, then open TUI
+ubuntils scan --remediate --confirm --min-confidence 75  # only HIGH-confidence findings
 ```
 
 ### Safeguards
@@ -842,7 +855,9 @@ non-production environment before relying on them.
 | `artifact_path` | string | File/resource path where the issue was found |
 | `raw_value` | string | The raw line/value that triggered the rule |
 | `remediation_available` | bool | Whether ubuntils has a remediator for this rule |
-| `related_events` | array (optional) | Correlated timeline events, if any |
+| `confidence` | int (0–100) | Confidence score — see [Confidence scoring](#confidence-scoring) |
+| `confidence_band` | string | `HIGH` \| `MEDIUM` \| `LOW`; rule 100104 in the example escalates HIGH-severity findings with a HIGH band |
+| `related_events` | array (optional) | Correlated timeline events (`timestamp`, `source`, `program`, `description`), if any |
 
 ---
 
@@ -854,10 +869,10 @@ non-production environment before relying on them.
 | NetworkCollector | Open connections and listeners from `ss`/`netstat` |
 | UserCollector | `/etc/passwd`, `/etc/shadow`, `/etc/group` |
 | CronCollector | `/etc/cron*` directories and `/var/spool/cron/crontabs/*` |
-| SystemdCollector | `systemctl list-timers` and `list-units` output |
-| SSHCollector | `~/.ssh/authorized_keys` for all users |
+| SystemdCollector | `systemctl list-timers` output, plus `.service` unit files and drop-in overrides read from the unit directories |
+| SSHCollector | `authorized_keys`, `authorized_keys2` and every `AuthorizedKeysFile` from `sshd_config`, for all users |
 | SudoersCollector | `/etc/sudoers` and all files under `/etc/sudoers.d/` |
-| EnvironmentCollector | `/etc/environment`, `/etc/profile.d/*`, user shell init files |
+| EnvironmentCollector | `/etc/ld.so.preload`, `/etc/environment`, system shell init files (`/etc/profile`, `/etc/profile.d/*`, `/etc/bash.bashrc`, `/etc/zsh/*`), and user shell init files |
 | PackageCollector | System package integrity via `dpkg --verify` (attributed to packages via `dpkg-query -S`), immutable flag attributes via `lsattr`, and setuid/setgid binaries via `find` |
 | PamCollector | `/etc/pam.d/*` files and `/etc/nsswitch.conf` |
 | KernelCollector | Loaded kernel modules via `lsmod` |
@@ -938,6 +953,14 @@ VirusTotal hash lookups and MISP IOC export were dropped from this release. Viru
 - [x] Honest reports: failed rules and degraded collectors recorded in `scan_metadata` and the TUI; a timeline failure no longer discards findings; tampered bundles warn and exit 3; syslog year/timezone handled correctly
 - [x] Safer remediation: `--min-confidence` gate (default 40), results shown in the TUI after `scan --remediate`
 - [x] 444 tests at 94.29% coverage
+
+**v2.2.0 — validated on Ubuntu 26.04 LTS (arm64)** — see [CHANGELOG.md](CHANGELOG.md)
+- [x] False positives from a live 26.04 scan fixed: stock PAM stacks, inbound SSH sessions, sudo-rs, arm64/virtio kernel modules — 1,243 findings on a clean VM down to 13
+- [x] `PACKAGE_TAMPERED` grouped per package, with `/var`-only and missing-directory downgrades
+- [x] Confidence scoring: timeline corroboration only for events that name the artifact; whole-word, program-aware correlation; syslog/journald duplicates collapsed
+- [x] Pre-conference security audit: no working-directory imports on the root re-exec, contained bundle reads, bounded reads of user-controlled files, markup-safe TUI
+- [x] New coverage: `authorized_keys2`/`AuthorizedKeysFile`, systemd drop-ins, `/etc/bash.bashrc` and zsh files, kernel-thread impersonation; mtime *or* ctime for timestamp rules
+- [x] 500 tests at 94.56% coverage
 
 **v3.0.0 / v4.0.0 (exploratory)**
 - Web dashboard for multi-host triage

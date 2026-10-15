@@ -13,14 +13,16 @@ from ubuntils.collectors.source import ArtifactSource, LiveSource
 logger = structlog.get_logger()
 
 _SYSLOG_RE = re.compile(
-    r"^(\w{3}\s+\d+\s+\d{2}:\d{2}:\d{2})\s+\S+\s+\S+:\s+(.+)$"
+    r"^(\w{3}\s+\d+\s+\d{2}:\d{2}:\d{2})\s+\S+\s+(\S+?):\s+(.+)$"
 )
 # rsyslog's high-precision (RFC 3339) format, the default on newer Ubuntu:
 # "2026-09-23T10:00:00.123456+01:00 host prog[1]: message"
 _SYSLOG_RFC3339_RE = re.compile(
     r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))"
-    r"\s+\S+\s+\S+:\s+(.+)$"
+    r"\s+\S+\s+(\S+?):\s+(.+)$"
 )
+# "sshd[5678]" -> "sshd"
+_PID_SUFFIX_RE = re.compile(r"\[\d+\]$")
 _AUDITD_RE = re.compile(r"^type=(\S+) msg=audit\((\d+\.\d+):\d+\): (.+)$")
 
 
@@ -29,6 +31,9 @@ class TimelineEvent:
     timestamp: datetime.datetime
     source: str
     description: str
+    # The logging program (syslog tag / journald SYSLOG_IDENTIFIER), e.g. "sshd".
+    # Kept apart from the message so the correlator can match on it.
+    program: str = ""
 
 
 class TimelineBuilder:
@@ -102,12 +107,13 @@ class TimelineBuilder:
                     logger.warning("syslog_parse_failed", line=line)
                     continue
                 events.append(TimelineEvent(timestamp=ts.astimezone(datetime.timezone.utc),
-                                            source="syslog", description=m.group(2).strip()))
+                                            source="syslog", description=m.group(3).strip(),
+                                            program=_PID_SUFFIX_RE.sub("", m.group(2))))
                 continue
             m = _SYSLOG_RE.match(line)
             if not m:
                 continue
-            raw_ts, description = m.group(1), m.group(2).strip()
+            raw_ts, program, description = m.group(1), m.group(2), m.group(3).strip()
             try:
                 naive = dateutil_parser.parse(f"{raw_ts} {reference.year}")
                 ts = naive.replace(tzinfo=tz)
@@ -117,7 +123,8 @@ class TimelineBuilder:
             except Exception:
                 logger.warning("syslog_parse_failed", line=line)
                 continue
-            events.append(TimelineEvent(timestamp=ts, source="syslog", description=description))
+            events.append(TimelineEvent(timestamp=ts, source="syslog", description=description,
+                                        program=_PID_SUFFIX_RE.sub("", program)))
         return events
 
     def _parse_journald(self, since_days: int) -> list[TimelineEvent]:
@@ -139,7 +146,9 @@ class TimelineBuilder:
                     micros / 1_000_000, tz=datetime.timezone.utc
                 )
                 description = str(record.get("MESSAGE", ""))
-                events.append(TimelineEvent(timestamp=ts, source="journald", description=description))
+                program = str(record.get("SYSLOG_IDENTIFIER") or record.get("_COMM") or "")
+                events.append(TimelineEvent(timestamp=ts, source="journald",
+                                            description=description, program=program))
             except Exception:
                 logger.warning("journald_parse_failed", line=line)
         return events
@@ -171,4 +180,21 @@ class TimelineBuilder:
             if key not in seen:
                 seen.add(key)
                 unique.append(e)
-        return unique
+        return self._collapse_cross_source(unique)
+
+    @staticmethod
+    def _collapse_cross_source(events: list[TimelineEvent]) -> list[TimelineEvent]:
+        """rsyslog forwards journald messages, so one event lands in both sources
+        with timestamps a few microseconds apart (25% of a real 26.04 timeline).
+        For each (second, message) keep only the source that logged it most —
+        repeats within a single source (a brute-force burst) are evidence and stay.
+        """
+        counts: dict = {}
+        for e in events:
+            key = (e.timestamp.replace(microsecond=0), e.description)
+            per_source = counts.setdefault(key, {})
+            per_source[e.source] = per_source.get(e.source, 0) + 1
+        # max() keeps the first source on a tie; dicts preserve insertion order.
+        keep = {key: max(per_source, key=per_source.get) for key, per_source in counts.items()}
+        return [e for e in events
+                if keep[(e.timestamp.replace(microsecond=0), e.description)] == e.source]

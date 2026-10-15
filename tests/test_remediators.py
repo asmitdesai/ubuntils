@@ -7,10 +7,8 @@ dry_run=False tests verify the targeted entry is removed/commented out.
 """
 import os
 import stat
-import textwrap
 from unittest.mock import patch
 
-import pytest
 
 from ubuntils.detectors.finding import Finding, RemediationStatus, Severity
 from ubuntils.remediators.cron import CronRemediator
@@ -444,8 +442,8 @@ class TestSecurityHardenings:
         mode = stat.S_IMODE(os.stat(backup_dir).st_mode)
         assert mode == 0o700
 
-    def test_backup_collision_raises_if_dest_exists(self, tmp_path):
-        """backup() must raise FileExistsError rather than silently overwrite."""
+    def test_backup_never_overwrites_an_existing_backup(self, tmp_path):
+        """A second backup to an occupied name gets a suffix — never an overwrite."""
         artifact = tmp_path / "authorized_keys"
         artifact.write_text("ssh-rsa AAAA...\n")
 
@@ -456,19 +454,19 @@ class TestSecurityHardenings:
         remediator.backup(finding)
 
         # Pre-create the destination that a second backup would target
-        import glob
         backup_dirs = list((backup_base).iterdir())
         dest_dir = backup_dirs[0]
         safe_name = str(artifact).lstrip("/").replace("/", "_")
         dest = dest_dir / safe_name
         assert dest.exists()
 
-        # Second backup to the same dest_dir should fail
+        # A second backup in the same second must leave the first untouched
         dest.unlink()
         dest.write_text("already here")
         remediator2 = SSHRemediator(backup_base=str(backup_base))
-        with pytest.raises(FileExistsError):
-            remediator2.backup(finding)
+        second = remediator2.backup(finding)
+        assert dest.read_text() == "already here"
+        assert second != str(dest) and open(second).read() == "ssh-rsa AAAA...\n"
 
 
 # ---------------------------------------------------------------------------

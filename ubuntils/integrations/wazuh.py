@@ -30,6 +30,7 @@ def _event_to_dict(event) -> dict:
     return {
         "timestamp": ts.isoformat(),
         "source": event.source,
+        "program": getattr(event, "program", ""),
         "description": event.description,
     }
 
@@ -45,6 +46,9 @@ def _finding_to_dict(finding: Finding, hostname: str) -> dict:
         "artifact_path": finding.artifact_path,
         "raw_value": finding.raw_value,
         "remediation_available": finding.remediation_available,
+        # Lets a Wazuh rule alert on HIGH-confidence findings only.
+        "confidence": finding.confidence,
+        "confidence_band": finding.confidence_band,
     }
     if finding.related_events:
         d["related_events"] = [_event_to_dict(e) for e in finding.related_events]

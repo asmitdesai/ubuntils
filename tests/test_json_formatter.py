@@ -1,6 +1,5 @@
 import datetime
 import json
-import re
 
 from ubuntils.detectors.finding import Finding, RemediationResult, RemediationStatus, Severity
 from ubuntils.formatters.json_formatter import JSONFormatter

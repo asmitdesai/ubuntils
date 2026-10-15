@@ -26,7 +26,7 @@ class TimelinePanel(Widget):
                 Label(
                     Text(
                         f"{e.timestamp.strftime('%m-%d %H:%M:%S')}  "
-                        f"{e.source:<12}  {e.description}"
+                        f"{e.source:<12}  {e.program + ': ' if e.program else ''}{e.description}"
                     )
                 )
             )

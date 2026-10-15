@@ -1,14 +1,15 @@
 import io
 import json
+import os
 from unittest import mock
 
-import pytest
+from ubuntils.collectors.source import LiveSource
+
 
 
 # ─── ProcessCollector ─────────────────────────────────────────────────────────
 
 def _open_proc(path, *args, **kwargs):
-    mode = args[0] if args else kwargs.get("mode", "r")
     if path == "/proc/123/status":
         return io.StringIO("Name:\tpython3\nUid:\t1000\t1000\t1000\t1000\n")
     if path == "/proc/123/cmdline":
@@ -379,27 +380,21 @@ AUTH_KEYS_CONTENT = (
 PASSWD_SSH = "alice:x:1000:1000::/home/alice:/bin/bash\nnobody:x:65534:65534:::/usr/sbin/nologin\n"
 
 
-def _open_ssh(path, *args, **kwargs):
-    if path == "/etc/passwd":
-        return io.StringIO(PASSWD_SSH)
-    if path == "/home/alice/.ssh/authorized_keys":
-        return io.StringIO(AUTH_KEYS_CONTENT)
-    raise FileNotFoundError(path)
+def _ssh_root(tmp_path, keys=AUTH_KEYS_CONTENT, keys_name="authorized_keys"):
+    (tmp_path / "etc").mkdir(exist_ok=True)
+    (tmp_path / "etc" / "passwd").write_text(PASSWD_SSH)
+    ssh_dir = tmp_path / "home" / "alice" / ".ssh"
+    ssh_dir.mkdir(parents=True, exist_ok=True)
+    keys_file = ssh_dir / keys_name
+    keys_file.write_text(keys)
+    os.utime(keys_file, (1705000000.0, 1705000000.0))
+    return LiveSource(root=str(tmp_path))
 
 
-def _stat_ssh(path):
-    s = mock.MagicMock()
-    s.st_mtime = 1705000000.0
-    return s
-
-
-def test_ssh_collector_parses_authorized_keys():
+def test_ssh_collector_parses_authorized_keys(tmp_path):
     from ubuntils.collectors.ssh import SSHCollector
 
-    with mock.patch("builtins.open", side_effect=_open_ssh), \
-         mock.patch("os.path.exists", return_value=True), \
-         mock.patch("os.lstat", side_effect=_stat_ssh):
-        result = SSHCollector().collect()
+    result = SSHCollector(source=_ssh_root(tmp_path)).collect()
 
     assert "authorized_keys" in result
     assert len(result["authorized_keys"]) == 2
@@ -407,27 +402,25 @@ def test_ssh_collector_parses_authorized_keys():
     assert first["username"] == "alice"
     assert first["key_type"] == "ssh-rsa"
     assert first["comment"] == "alice@laptop"
+    assert first["path"] == "/home/alice/.ssh/authorized_keys"
     assert first["file_mtime"] == 1705000000.0
 
 
-def test_ssh_collector_skips_missing_file():
+def test_ssh_collector_skips_missing_file(tmp_path):
     from ubuntils.collectors.ssh import SSHCollector
 
-    with mock.patch("builtins.open", side_effect=lambda p, *a, **k: io.StringIO(PASSWD_SSH) if p == "/etc/passwd" else (_ for _ in ()).throw(FileNotFoundError(p))), \
-         mock.patch("os.path.exists", return_value=False):
-        result = SSHCollector().collect()
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "passwd").write_text(PASSWD_SSH)
+    result = SSHCollector(source=LiveSource(root=str(tmp_path))).collect()
 
     assert "authorized_keys" in result
     assert result["authorized_keys"] == []
 
 
-def test_ssh_collector_records_mtime():
+def test_ssh_collector_records_mtime(tmp_path):
     from ubuntils.collectors.ssh import SSHCollector
 
-    with mock.patch("builtins.open", side_effect=_open_ssh), \
-         mock.patch("os.path.exists", return_value=True), \
-         mock.patch("os.lstat", side_effect=_stat_ssh):
-        result = SSHCollector().collect()
+    result = SSHCollector(source=_ssh_root(tmp_path)).collect()
 
     assert isinstance(result["authorized_keys"][0]["file_mtime"], float)
 
@@ -518,24 +511,16 @@ def _glob_env(pattern):
     return []
 
 
-def test_env_collector_parses_ld_preload():
+def test_env_collector_parses_ld_preload(tmp_path):
     from ubuntils.collectors.environment import EnvironmentCollector
 
-    def open_all(path, *args, **kwargs):
-        if path == "/etc/passwd":
-            return io.StringIO(PASSWD_ENV)
-        if path == "/etc/environment":
-            return io.StringIO("")
-        if path == "/etc/profile":
-            return io.StringIO("")
-        if path == "/home/alice/.bashrc":
-            return io.StringIO(BASHRC_MALICIOUS)
-        raise FileNotFoundError(path)
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "passwd").write_text(PASSWD_ENV)
+    home = tmp_path / "home" / "alice"
+    home.mkdir(parents=True)
+    (home / ".bashrc").write_text(BASHRC_MALICIOUS)
 
-    with mock.patch("builtins.open", side_effect=open_all), \
-         mock.patch("glob.glob", side_effect=_glob_env), \
-         mock.patch("os.path.exists", side_effect=lambda p: p == "/home/alice/.bashrc"):
-        result = EnvironmentCollector().collect()
+    result = EnvironmentCollector(source=LiveSource(root=str(tmp_path))).collect()
 
     assert "env_definitions" in result
     variables = [e["variable"] for e in result["env_definitions"]]
@@ -810,9 +795,9 @@ def test_package_collector_parses_dpkg_verify(tmp_path):
 
     entries = result["dpkg_verify_entries"]
     # This bundle predates dpkg_owners capture, so ownership is unknown.
-    assert {"path": "/etc/ssh/sshd_config", "flags": "??5??????", "is_conffile": True, "missing": False, "package": None} in entries
-    assert {"path": "/usr/bin/sshd", "flags": "", "is_conffile": False, "missing": True, "package": None} in entries
-    assert {"path": "/usr/bin/passwd", "flags": "....5..T.", "is_conffile": False, "missing": False, "package": None} in entries
+    assert {"path": "/etc/ssh/sshd_config", "flags": "??5??????", "is_conffile": True, "missing": False, "package": None, "is_directory": None} in entries
+    assert {"path": "/usr/bin/sshd", "flags": "", "is_conffile": False, "missing": True, "package": None, "is_directory": None} in entries
+    assert {"path": "/usr/bin/passwd", "flags": "....5..T.", "is_conffile": False, "missing": False, "package": None, "is_directory": None} in entries
 
 
 def test_package_collector_parses_lsattr_immutable_flags(tmp_path):
@@ -1099,3 +1084,53 @@ def test_bundle_captures_dpkg_owners_with_live_argv_and_timeout():
 
     assert ("dpkg_owners", DPKG_OWNERS_ARGV) in COLLECT_COMMANDS
     assert COMMAND_TIMEOUTS["dpkg_owners"] == DPKG_OWNERS_TIMEOUT
+
+
+def test_package_collector_marks_missing_directories_from_md5sums(tmp_path):
+    # dpkg's .md5sums lists only regular files, so a missing path that isn't
+    # in it is a directory (or symlink) — an empty dir going away is not tampering.
+    from ubuntils.collectors.packages import PackageCollector
+
+    info = tmp_path / "var" / "lib" / "dpkg" / "info"
+    info.mkdir(parents=True)
+    (info / "apparmor.md5sums").write_text("d41d8cd98f00b204e9800998ecf8427e  sbin/apparmor_parser\n")
+    (info / "libc6:arm64.md5sums").write_text("d41d8cd98f00b204e9800998ecf8427e  usr/lib/aarch64-linux-gnu/libc.so.6\n")
+
+    class _Src(_SpySource):
+        def read_text(self, path):
+            return (tmp_path / path.lstrip("/")).read_text()
+
+    src = _Src(responses={
+        "dpkg_verify": ("missing     /etc/apparmor.d/disable\n"
+                        "missing     /usr/lib/aarch64-linux-gnu/libc.so.6\n"
+                        "missing     /usr/bin/ghost\n", "", 1),
+        "dpkg_owners": ("apparmor: /etc/apparmor.d/disable\n"
+                        "libc6:arm64: /usr/lib/aarch64-linux-gnu/libc.so.6\n"
+                        "nomd5: /usr/bin/ghost\n", "", 0),
+    })
+    entries = {e["path"]: e for e in PackageCollector(source=src).collect()["dpkg_verify_entries"]}
+    assert entries["/etc/apparmor.d/disable"]["is_directory"] is True
+    assert entries["/usr/lib/aarch64-linux-gnu/libc.so.6"]["is_directory"] is False
+    # No .md5sums to consult (bundle, unusual package): unknown, treated as a file.
+    assert entries["/usr/bin/ghost"]["is_directory"] is None
+
+
+def test_package_collector_keeps_conffile_marker_on_missing_entries(tmp_path):
+    # Conffiles aren't in .md5sums either; without the marker a missing
+    # /etc/init.d script would be misread as a missing directory.
+    from ubuntils.collectors.packages import PackageCollector
+
+    class _Src(_SpySource):
+        def read_text(self, path):
+            if path == "/var/lib/dpkg/info/wazuh-manager.md5sums":
+                return "d41d8cd98f00b204e9800998ecf8427e  var/wazuh-manager/bin/x\n"
+            raise OSError(path)
+
+    src = _Src(responses={
+        "dpkg_verify": ("missing   c /etc/init.d/wazuh-manager\n", "", 1),
+        "dpkg_owners": ("wazuh-manager: /etc/init.d/wazuh-manager\n", "", 0),
+    })
+    entry = PackageCollector(source=src).collect()["dpkg_verify_entries"][0]
+    assert entry["path"] == "/etc/init.d/wazuh-manager"
+    assert entry["is_conffile"] is True and entry["missing"] is True
+    assert entry["is_directory"] is False

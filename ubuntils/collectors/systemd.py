@@ -16,6 +16,19 @@ UNIT_GLOBS = [
     "/root/.config/systemd/user/*.service",
     "/home/*/.config/systemd/user/*.service",
 ]
+# Drop-in overrides: "<unit>.service.d/*.conf" can replace a legitimate
+# service's ExecStart= while its unit file stays pristine — a stealthy
+# persistence trick that reading only *.service files misses.
+DROPIN_GLOBS = [
+    "/etc/systemd/system/*.service.d/*.conf",
+    "/run/systemd/system/*.service.d/*.conf",
+    "/usr/local/lib/systemd/system/*.service.d/*.conf",
+    "/etc/systemd/user/*.service.d/*.conf",
+    "/root/.config/systemd/user/*.service.d/*.conf",
+    "/home/*/.config/systemd/user/*.service.d/*.conf",
+]
+# Per-user unit locations: owned by the user, so read defensively.
+_USER_UNIT_PREFIXES = ("/home/", "/root/")
 _EXEC_KEYS = ("ExecStart", "ExecStartPre", "ExecStartPost", "ExecReload", "ExecStop")
 # systemd executable prefixes: @ - : + ! !!
 _EXEC_PREFIX_CHARS = "@-:+!"
@@ -64,17 +77,23 @@ class SystemdCollector(BaseCollector):
     def _service_units(self) -> list:
         units = []
         seen: set = set()
-        for pattern in UNIT_GLOBS:
+        for pattern in UNIT_GLOBS + DROPIN_GLOBS:
             try:
                 paths = self.source.glob(pattern)
             except Exception:
                 continue
             for path in paths:
                 try:
-                    text = self.source.read_text(path)
+                    # Masked units are symlinks to /dev/null: read_text gives "".
+                    text = (self.source.read_user_text(path)
+                            if path.startswith(_USER_UNIT_PREFIXES)
+                            else self.source.read_text(path))
                 except Exception:
                     continue
-                unit = os.path.basename(path)
+                is_dropin = path.endswith(".conf")
+                # ".../sshd.service.d/override.conf" overrides sshd.service
+                unit = (os.path.basename(os.path.dirname(path))[:-len(".d")] if is_dropin
+                        else os.path.basename(path))
                 for line in text.splitlines():
                     key, eq, value = line.strip().partition("=")
                     if not eq or key.strip() not in _EXEC_KEYS:
@@ -88,6 +107,7 @@ class SystemdCollector(BaseCollector):
                     units.append({
                         "unit": unit,
                         "unit_path": path,
+                        "dropin": is_dropin,
                         "exec_key": key.strip(),
                         "exec_start": value,
                         "exec_owner_uid": self._owner_uid(binary),

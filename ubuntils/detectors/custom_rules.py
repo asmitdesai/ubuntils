@@ -78,7 +78,7 @@ def _iter_items(source: str, artifacts: dict) -> Iterator[Tuple[str, str]]:
             yield e.get("source", ""), e.get("raw_line", e.get("value", ""))
     elif source == "ssh":
         for e in artifacts.get("authorized_keys", []):
-            path = f"{e.get('home', '')}/.ssh/authorized_keys"
+            path = e.get("path") or f"{e.get('home', '')}/.ssh/authorized_keys"
             text = " ".join(filter(None, [
                 e.get("key_type", ""), e.get("key_data", ""), e.get("comment", ""),
             ]))

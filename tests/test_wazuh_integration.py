@@ -8,7 +8,6 @@ import json
 import os
 import stat
 
-import pytest
 
 from ubuntils.detectors.finding import Finding, Severity
 from ubuntils.integrations.wazuh import (
@@ -151,5 +150,7 @@ class TestWriteWazuhAlerts:
 
         line = json.loads(log_path.read_text().splitlines()[0])
         assert line["related_events"] == [
-            {"timestamp": "2026-01-01T00:00:00+00:00", "source": "auth.log", "description": "sshd login"}
+            {"timestamp": "2026-01-01T00:00:00+00:00", "source": "auth.log", "program": "",
+             "description": "sshd login"}
         ]
+        assert line["confidence"] == 50 and line["confidence_band"] == "MEDIUM"

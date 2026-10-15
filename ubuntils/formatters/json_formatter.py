@@ -1,6 +1,6 @@
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import timezone
 
 from ubuntils.detectors.finding import Finding, RemediationResult
 from ubuntils.timeline.builder import TimelineEvent
@@ -69,6 +69,7 @@ class JSONFormatter:
         return {
             "timestamp": ts.isoformat(),
             "source": e.source,
+            "program": e.program,
             "description": e.description,
         }
 

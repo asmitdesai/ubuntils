@@ -66,18 +66,32 @@ COLLECT_COMMANDS = [
     ("lsmod", ["lsmod"]),
 ]
 
+# What the root re-exec runs. `python -m ubuntils.cli` (and plain `-c`) put the
+# current directory first on sys.path, so running `ubuntils scan` from inside
+# /tmp or a compromised user's home would import a planted ubuntils/ (or
+# click.py, yaml.py, …) *as root*. The bootstrap drops that entry before
+# importing anything. sitecustomize is not a concern: site runs before the
+# cwd entry is added, and sudo's env_reset strips PYTHONPATH.
+REEXEC_BOOTSTRAP = (
+    "import sys; "
+    "getattr(sys.flags, 'safe_path', False) or sys.path.pop(0); "
+    "sys.argv[0] = 'ubuntils'; "
+    "from ubuntils.cli import main; main()"
+)
+
+
 def _ensure_root() -> None:
     """Re-exec under sudo if not running as root.
 
     The re-exec names this interpreter by absolute path (sys.executable) and
-    runs the CLI as a module, so the caller's PATH is never needed — and is
-    deliberately *not* forwarded: `sudo env PATH=<caller's PATH>` would defeat
-    sudo's secure_path. External commands are separately pinned to
-    utils.shell.SECURE_PATH.
+    runs REEXEC_BOOTSTRAP, so neither the caller's PATH nor their working
+    directory can influence what runs as root. PATH is deliberately *not*
+    forwarded: `sudo env PATH=<caller's PATH>` would defeat sudo's secure_path.
+    External commands are separately pinned to utils.shell.SECURE_PATH.
     """
     if os.geteuid() == 0:
         return
-    args = ["sudo", sys.executable, "-m", "ubuntils.cli"] + sys.argv[1:]
+    args = ["sudo", sys.executable, "-c", REEXEC_BOOTSTRAP] + sys.argv[1:]
     print("ubuntils requires root — re-invoking with sudo…", file=sys.stderr)
     try:
         os.execv(resolve_command("sudo"), args)

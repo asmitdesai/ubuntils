@@ -50,6 +50,17 @@ def _safe_extract(tf: tarfile.TarFile, work: str) -> None:
         tf.extractall(work)
 
 
+def _inside(base: str, bundle_path: str) -> str:
+    """Absolute path of a manifest entry, which must stay inside the bundle.
+    The manifest is attacker-controlled when analyzing a hostile host's bundle,
+    and its digest is unkeyed — it can't be trusted to name safe paths."""
+    base_real = os.path.realpath(base)
+    resolved = os.path.realpath(os.path.join(base_real, bundle_path))
+    if not resolved.startswith(base_real + os.sep):
+        raise BundleError(f"manifest entry {bundle_path!r} points outside the bundle")
+    return resolved
+
+
 def read_bundle(path: str) -> tuple:
     """Extract and verify a bundle. The returned BundleSource owns the
     extraction directory — callers must call ``source.cleanup()`` when done."""
@@ -83,6 +94,8 @@ def _read_extracted(path: str, work: str) -> tuple:
         files=[FileEntry(**e) for e in stored["files"]],
         commands=[CommandEntry(**c) for c in stored["commands"]],
     )
+    for entry in [*manifest.files, *manifest.commands]:
+        _inside(base, entry.bundle_path)
 
     integrity = "ok"
     if expected_digest != manifest.manifest_sha256():
