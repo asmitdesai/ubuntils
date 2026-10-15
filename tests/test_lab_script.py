@@ -32,3 +32,10 @@ def test_lab_artifacts_never_run():
     assert 'NEVER="0 0 31 2 *"' in script               # cron: 31 February
     assert "systemctl enable" not in script and "systemctl start" not in script
     assert re.search(r"curl[^\n]*http://\$MARK\.invalid", script)  # reserved TLD only
+
+
+def test_lab_resolves_binaries_by_path_not_builtin_name():
+    # `command -v true` prints "true" (a bash builtin), not /usr/bin/true —
+    # that broke `plant` on a real 26.04 host. Use `type -P` for files.
+    script = open(LAB).read()
+    assert not re.search(r'install[^\n]*\$\(command -v', script)
