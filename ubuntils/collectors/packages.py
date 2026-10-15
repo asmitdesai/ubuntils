@@ -34,10 +34,19 @@ SETUID_FIND_ARGS = [
 DPKG_VERIFY_TIMEOUT = 600
 FIND_SETUID_TIMEOUT = 300
 
+# dpkg --verify doesn't name the owning package, so PACKAGE_TAMPERED can't
+# group its output without this. dpkg-query does the '/*' glob matching itself
+# (no shell), and it's a fixed argv so `ubuntils collect` captures the exact
+# same output for offline analysis. Shared with cli.COLLECT_COMMANDS.
+DPKG_OWNERS_ARGV = ["dpkg-query", "-S", "/*"]
+DPKG_OWNERS_TIMEOUT = 120
+
 
 class PackageCollector(BaseCollector):
     def collect(self) -> dict:
         dpkg_entries, dpkg_failed = self._dpkg_verify_entries()
+        if dpkg_entries:
+            self._attribute_packages(dpkg_entries)
         setuid_entries, setuid_failed = self._setuid_binaries()
         if dpkg_failed:
             self.degraded.append("`dpkg --verify` failed or timed out")
@@ -88,6 +97,29 @@ class PackageCollector(BaseCollector):
             path = rest[2:].strip() if is_conffile else rest
             entries.append({"path": path, "flags": flags, "is_conffile": is_conffile, "missing": False})
         return entries, False
+
+    def _attribute_packages(self, entries: list) -> None:
+        """Set each entry's "package" to its owning package, or None if unknown."""
+        stdout, _stderr, rc = self.source.run(
+            "dpkg_owners", DPKG_OWNERS_ARGV, timeout=DPKG_OWNERS_TIMEOUT
+        )
+        wanted = {e["path"] for e in entries}
+        owners = {}
+        for line in stdout.splitlines() if rc != -1 else []:
+            # "pkg: /path", "libc6:arm64: /path", or "pkg-a, pkg-b: /shared/dir".
+            # Diversion lines ("diversion by dash from: /bin/sh") aren't ownership.
+            if line.startswith("diversion "):
+                continue
+            packages, sep, path = line.partition(": ")
+            if sep and path in wanted:
+                owners[path] = packages.split(",")[0].strip()
+        if not owners:
+            self.degraded.append(
+                "package ownership lookup (`dpkg-query -S`) unavailable — "
+                "PACKAGE_TAMPERED reported per file"
+            )
+        for entry in entries:
+            entry["package"] = owners.get(entry["path"])
 
     def _immutable_flag_entries(self) -> list:
         stdout, _stderr, rc = self.source.run(

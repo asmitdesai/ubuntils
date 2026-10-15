@@ -1025,3 +1025,60 @@ def test_kernel_module_ignores_stock_aarch64_vm_modules():
     ]
     artifacts = {"kernel_modules": [{"name": n, "size": "1", "used_by": []} for n in names]}
     assert rule_kernel_module_suspicious(artifacts) == []
+
+
+def _dpkg(path, package=None, flags="??5??????", missing=False, conffile=False):
+    return {"path": path, "flags": "" if missing else flags, "is_conffile": conffile,
+            "missing": missing, "package": package}
+
+
+def test_package_tampered_groups_findings_by_package():
+    from ubuntils.detectors.rules import rule_package_tampered
+    entries = [_dpkg(f"/var/wazuh-manager/queue/f{i}", "wazuh-manager") for i in range(1162)]
+    entries.append(_dpkg("/etc/init.d/wazuh-manager", "wazuh-manager", missing=True))
+    entries.append(_dpkg("/usr/share/wazuh-indexer/jdk/lib/security/cacerts", "wazuh-indexer"))
+    findings = rule_package_tampered({"dpkg_verify_entries": entries})
+
+    by_pkg = {f.artifact_path: f for f in findings}
+    assert set(by_pkg) == {"wazuh-manager", "wazuh-indexer"}
+    mgr = by_pkg["wazuh-manager"]
+    assert "1162 modified" in mgr.description and "1 missing" in mgr.description
+    assert "missing     /etc/init.d/wazuh-manager" in mgr.raw_value
+    # The file listing is capped so one noisy package can't bloat the report.
+    assert "more" in mgr.raw_value.splitlines()[-1]
+    assert len(mgr.raw_value.splitlines()) <= 21
+    assert {s["name"] for s in mgr.signals} >= {"content_match", "missing_file"}
+    assert "dpkg --verify wazuh-manager" in mgr.guided_remediation
+    assert "--reinstall wazuh-manager" in mgr.guided_remediation
+
+
+def test_package_tampered_package_with_only_var_changes_is_medium():
+    from ubuntils.detectors.rules import rule_package_tampered
+    var_only = rule_package_tampered({"dpkg_verify_entries": [
+        _dpkg("/var/wazuh-manager/queue/a", "wazuh-manager"),
+        _dpkg("/var/wazuh-manager/queue/b", "wazuh-manager"),
+    ]})
+    mixed = rule_package_tampered({"dpkg_verify_entries": [
+        _dpkg("/var/wazuh-manager/queue/a", "wazuh-manager"),
+        _dpkg("/var/ossec/bin/x", "wazuh-manager"),
+        _dpkg("/usr/bin/passwd", "passwd"),
+    ]})
+    assert len(var_only) == 1 and var_only[0].severity == Severity.MEDIUM
+    assert any(s["name"] == "mutable_data_path" for s in var_only[0].signals)
+    usr = next(f for f in mixed if f.artifact_path == "passwd")
+    assert usr.severity == Severity.HIGH
+    assert usr.confidence > var_only[0].confidence
+
+
+def test_package_tampered_falls_back_to_per_file_without_ownership():
+    from ubuntils.detectors.rules import rule_package_tampered
+    findings = rule_package_tampered({"dpkg_verify_entries": [
+        _dpkg("/usr/bin/passwd"),
+        _dpkg("/usr/bin/sshd", missing=True),
+        _dpkg("/var/lib/foo/state"),
+        _dpkg("/etc/ssh/sshd_config", "openssh-server", conffile=True),
+    ]})
+    by_path = {f.artifact_path: f for f in findings}
+    assert set(by_path) == {"/usr/bin/passwd", "/usr/bin/sshd", "/var/lib/foo/state"}
+    assert by_path["/usr/bin/passwd"].severity == Severity.HIGH
+    assert by_path["/var/lib/foo/state"].severity == Severity.MEDIUM

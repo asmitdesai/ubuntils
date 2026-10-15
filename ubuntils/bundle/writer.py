@@ -10,7 +10,9 @@ import uuid
 from datetime import datetime, timezone
 
 from ubuntils.bundle.manifest import Manifest, FileEntry, CommandEntry
-from ubuntils.collectors.packages import DPKG_VERIFY_TIMEOUT, FIND_SETUID_TIMEOUT
+from ubuntils.collectors.packages import (
+    DPKG_OWNERS_TIMEOUT, DPKG_VERIFY_TIMEOUT, FIND_SETUID_TIMEOUT,
+)
 from ubuntils.collectors.source import ArtifactSource
 from ubuntils.utils.safe_io import open_private_for_write
 
@@ -21,6 +23,7 @@ from ubuntils.utils.safe_io import open_private_for_write
 # command. Any command not listed here uses the ArtifactSource.run default (30s).
 COMMAND_TIMEOUTS: dict = {
     "dpkg_verify": DPKG_VERIFY_TIMEOUT,
+    "dpkg_owners": DPKG_OWNERS_TIMEOUT,
     "find_setuid": FIND_SETUID_TIMEOUT,
 }
 

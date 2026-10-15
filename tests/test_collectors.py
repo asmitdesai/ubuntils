@@ -809,9 +809,10 @@ def test_package_collector_parses_dpkg_verify(tmp_path):
     result = PackageCollector(source=src).collect()
 
     entries = result["dpkg_verify_entries"]
-    assert {"path": "/etc/ssh/sshd_config", "flags": "??5??????", "is_conffile": True, "missing": False} in entries
-    assert {"path": "/usr/bin/sshd", "flags": "", "is_conffile": False, "missing": True} in entries
-    assert {"path": "/usr/bin/passwd", "flags": "....5..T.", "is_conffile": False, "missing": False} in entries
+    # This bundle predates dpkg_owners capture, so ownership is unknown.
+    assert {"path": "/etc/ssh/sshd_config", "flags": "??5??????", "is_conffile": True, "missing": False, "package": None} in entries
+    assert {"path": "/usr/bin/sshd", "flags": "", "is_conffile": False, "missing": True, "package": None} in entries
+    assert {"path": "/usr/bin/passwd", "flags": "....5..T.", "is_conffile": False, "missing": False, "package": None} in entries
 
 
 def test_package_collector_parses_lsattr_immutable_flags(tmp_path):
@@ -1026,3 +1027,75 @@ def test_kernel_collector_parses_lsmod(tmp_path):
     assert names == ["xt_conntrack", "evil_rootkit"]
     xt = next(m for m in result["kernel_modules"] if m["name"] == "xt_conntrack")
     assert xt["used_by"] == ["iptable_filter"]
+
+
+_DPKG_VERIFY_WAZUH = (
+    "??5??????   /var/wazuh-manager/etc/client.keys\n"
+    "missing     /etc/init.d/wazuh-manager\n"
+    "??5??????   /usr/lib/aarch64-linux-gnu/libc.so.6\n"
+    "missing     /usr/lib/python3/dist-packages/twisted/plugins\n"
+    "??5?????? c /etc/ssh/sshd_config\n"
+    "??5??????   /opt/unowned/thing\n"
+)
+_DPKG_OWNERS = (
+    "wazuh-manager: /var/wazuh-manager/etc/client.keys\n"
+    "wazuh-manager: /etc/init.d/wazuh-manager\n"
+    "libc6:arm64: /usr/lib/aarch64-linux-gnu/libc.so.6\n"
+    "python3-twisted, python3-automat: /usr/lib/python3/dist-packages/twisted/plugins\n"
+    "diversion by dash from: /bin/sh\n"
+    "openssh-server: /etc/ssh/sshd_config\n"
+    "coreutils: /usr/bin/ls\n"
+)
+
+
+def test_package_collector_attributes_dpkg_entries_to_owning_package():
+    from ubuntils.collectors.packages import PackageCollector, DPKG_OWNERS_ARGV, DPKG_OWNERS_TIMEOUT
+
+    src = _SpySource(responses={
+        "dpkg_verify": (_DPKG_VERIFY_WAZUH, "", 1),
+        "dpkg_owners": (_DPKG_OWNERS, "", 0),
+    })
+    collector = PackageCollector(source=src)
+    entries = {e["path"]: e for e in collector.collect()["dpkg_verify_entries"]}
+
+    assert entries["/var/wazuh-manager/etc/client.keys"]["package"] == "wazuh-manager"
+    assert entries["/etc/init.d/wazuh-manager"]["package"] == "wazuh-manager"
+    assert entries["/usr/lib/aarch64-linux-gnu/libc.so.6"]["package"] == "libc6:arm64"
+    # Shared paths list several owners; the first is attributed.
+    assert entries["/usr/lib/python3/dist-packages/twisted/plugins"]["package"] == "python3-twisted"
+    assert entries["/opt/unowned/thing"]["package"] is None
+    assert collector.degraded == []
+
+    call = next(c for c in src.calls if c["name"] == "dpkg_owners")
+    assert call["argv"] == DPKG_OWNERS_ARGV and call["timeout"] == DPKG_OWNERS_TIMEOUT
+
+
+def test_package_collector_skips_ownership_lookup_when_verify_is_clean():
+    from ubuntils.collectors.packages import PackageCollector
+
+    src = _SpySource(responses={"dpkg_verify": ("", "", 0)})
+    PackageCollector(source=src).collect()
+    assert "dpkg_owners" not in {c["name"] for c in src.calls}
+
+
+def test_package_collector_marks_degraded_when_ownership_unavailable():
+    # Bundles collected before dpkg_owners existed replay it as rc -1.
+    from ubuntils.collectors.packages import PackageCollector
+
+    src = _SpySource(responses={
+        "dpkg_verify": (_DPKG_VERIFY_WAZUH, "", 1),
+        "dpkg_owners": ("", "command 'dpkg_owners' not captured in bundle", -1),
+    })
+    collector = PackageCollector(source=src)
+    entries = collector.collect()["dpkg_verify_entries"]
+    assert all(e["package"] is None for e in entries)
+    assert any("dpkg-query" in reason for reason in collector.degraded)
+
+
+def test_bundle_captures_dpkg_owners_with_live_argv_and_timeout():
+    from ubuntils.bundle.writer import COMMAND_TIMEOUTS
+    from ubuntils.cli import COLLECT_COMMANDS
+    from ubuntils.collectors.packages import DPKG_OWNERS_ARGV, DPKG_OWNERS_TIMEOUT
+
+    assert ("dpkg_owners", DPKG_OWNERS_ARGV) in COLLECT_COMMANDS
+    assert COMMAND_TIMEOUTS["dpkg_owners"] == DPKG_OWNERS_TIMEOUT

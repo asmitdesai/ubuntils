@@ -449,7 +449,7 @@ A summary view of the scan: detected Ubuntu version, architecture, scan duration
 | PROCESS_MASQUERADE | MEDIUM | No | Processes whose name matches a known system binary but whose executable is outside the standard system directories (/usr/bin, /usr/sbin, /bin, /sbin, /usr/local/{bin,sbin}, /usr/lib, /usr/libexec, /lib, /snap) |
 | PROCESS_SUSPICIOUS_CONNECTION | HIGH / MEDIUM | No | Processes holding a non-loopback connection whose executable is in a world-writable temp dir or deleted from disk (HIGH), or is outside the standard system directories, or that make an outbound connection to a non-standard remote port (MEDIUM). Inbound connections (on a listening port) skip the port check |
 | SHELL_RC_MODIFICATION | LOW | No | Shell init files (bashrc, profile, zshrc, etc.) modified within the last 48 hours for any user with a login shell |
-| PACKAGE_TAMPERED | HIGH | No | System-owned package files modified, missing, or whose content/mode/size mismatches the package manifest (via `dpkg --verify`) |
+| PACKAGE_TAMPERED | HIGH / MEDIUM | No | Package-owned files modified, missing, or whose content/mode/size mismatches the package manifest (via `dpkg --verify`), one finding per package; MEDIUM when every changed file is under `/var` |
 | IMMUTABLE_FLAG_SET | MEDIUM | No | Immutable (`i`) or append-only (`a`) flags set on sensitive files like /etc/passwd, /etc/sudoers, or /etc/pam.d/* (detected via `lsattr`) |
 | PAM_BACKDOOR | HIGH | No | A `pam_permit.so` line in an /etc/pam.d/* auth/account stack that can grant access on its own (`sufficient`/`success=done`, or no `pam_deny`-style gate in that stack), or an NSS module in /etc/nsswitch.conf outside an allowlist (files/sss/ldap/winbind/...) |
 | KERNEL_MODULE_SUSPICIOUS | LOW | No | Loaded kernel modules outside an allowlist of common built-in modules — note: hardware-heavy hosts (GPUs, Wi-Fi cards, proprietary drivers) will see false positives; add expected modules via `--config` |
@@ -578,14 +578,15 @@ Raw value:     mtime=2024-01-15 14:22:01 (6 hours ago)
 Remediation:   not available
 ```
 
-**PACKAGE_TAMPERED** — System-owned binaries and configuration files are the foundation of trust. This rule detects when package-owned files have been modified, deleted, or have content/mode/size mismatches using `dpkg --verify`. Conffile-only edits (expected local configuration changes) are excluded from reporting to avoid noise. Flag-only — tampering may be legitimate (custom local edits) or malicious (file replacement); deciding requires human judgment.
+**PACKAGE_TAMPERED** — System-owned binaries and configuration files are the foundation of trust. This rule detects when package-owned files have been modified, deleted, or have content/mode/size mismatches using `dpkg --verify`. Conffile-only edits (expected local configuration changes) are excluded from reporting to avoid noise. Changed files are grouped into **one finding per owning package** (looked up with `dpkg-query -S`), listing up to 20 of the files; the artifact is the package name, so a known-noisy package can be allowlisted by name with `--config`. A package whose changed files are all under `/var` is reported as MEDIUM with lower confidence, because packages such as a Wazuh manager keep runtime data there that `dpkg` still lists in their manifest — a single Wazuh host otherwise produced 1,100+ HIGH findings. If ownership can't be determined (an older bundle, or the lookup failed) the rule falls back to one finding per file and the scan notes the degraded lookup. Flag-only — tampering may be legitimate (custom local edits) or malicious (file replacement); deciding requires human judgment.
 
 *Example finding:*
 ```
 [HIGH] PACKAGE_TAMPERED
-Title:         Package-owned file modified since installation
-Artifact:      /usr/bin/sshd
-Raw value:     ....5..T. (content and mtime differ)
+Title:         Package files modified or missing since installation
+Artifact:      openssh-server
+Raw value:     missing     /usr/sbin/sshd
+               ??5??????   /usr/lib/openssh/sshd-session
 Remediation:   not available
 ```
 
@@ -857,7 +858,7 @@ non-production environment before relying on them.
 | SSHCollector | `~/.ssh/authorized_keys` for all users |
 | SudoersCollector | `/etc/sudoers` and all files under `/etc/sudoers.d/` |
 | EnvironmentCollector | `/etc/environment`, `/etc/profile.d/*`, user shell init files |
-| PackageCollector | System package integrity via `dpkg --verify`, immutable flag attributes via `lsattr`, and setuid/setgid binaries via `find` |
+| PackageCollector | System package integrity via `dpkg --verify` (attributed to packages via `dpkg-query -S`), immutable flag attributes via `lsattr`, and setuid/setgid binaries via `find` |
 | PamCollector | `/etc/pam.d/*` files and `/etc/nsswitch.conf` |
 | KernelCollector | Loaded kernel modules via `lsmod` |
 
