@@ -4,10 +4,12 @@
 # For DISPOSABLE test VMs and live demos only. Every artifact is built to trip
 # a detection rule while being unusable:
 #   - nothing executes: cron entries are scheduled for 31 February, systemd
-#     units are never enabled, processes are renamed copies of `sleep`
+#     units are never enabled, processes are renamed copies of `bash` that
+#     only sleep
 #   - nothing grants access: lab accounts are locked, the SSH key's private
 #     half is destroyed on creation, the PAM file belongs to a service nothing
-#     uses, URLs use the reserved .invalid TLD
+#     uses, the setuid file is a script (Linux ignores setuid on scripts),
+#     URLs use the reserved .invalid TLD
 #   - everything carries the "ubuntils-lab" marker and is recorded under
 #     /var/lib/ubuntils-lab so `clean` restores the host exactly
 #
@@ -42,7 +44,8 @@ confirm() {
     cat <<EOF
 This plants inert attacker-style artifacts on $(hostname) for ubuntils to find:
 cron entries, systemd units, a locked UID-0 account, an SSH key with no
-private half, a PAM file, two renamed 'sleep' processes, a setuid 'true',
+private half, a PAM file, two renamed 'bash' processes that only sleep,
+a setuid-bit script,
 an append-only flag on /var/log/btmp, a one-line edit to a package file,
 and the 'dummy' kernel module. Run '$0 clean' to remove all of it.
 
@@ -178,29 +181,44 @@ plant_pam() {
 }
 
 start_decoy() {
-    # $1 = path of the renamed sleep binary. setsid detaches it from this shell.
+    # $1 = where the renamed copy lives; the process name (comm) is its basename.
+    # A copy of bash, not of sleep: on Ubuntu 25.10+ sleep is the uutils
+    # multi-call binary, which dispatches on its own name and exits at once
+    # when renamed "kworker". setsid detaches the loop into its own process
+    # group so clean can stop it and its sleep child together.
     # The file is recorded before the pid: clean undoes in reverse, so the
     # process is stopped while /proc/<pid>/exe still names the file.
-    install -m 755 "$(type -P sleep)" "$1"
+    install -m 755 "$(type -P bash)" "$1"
     record "file $1"
-    setsid "$1" 86400 </dev/null >/dev/null 2>&1 &
+    setsid "$1" -c 'while :; do sleep 3600; done' </dev/null >/dev/null 2>&1 &
     record "pid $! $1"
 }
 
 plant_processes() {
     say PROCESS_MASQUERADE "'kworker' running from /dev/shm (fake kernel thread)"
+    if findmnt -no OPTIONS /dev/shm 2>/dev/null | grep -qw noexec; then
+        warn "/dev/shm is mounted noexec — the kworker decoy can't start"
+    fi
     start_decoy /dev/shm/kworker
     say PROCESS_MASQUERADE "'sshd' running from /var/tmp"
     start_decoy /var/tmp/sshd
 }
 
 plant_setuid() {
-    say SETUID_INVENTORY "setuid copy of 'true' in /opt/$MARK"
+    say SETUID_INVENTORY "setuid-bit script /opt/$MARK/beacon (grants nothing)"
     install -d "/opt/$MARK"
     record "dir /opt/$MARK"
-    # type -P, not command -v: `true` is a bash builtin, so command -v
-    # returns the bare word "true" instead of /usr/bin/true.
-    install -m 4755 -o root -g root "$(type -P true)" "/opt/$MARK/true"
+    # Never a setuid copy of a real binary: on Ubuntu 25.10+ /usr/bin/true is
+    # the uutils multi-call binary, and a setuid-root copy symlinked as "rm"
+    # or "chmod" would be a working root backdoor. Linux ignores setuid on
+    # interpreted scripts, so this file trips the rule and does nothing.
+    printf '#!/bin/sh
+# %s: the kernel ignores setuid on scripts
+exit 0
+' "$MARK" \
+        > "/opt/$MARK/beacon"
+    chown root:root "/opt/$MARK/beacon"
+    chmod 4755 "/opt/$MARK/beacon"   # after chown, which clears setuid
 }
 
 plant_immutable() {
@@ -303,9 +321,10 @@ remove_user() {
 }
 
 stop_decoy() {
-    # Only kill the PID if it is still our decoy, not a reused PID.
+    # Only kill the PID if it is still our decoy, not a reused PID. The decoy
+    # leads its own process group (setsid), so this also stops its sleep.
     [[ $(readlink "/proc/$1/exe" 2>/dev/null) == "$2" ]] || return 0
-    kill "$1"
+    kill -- "-$1"
 }
 
 cmd_clean() {

@@ -248,16 +248,19 @@ def rule_suspicious_systemd_timer(artifacts: dict) -> List[Finding]:
 
 def _apply_timestamp_signals(finding: Finding, mtime: float, ctime: float, cutoff: float,
                              has_content_signal: bool) -> None:
-    """Score a file's recency. ctime can't be set from userspace, so a recent
-    ctime behind an old mtime is the signature of `touch -d` timestomping."""
+    """Score a file's recency. ctime can't be set from userspace, so a file
+    whose mtime was pushed back with `touch -d` still shows a recent ctime —
+    that's why recency counts either one. A recent ctime behind an old mtime is
+    only weak evidence of timestomping, though: `useradd -m` copying /etc/skel,
+    `cp -p`, `tar` and `rsync -a` all preserve old mtimes legitimately."""
     mtime_recent, ctime_recent = mtime >= cutoff, ctime >= cutoff
     if mtime_recent and ctime_recent:
         apply_signal(finding, "ctime_corroborates_mtime", 20,
                      "ctime is also within the window — harder to forge than mtime alone")
     elif ctime_recent:
-        apply_signal(finding, "mtime_backdated", 25,
-                     "ctime is recent but mtime is older — the modification time looks "
-                     "deliberately backdated (timestomped)")
+        apply_signal(finding, "mtime_predates_ctime", 10,
+                     "ctime is recent but mtime is older — either the mtime was backdated "
+                     "(timestomping) or the file was copied with its timestamps preserved")
     elif mtime_recent and not has_content_signal:
         apply_signal(finding, "mtime_only", -20,
                      "recency is the only signal; ctime is not recent (mtime may be forged)")

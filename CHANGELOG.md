@@ -19,7 +19,7 @@ Validated on a live Ubuntu 26.04 LTS arm64 host. A clean VM that produced 1,243 
 - `PROCESS_MASQUERADE` reports userspace processes named like kernel threads (`[kworker/0:1]`) as HIGH.
 
 ### Fixed — detection and remediation
-- `SSH_UNAUTHORIZED_KEY` and `SHELL_RC_MODIFICATION` checked mtime only, so `touch -d` hid a planted key or backdoor. Both now use mtime *or* ctime, and report a backdated mtime.
+- `SSH_UNAUTHORIZED_KEY` and `SHELL_RC_MODIFICATION` checked mtime only, so `touch -d` hid a planted key or backdoor. Both now use mtime *or* ctime; a recent ctime behind an old mtime adds a weak `mtime_predates_ctime` signal (copies with preserved timestamps look the same).
 - `SHELL_RC_MODIFICATION` ignored download-and-execute lines in files older than 48 hours; suspicious content is now reported at any age (MEDIUM).
 - SSH keys with options (`command="…"`) or unusual spacing couldn't be removed — remediation now matches the exact line.
 - Every key in a recently changed `authorized_keys` was auto-removable, the admin's included. Plain keys in a multi-key file now score below the remediation gate.
