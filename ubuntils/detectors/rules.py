@@ -557,63 +557,130 @@ def rule_shell_rc_modification(artifacts: dict) -> List[Finding]:
     return findings
 
 
+_PACKAGE_LISTING_CAP = 20
+
+
+def _is_reportable_dpkg_entry(entry: dict) -> bool:
+    if entry.get("missing", False):
+        return True
+    # Conffiles are expected to be user-edited; only their content hash (5) matters
+    # for tamper detection, and even then it's routine — skip conffiles entirely to
+    # avoid drowning responders in expected local config edits.
+    if entry.get("is_conffile", False):
+        return False
+    return any(ch in entry.get("flags", "") for ch in ("5", "M", "S"))
+
+
+def _apply_var_only_downgrade(finding: Finding, paths: list) -> None:
+    # Packages keep runtime state under /var (queues, databases, caches) that
+    # dpkg still lists in their manifest; a Wazuh manager alone reports 1000+.
+    if all(p == "/var" or p.startswith("/var/") for p in paths):
+        finding.severity = Severity.MEDIUM
+        apply_signal(finding, "mutable_data_path", -20,
+                     "every changed file is under /var, where packages keep runtime data "
+                     "that changes in normal operation")
+
+
+def _package_file_finding(entry: dict) -> Finding:
+    """One finding per file — used when the owning package is unknown."""
+    path = entry.get("path", "")
+    if entry.get("missing", False):
+        finding = Finding(
+            rule_id="PACKAGE_TAMPERED",
+            severity=Severity.HIGH,
+            title="Package-owned file is missing",
+            description=(
+                f"'{path}' is owned by an installed package but is missing from disk "
+                "(dpkg --verify reports it as absent)"
+            ),
+            artifact_path=path,
+            raw_value="missing",
+            remediation_available=False,
+            remediation_description=None,
+            guided_remediation=(
+                f"Reinstall the owning package to restore '{path}': "
+                f"dpkg -S {path} 2>/dev/null | cut -d: -f1 | xargs -r apt-get install --reinstall -y"
+            ),
+        )
+        apply_signal(finding, "missing_file", 35,
+                     "package-owned file absent from disk — cannot be an incidental edit")
+    else:
+        flags = entry.get("flags", "")
+        finding = Finding(
+            rule_id="PACKAGE_TAMPERED",
+            severity=Severity.HIGH,
+            title="Package-owned file modified since installation",
+            description=(
+                f"'{path}' differs from the package manifest (dpkg --verify flags: '{flags}')"
+            ),
+            artifact_path=path,
+            raw_value=flags,
+            remediation_available=False,
+            remediation_description=None,
+            guided_remediation=(
+                f"Compare against the package's known-good copy and reinstall if tampered: "
+                f"dpkg -S {path} 2>/dev/null | cut -d: -f1 | xargs -r apt-get install --reinstall -y"
+            ),
+        )
+        apply_signal(finding, "content_match", 30,
+                     f"dpkg --verify reports a real content/mode/size mismatch (flags: '{flags}')")
+    _apply_var_only_downgrade(finding, [path])
+    return finding
+
+
+def _package_group_finding(package: str, entries: list) -> Finding:
+    """One finding for every reportable file of a package.
+
+    artifact_path is the package name (like KERNEL_MODULE_SUSPICIOUS uses the
+    module name), so `--config` can allowlist a known-noisy package in one line.
+    """
+    missing = [e for e in entries if e.get("missing", False)]
+    modified = [e for e in entries if not e.get("missing", False)]
+    lines = [f"missing     {e['path']}" for e in missing]
+    lines += [f"{e.get('flags', '')}   {e['path']}" for e in modified]
+    if len(lines) > _PACKAGE_LISTING_CAP:
+        extra = len(lines) - _PACKAGE_LISTING_CAP
+        lines = lines[:_PACKAGE_LISTING_CAP] + [f"… and {extra} more"]
+    finding = Finding(
+        rule_id="PACKAGE_TAMPERED",
+        severity=Severity.HIGH,
+        title="Package files modified or missing since installation",
+        description=(
+            f"Package '{package}' has {len(modified)} modified and {len(missing)} missing "
+            "file(s) compared to its dpkg manifest"
+        ),
+        artifact_path=package,
+        raw_value="\n".join(lines),
+        remediation_available=False,
+        remediation_description=None,
+        guided_remediation=(
+            f"Review every difference with `dpkg --verify {package}`; if the files were "
+            f"tampered with, restore them: apt-get install --reinstall {package}"
+        ),
+    )
+    if modified:
+        apply_signal(finding, "content_match", 30,
+                     "dpkg --verify reports a real content/mode/size mismatch")
+    if missing:
+        apply_signal(finding, "missing_file", 35,
+                     "package-owned file absent from disk — cannot be an incidental edit")
+    _apply_var_only_downgrade(finding, [e["path"] for e in entries])
+    return finding
+
+
 def rule_package_tampered(artifacts: dict) -> List[Finding]:
     findings = []
+    by_package: dict = {}
     for entry in artifacts.get("dpkg_verify_entries", []):
-        path = entry.get("path", "")
-        flags = entry.get("flags", "")
-        missing = entry.get("missing", False)
-        is_conffile = entry.get("is_conffile", False)
-
-        if missing:
-            finding = Finding(
-                rule_id="PACKAGE_TAMPERED",
-                severity=Severity.HIGH,
-                title="Package-owned file is missing",
-                description=(
-                    f"'{path}' is owned by an installed package but is missing from disk "
-                    "(dpkg --verify reports it as absent)"
-                ),
-                artifact_path=path,
-                raw_value="missing",
-                remediation_available=False,
-                remediation_description=None,
-                guided_remediation=(
-                    f"Reinstall the owning package to restore '{path}': "
-                    f"dpkg -S {path} 2>/dev/null | cut -d: -f1 | xargs -r apt-get install --reinstall -y"
-                ),
-            )
-            apply_signal(finding, "missing_file", 35,
-                         "package-owned file absent from disk — cannot be an incidental edit")
-            findings.append(finding)
+        if not _is_reportable_dpkg_entry(entry):
             continue
-
-        # Conffiles are expected to be user-edited; only their content hash (5) matters
-        # for tamper detection, and even then it's routine — skip conffiles entirely to
-        # avoid drowning responders in expected local config edits.
-        if is_conffile:
-            continue
-
-        if any(ch in flags for ch in ("5", "M", "S")):
-            finding = Finding(
-                rule_id="PACKAGE_TAMPERED",
-                severity=Severity.HIGH,
-                title="Package-owned file modified since installation",
-                description=(
-                    f"'{path}' differs from the package manifest (dpkg --verify flags: '{flags}')"
-                ),
-                artifact_path=path,
-                raw_value=flags,
-                remediation_available=False,
-                remediation_description=None,
-                guided_remediation=(
-                    f"Compare against the package's known-good copy and reinstall if tampered: "
-                    f"dpkg -S {path} 2>/dev/null | cut -d: -f1 | xargs -r apt-get install --reinstall -y"
-                ),
-            )
-            apply_signal(finding, "content_match", 30,
-                         f"dpkg --verify reports a real content/mode/size mismatch (flags: '{flags}')")
-            findings.append(finding)
+        package = entry.get("package")
+        if package:
+            by_package.setdefault(package, []).append(entry)
+        else:
+            findings.append(_package_file_finding(entry))
+    for package, entries in by_package.items():
+        findings.append(_package_group_finding(package, entries))
     return findings
 
 

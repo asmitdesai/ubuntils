@@ -59,4 +59,4 @@ docs/*
 .superpowers/
 
 # Scan reports (contain host details — never commit)
-report.json
+report*.json

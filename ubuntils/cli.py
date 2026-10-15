@@ -8,7 +8,9 @@ import click
 import structlog
 
 from ubuntils import __version__
-from ubuntils.collectors.packages import SENSITIVE_ATTR_PATHS, SETUID_FIND_ARGS
+from ubuntils.collectors.packages import (
+    DPKG_OWNERS_ARGV, SENSITIVE_ATTR_PATHS, SETUID_FIND_ARGS,
+)
 from ubuntils.collectors.source import LiveSource
 from ubuntils.detectors.custom_rules import load_custom_rules
 from ubuntils.formatters.json_formatter import JSONFormatter
@@ -58,6 +60,7 @@ COLLECT_COMMANDS = [
      ["systemctl", "list-timers", "--all", "--no-pager"]),
     ("journalctl", ["journalctl", "-o", "json", "--since=7 days ago", "--no-pager"]),
     ("dpkg_verify", ["dpkg", "--verify"]),
+    ("dpkg_owners", DPKG_OWNERS_ARGV),
     ("lsattr_sensitive", ["lsattr", "-d", *SENSITIVE_ATTR_PATHS]),
     ("find_setuid", ["find", *SETUID_FIND_ARGS]),
     ("lsmod", ["lsmod"]),
