@@ -629,9 +629,14 @@ def render_cmd(profile: dict, values: Dict[str, str]) -> List[str]:
     return [part.format(**values) for part in profile["cmd"]]
 
 
-def tool_available(cmd: List[str]) -> bool:
+def tool_available(cmd: List[str], run_from: Optional[Path] = None) -> bool:
     exe = cmd[0]
-    return os.access(exe, os.X_OK) if os.sep in exe else shutil.which(exe) is not None
+    if os.sep not in exe:
+        return shutil.which(exe) is not None
+    path = Path(exe)
+    if not path.is_absolute() and run_from is not None:
+        path = run_from / path      # "./uac" means the one in the tool's own directory
+    return os.access(path, os.X_OK)
 
 
 def _new_token() -> str:
@@ -755,8 +760,10 @@ def cmd_run(args) -> None:
         except KeyError as exc:
             log(f"skip {tool}: profile needs --set {exc.args[0]}=...")
             continue
-        if not tool_available(probe):
-            log(f"skip {tool}: {probe[0]} not found")
+        run_from = Path(profile["run_from"].format(**values)) if profile.get("run_from") else None
+        if not tool_available(probe, run_from):
+            where = f" in {run_from}" if run_from else ""
+            log(f"skip {tool}: {probe[0]} not found{where}")
             continue
         log(f"\n== {tool}")
         base_dir = run_dir / tool / "baseline"
