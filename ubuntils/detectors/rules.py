@@ -2,7 +2,7 @@ import ipaddress
 import os
 import re
 import time
-from typing import List
+from typing import List, Optional
 
 from ubuntils.detectors.finding import Finding, Severity
 from ubuntils.detectors.scoring import apply_signal
@@ -578,21 +578,25 @@ _CURL_TO_SHELL_RE = re.compile(r"\b(curl|wget)\b[^\n|]*\|\s*(sudo\s+)?(ba)?sh\b"
 _BASE64_DECODE_RE = re.compile(r"\bbase64\b\s+(-d|--decode)\b")
 
 
-def _rc_content_is_suspicious(content: str) -> bool:
-    if _CURL_TO_SHELL_RE.search(content):
-        return True
-    if _BASE64_DECODE_RE.search(content):
-        return True
+def _rc_suspicious_line(content: str) -> Optional[str]:
+    """The first line of a shell init file that downloads-and-executes, decodes
+    base64, or puts a writable temp dir on PATH — or None."""
     for line in content.splitlines():
         stripped = line.strip()
-        if stripped.startswith("export "):
-            stripped = stripped[len("export "):].strip()
-        if not stripped.startswith("PATH="):
+        if stripped.startswith("#"):
             continue
-        value = stripped[len("PATH="):].strip().strip("\"'")
-        if any(path_in_writable_tmp(p) for p in value.split(":")):
-            return True
-    return False
+        if _CURL_TO_SHELL_RE.search(stripped) or _BASE64_DECODE_RE.search(stripped):
+            return stripped
+        assignment = stripped[len("export "):].strip() if stripped.startswith("export ") else stripped
+        if assignment.startswith("PATH="):
+            value = assignment[len("PATH="):].strip().strip("\"'")
+            if any(path_in_writable_tmp(p) for p in value.split(":")):
+                return stripped
+    return None
+
+
+def _rc_content_is_suspicious(content: str) -> bool:
+    return _rc_suspicious_line(content) is not None
 
 
 def rule_shell_rc_modification(artifacts: dict) -> List[Finding]:
@@ -605,7 +609,8 @@ def rule_shell_rc_modification(artifacts: dict) -> List[Finding]:
         recent = mtime >= cutoff or ctime >= cutoff
         # Suspicious content is reported however old the file is — a
         # curl|bash planted three days ago is no less of a backdoor.
-        content_suspicious = _rc_content_is_suspicious(entry.get("content", ""))
+        suspicious_line = _rc_suspicious_line(entry.get("content", ""))
+        content_suspicious = suspicious_line is not None
         if not (recent or content_suspicious):
             continue
         source = entry.get("source", "")
@@ -621,7 +626,8 @@ def rule_shell_rc_modification(artifacts: dict) -> List[Finding]:
                    if content_suspicious else "was modified within the last 48 hours")
             ),
             artifact_path=source,
-            raw_value=source,
+            # The offending line itself, so the report says what to look at.
+            raw_value=suspicious_line if content_suspicious else source,
             remediation_available=False,
             remediation_description=None,
             guided_remediation=(
