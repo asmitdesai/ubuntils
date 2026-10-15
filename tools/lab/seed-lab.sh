@@ -113,7 +113,7 @@ plant_ssh() {
     shred -u "$keydir/key" 2>/dev/null || rm -f "$keydir/key"
     rm -rf "$keydir"
 
-    install -d -m 700 -o "$LAB_USER" -g "$LAB_USER" "$home/.ssh"
+    install -d -m 700 -o "$LAB_USER" -g "$LAB_USER" "$home/.ssh"  # removed with the home dir
     say SSH_UNAUTHORIZED_KEY "key with command= option in authorized_keys"
     printf 'command="/tmp/%s-shell",no-pty %s\n' "$MARK" "$pub" > "$home/.ssh/authorized_keys"
     say SSH_UNAUTHORIZED_KEY "key hidden in authorized_keys2"
@@ -181,7 +181,7 @@ start_decoy() {
     # $1 = path of the renamed sleep binary. setsid detaches it from this shell.
     # The file is recorded before the pid: clean undoes in reverse, so the
     # process is stopped while /proc/<pid>/exe still names the file.
-    install -m 755 "$(command -v sleep)" "$1"
+    install -m 755 "$(type -P sleep)" "$1"
     record "file $1"
     setsid "$1" 86400 </dev/null >/dev/null 2>&1 &
     record "pid $! $1"
@@ -197,8 +197,10 @@ plant_processes() {
 plant_setuid() {
     say SETUID_INVENTORY "setuid copy of 'true' in /opt/$MARK"
     install -d "/opt/$MARK"
-    install -m 4755 -o root -g root "$(command -v true)" "/opt/$MARK/true"
     record "dir /opt/$MARK"
+    # type -P, not command -v: `true` is a bash builtin, so command -v
+    # returns the bare word "true" instead of /usr/bin/true.
+    install -m 4755 -o root -g root "$(type -P true)" "/opt/$MARK/true"
 }
 
 plant_immutable() {
