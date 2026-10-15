@@ -847,3 +847,181 @@ def test_rule_kernel_module_suspicious_flags_unknown_modules():
     # real) are orthogonal, and this rule is honest about being unsure.
     assert findings[0].confidence_band == "MEDIUM"
     assert any(s["name"] == "unallowlisted_module" for s in findings[0].signals)
+
+
+# ─── Ubuntu 26.04 aarch64 false positives (live scan 2026-10-16) ─────────────
+
+_STOCK_COMMON_AUTH = (
+    "auth\t[success=1 default=ignore]\tpam_unix.so nullok\n"
+    "auth\trequisite\t\t\tpam_deny.so\n"
+    "auth\trequired\t\t\tpam_permit.so\n"
+    "auth\toptional\t\t\tpam_cap.so\n"
+)
+_STOCK_COMMON_ACCOUNT = (
+    "account\t[success=1 new_authtok_reqd=done default=ignore]\tpam_unix.so\n"
+    "account\trequisite\t\t\tpam_deny.so\n"
+    "account\trequired\t\t\tpam_permit.so\n"
+)
+_STOCK_COMMON_SESSION = (
+    "session\t[default=1]\t\t\tpam_permit.so\n"
+    "session\trequisite\t\t\tpam_deny.so\n"
+    "session\trequired\t\t\tpam_permit.so\n"
+    "session\trequired\tpam_unix.so\n"
+)
+_STOCK_COMMON_PASSWORD = (
+    "password\t[success=1 default=ignore]\tpam_unix.so obscure yescrypt\n"
+    "password\trequisite\t\t\tpam_deny.so\n"
+    "password\trequired\t\t\tpam_permit.so\n"
+)
+_STOCK_GDM_AUTOLOGIN = (
+    "auth    requisite       pam_nologin.so\n"
+    "auth    required        pam_succeed_if.so user != root quiet_success\n"
+    "auth    required        pam_permit.so\n"
+    "@include common-account\n"
+)
+_STOCK_SSSD_SHADOWUTILS = (
+    "auth        [success=done ignore=ignore default=die] pam_unix.so nullok try_first_pass\n"
+    "auth        required      pam_deny.so\n"
+    "account     required      pam_unix.so\n"
+    "account     required      pam_permit.so\n"
+)
+
+
+def test_pam_backdoor_ignores_stock_ubuntu_pam_stacks():
+    from ubuntils.detectors.rules import rule_pam_backdoor
+    artifacts = {"pam_files": [
+        {"path": "/etc/pam.d/common-auth", "content": _STOCK_COMMON_AUTH},
+        {"path": "/etc/pam.d/common-account", "content": _STOCK_COMMON_ACCOUNT},
+        {"path": "/etc/pam.d/common-session", "content": _STOCK_COMMON_SESSION},
+        {"path": "/etc/pam.d/common-password", "content": _STOCK_COMMON_PASSWORD},
+        {"path": "/etc/pam.d/gdm-autologin", "content": _STOCK_GDM_AUTOLOGIN},
+        {"path": "/etc/pam.d/sssd-shadowutils", "content": _STOCK_SSSD_SHADOWUTILS},
+    ]}
+    assert rule_pam_backdoor(artifacts) == []
+
+
+def test_pam_backdoor_flags_common_auth_with_pam_deny_removed():
+    # Deleting the pam_deny gate makes a pam_unix failure fall through to
+    # pam_permit — the classic "remove one line" backdoor.
+    from ubuntils.detectors.rules import rule_pam_backdoor
+    content = _STOCK_COMMON_AUTH.replace("auth\trequisite\t\t\tpam_deny.so\n", "")
+    findings = rule_pam_backdoor({"pam_files": [
+        {"path": "/etc/pam.d/common-auth", "content": content}]})
+    assert len(findings) == 1
+    assert "pam_permit.so" in findings[0].raw_value
+
+
+def test_pam_backdoor_flags_demoted_pam_deny_gate():
+    from ubuntils.detectors.rules import rule_pam_backdoor
+    content = _STOCK_COMMON_AUTH.replace("requisite\t\t\tpam_deny.so", "optional\tpam_deny.so")
+    assert len(rule_pam_backdoor({"pam_files": [
+        {"path": "/etc/pam.d/common-auth", "content": content}]})) == 1
+
+
+def test_pam_backdoor_flags_permit_only_auth_stack():
+    from ubuntils.detectors.rules import rule_pam_backdoor
+    findings = rule_pam_backdoor({"pam_files": [
+        {"path": "/etc/pam.d/common-auth", "content": "auth required pam_permit.so\n"}]})
+    assert len(findings) == 1
+
+
+def test_pam_backdoor_flags_sufficient_permit_even_above_include():
+    from ubuntils.detectors.rules import rule_pam_backdoor
+    content = "auth sufficient pam_permit.so\n@include common-auth\n"
+    assert len(rule_pam_backdoor({"pam_files": [
+        {"path": "/etc/pam.d/sshd", "content": content}]})) == 1
+
+
+def test_pam_backdoor_flags_bracket_success_done_permit():
+    from ubuntils.detectors.rules import rule_pam_backdoor
+    content = "auth [success=done default=ignore] /lib/security/pam_permit.so\n" + _STOCK_COMMON_AUTH
+    assert len(rule_pam_backdoor({"pam_files": [
+        {"path": "/etc/pam.d/common-auth", "content": content}]})) == 1
+
+
+def _listener(port, pid="1"):
+    return {"proto": "tcp", "local_addr": "0.0.0.0", "local_port": port,
+            "remote_addr": "0.0.0.0", "remote_port": "*", "state": "LISTEN", "pid": pid}
+
+
+def test_suspicious_connection_ignores_inbound_ssh_session():
+    # sshd-session holds the accepted side of the responder's own SSH login;
+    # the "remote port" is the client's ephemeral port, not a destination.
+    from ubuntils.detectors.rules import rule_process_suspicious_connection
+    artifacts = {
+        "processes": [{"pid": 79437, "name": "sshd-session", "uid": 0,
+                       "exe": "/usr/lib/openssh/sshd-session", "cmdline": "sshd-session"}],
+        "connections": [
+            _listener("22"),
+            {"proto": "tcp", "local_addr": "10.211.55.40", "local_port": "22",
+             "remote_addr": "10.211.55.2", "remote_port": "52360", "state": "ESTAB", "pid": "79437"},
+        ],
+    }
+    assert rule_process_suspicious_connection(artifacts) == []
+
+
+def test_suspicious_connection_still_flags_bind_shell_in_tmp():
+    # Inbound connections skip the port heuristic, not the exe-location check.
+    from ubuntils.detectors.rules import rule_process_suspicious_connection
+    artifacts = {
+        "processes": [{"pid": 42, "name": "x", "uid": 0, "exe": "/tmp/implant", "cmdline": "x"}],
+        "connections": [
+            _listener("4444", pid="42"),
+            {"proto": "tcp", "local_addr": "10.0.0.2", "local_port": "4444",
+             "remote_addr": "10.0.0.9", "remote_port": "51111", "state": "ESTAB", "pid": "42"},
+        ],
+    }
+    findings = rule_process_suspicious_connection(artifacts)
+    assert len(findings) == 1
+    assert findings[0].severity == Severity.HIGH
+    assert "inbound" in findings[0].description
+
+
+def test_suspicious_connection_ignores_v4_mapped_loopback():
+    from ubuntils.detectors.rules import rule_process_suspicious_connection
+    artifacts = {
+        "processes": [{"pid": 96370, "name": "java", "uid": 0,
+                       "exe": "/usr/share/wazuh-indexer/jdk/bin/java", "cmdline": "java"}],
+        "connections": [{"proto": "tcp", "local_addr": "[::ffff:127.0.0.1]", "local_port": "9200",
+                         "remote_addr": "[::ffff:127.0.0.1]", "remote_port": "54190",
+                         "state": "ESTAB", "pid": "96370"}],
+    }
+    assert rule_process_suspicious_connection(artifacts) == []
+
+
+def test_suspicious_connection_ignores_dhcp_client():
+    from ubuntils.detectors.rules import rule_process_suspicious_connection
+    artifacts = {
+        "processes": [{"pid": 1226, "name": "NetworkManager", "uid": 0,
+                       "exe": "/usr/sbin/NetworkManager", "cmdline": "NetworkManager"}],
+        "connections": [{"proto": "udp", "local_addr": "10.211.55.40", "local_port": "68",
+                         "remote_addr": "10.211.55.1", "remote_port": "67",
+                         "state": "ESTAB", "pid": "1226"}],
+    }
+    assert rule_process_suspicious_connection(artifacts) == []
+
+
+def test_setuid_inventory_ignores_ubuntu_2604_sudo_rs():
+    from ubuntils.detectors.rules import rule_setuid_inventory
+    artifacts = {"setuid_binaries": [
+        {"path": p, "setuid": True, "setgid": False}
+        for p in ("/usr/bin/sudo.ws", "/usr/lib/cargo/bin/sudo", "/usr/lib/cargo/bin/su")
+    ]}
+    assert rule_setuid_inventory(artifacts) == []
+
+
+def test_kernel_module_ignores_stock_aarch64_vm_modules():
+    from ubuntils.detectors.rules import rule_kernel_module_suspicious
+    names = [
+        "tcp_diag", "udp_diag", "inet_diag", "nf_tables", "snd_seq_dummy", "snd_hrtimer",
+        "qrtr", "nfnetlink", "cfg80211", "binfmt_misc", "nls_iso8859_1",
+        "snd_hda_codec_generic", "snd_hda_intel", "snd_intel_dspcfg", "snd_hda_codec",
+        "snd_hwdep", "snd_hda_core", "snd_pcm", "snd_seq_midi", "snd_seq_midi_event",
+        "snd_rawmidi", "snd_seq", "snd_seq_device", "snd_timer", "snd", "soundcore",
+        "acpi_tad", "input_leds", "joydev", "efi_pstore", "vmw_vsock_virtio_transport",
+        "vmw_vsock_virtio_transport_common", "vsock", "ghash_ce", "sm4", "ahci_platform",
+        "virtio_gpu", "virtio_dma_buf", "hid_generic", "usbhid", "hid", "dmi_sysfs",
+        "virtiofs", "autofs4", "aes_neon_bs", "aes_neon_blk", "aes_ce_blk",
+    ]
+    artifacts = {"kernel_modules": [{"name": n, "size": "1", "used_by": []} for n in names]}
+    assert rule_kernel_module_suspicious(artifacts) == []
