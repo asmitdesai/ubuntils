@@ -447,11 +447,11 @@ A summary view of the scan: detected Ubuntu version, architecture, scan duration
 | USER_EMPTY_PASSWORD | HIGH | No | A login-shell account whose /etc/shadow password field is empty (Ubuntu's default PAM `nullok` lets it log in with no password) |
 | SUDOERS_NOPASSWD | MEDIUM | Yes* | NOPASSWD sudoers grants for users with UID ≥ 1000 and a login shell, directly or via a `%group` rule; included files are followed. *Group rules are flag-only (removing `%sudo` could remove all sudo access) |
 | PROCESS_MASQUERADE | MEDIUM | No | Processes whose name matches a known system binary but whose executable is outside the standard system directories (/usr/bin, /usr/sbin, /bin, /sbin, /usr/local/{bin,sbin}, /usr/lib, /usr/libexec, /lib, /snap) |
-| PROCESS_SUSPICIOUS_CONNECTION | HIGH / MEDIUM | No | Processes holding an outbound connection whose executable is in a world-writable temp dir or deleted from disk (HIGH), or is outside the standard system directories or talks to a non-standard remote port (MEDIUM) |
+| PROCESS_SUSPICIOUS_CONNECTION | HIGH / MEDIUM | No | Processes holding a non-loopback connection whose executable is in a world-writable temp dir or deleted from disk (HIGH), or is outside the standard system directories, or that make an outbound connection to a non-standard remote port (MEDIUM). Inbound connections (on a listening port) skip the port check |
 | SHELL_RC_MODIFICATION | LOW | No | Shell init files (bashrc, profile, zshrc, etc.) modified within the last 48 hours for any user with a login shell |
 | PACKAGE_TAMPERED | HIGH | No | System-owned package files modified, missing, or whose content/mode/size mismatches the package manifest (via `dpkg --verify`) |
 | IMMUTABLE_FLAG_SET | MEDIUM | No | Immutable (`i`) or append-only (`a`) flags set on sensitive files like /etc/passwd, /etc/sudoers, or /etc/pam.d/* (detected via `lsattr`) |
-| PAM_BACKDOOR | HIGH | No | A literal `pam_permit.so` line in any /etc/pam.d/* file, or an NSS module in /etc/nsswitch.conf outside an allowlist (files/sss/ldap/winbind/...) |
+| PAM_BACKDOOR | HIGH | No | A `pam_permit.so` line in an /etc/pam.d/* auth/account stack that can grant access on its own (`sufficient`/`success=done`, or no `pam_deny`-style gate in that stack), or an NSS module in /etc/nsswitch.conf outside an allowlist (files/sss/ldap/winbind/...) |
 | KERNEL_MODULE_SUSPICIOUS | LOW | No | Loaded kernel modules outside an allowlist of common built-in modules — note: hardware-heavy hosts (GPUs, Wi-Fi cards, proprietary drivers) will see false positives; add expected modules via `--config` |
 | SETUID_INVENTORY | LOW | No | Unexpected setuid or setgid binaries outside a known baseline set (the two bits are checked and reported separately) |
 
@@ -556,12 +556,12 @@ Raw value:     eve::
 Remediation:   not available
 ```
 
-**PROCESS_SUSPICIOUS_CONNECTION** — Persistence is only half the picture; a foothold that never talks to anything is rarely the one you care about. This rule joins the process and network collectors by PID so a flagged process arrives with its current connections attached. An executable staged in `/tmp` holding an established outbound socket is HIGH; a legitimate binary reaching a non-standard remote port is MEDIUM and worth a look. This is a snapshot of current state, not continuous monitoring — a beacon that is sleeping when you scan will not appear. Flag-only.
+**PROCESS_SUSPICIOUS_CONNECTION** — Persistence is only half the picture; a foothold that never talks to anything is rarely the one you care about. This rule joins the process and network collectors by PID so a flagged process arrives with its current connections attached. An executable staged in `/tmp` holding an established outbound socket is HIGH; a legitimate binary reaching a non-standard remote port is MEDIUM and worth a look. Connections accepted on a local listening port are treated as inbound: their "remote port" is the client's ephemeral port, so they only count toward the executable-location check (a bind shell in `/tmp` is still HIGH, your own SSH session is not flagged). Loopback traffic, including IPv4-mapped `::ffff:127.0.0.1`, is ignored. This is a snapshot of current state, not continuous monitoring — a beacon that is sleeping when you scan will not appear. Flag-only.
 
 *Example finding:*
 ```
 [HIGH] PROCESS_SUSPICIOUS_CONNECTION
-Title:         Process with suspicious outbound connection
+Title:         Process with suspicious network connection
 Artifact:      /proc/1337/exe
 Raw value:     203.0.113.9:4444
 Remediation:   not available
@@ -600,14 +600,14 @@ Raw value:     ----i--------e---
 Remediation:   not available
 ```
 
-**PAM_BACKDOOR** — PAM (Pluggable Authentication Modules) and NSS (Name Service Switch) are the core authentication and identity systems on Linux. This rule does NOT do mtime-based "was this file modified" detection — it pattern-matches file *content*: (1) a literal `pam_permit.so` line in any /etc/pam.d/* file (this module always succeeds and is a classic auth-bypass backdoor), or (2) an NSS module listed in /etc/nsswitch.conf that isn't in ubuntils' built-in allowlist. **Note:** the NSS check will false-positive on domain-joined/SSSD/LDAP/Winbind hosts using a module outside the built-in allowlist — it is intentionally scored at lower confidence than the pam_permit.so match for this reason; use `--config` to allowlist unrecognized module names for your environment. Flag-only — authentication configuration changes require careful verification.
+**PAM_BACKDOOR** — PAM (Pluggable Authentication Modules) and NSS (Name Service Switch) are the core authentication and identity systems on Linux. This rule does NOT do mtime-based "was this file modified" detection — it pattern-matches file *content*: (1) a `pam_permit.so` line that can decide an auth or account stack on its own — either it short-circuits the stack (`sufficient`, `[success=done …]`), or nothing else in that stack can fail it (the stock `requisite pam_deny.so` gate was removed or demoted). pam_permit always succeeds, so either shape is a classic auth-bypass backdoor. Stock Ubuntu's `common-*` files end every stack with `required pam_permit.so` behind that deny gate, and session/password stacks can't grant a login, so neither is flagged, or (2) an NSS module listed in /etc/nsswitch.conf that isn't in ubuntils' built-in allowlist. **Note:** the NSS check will false-positive on domain-joined/SSSD/LDAP/Winbind hosts using a module outside the built-in allowlist — it is intentionally scored at lower confidence than the pam_permit.so match for this reason; use `--config` to allowlist unrecognized module names for your environment. Flag-only — authentication configuration changes require careful verification.
 
 *Example findings:*
 ```
 [HIGH] PAM_BACKDOOR
 Title:         PAM config unconditionally permits authentication
 Artifact:      /etc/pam.d/sshd
-Raw value:     auth required pam_permit.so
+Raw value:     auth sufficient pam_permit.so
 Remediation:   not available
 ```
 ```

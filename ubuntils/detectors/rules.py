@@ -1,3 +1,4 @@
+import ipaddress
 import os
 import re
 import time
@@ -32,16 +33,39 @@ SHELL_INIT_FILENAMES = frozenset({
 # Common destination ports for legitimate outbound traffic. A connection to a
 # port outside this set from a flagged process is more interesting.
 _COMMON_REMOTE_PORTS = frozenset({
-    "22", "53", "80", "123", "443", "465", "587", "853", "993", "995",
+    "22", "53", "67", "80", "123", "443", "465", "587", "853", "993", "995",
 })
-_OUTBOUND_STATES = frozenset({"ESTAB", "ESTABLISHED", "SYN-SENT", "SYN_SENT"})
-_NON_REMOTE_ADDRS = frozenset({"", "*", "0.0.0.0", "::", "127.0.0.1", "::1"})
+_ESTABLISHED_STATES = frozenset({"ESTAB", "ESTABLISHED", "SYN-SENT", "SYN_SENT"})
+_NON_REMOTE_ADDRS = frozenset({"", "*", "0.0.0.0", "::"})
 
 
-def _is_outbound(conn: dict) -> bool:
-    if conn.get("state", "").upper() not in _OUTBOUND_STATES:
+def _is_loopback(addr: str) -> bool:
+    # ss prints IPv4-mapped sockets as "[::ffff:127.0.0.1]"
+    addr = addr.strip("[]").split("%", 1)[0]
+    if addr.lower().startswith("::ffff:"):
+        addr = addr[len("::ffff:"):]
+    try:
+        return ipaddress.ip_address(addr).is_loopback
+    except ValueError:
         return False
-    return conn.get("remote_addr", "") not in _NON_REMOTE_ADDRS
+
+
+def _is_remote_established(conn: dict) -> bool:
+    if conn.get("state", "").upper() not in _ESTABLISHED_STATES:
+        return False
+    remote = conn.get("remote_addr", "")
+    return remote not in _NON_REMOTE_ADDRS and not _is_loopback(remote)
+
+
+def _listening_tcp_ports(connections: list) -> set:
+    return {c.get("local_port", "") for c in connections
+            if c.get("state", "").upper() == "LISTEN" and c.get("proto", "").startswith("tcp")}
+
+
+def _is_inbound(conn: dict, listening_ports: set) -> bool:
+    # An accepted TCP connection sits on a listening port (whoever owns the
+    # listener — sshd-session's port 22 is held by ssh.socket/pid 1).
+    return conn.get("proto", "").startswith("tcp") and conn.get("local_port", "") in listening_ports
 
 
 _7_DAYS_SECONDS = 7 * 24 * 3600
@@ -357,13 +381,18 @@ def rule_process_masquerade(artifacts: dict) -> List[Finding]:
 def rule_process_suspicious_connection(artifacts: dict) -> List[Finding]:
     """Join processes and network connections by PID.
 
-    Flags a process that holds an outbound connection when either its exe sits
-    in a suspicious path, or the connection targets a non-standard remote port.
-    Snapshot only — this is current artifact state, not behavioral monitoring.
+    Flags a process holding a non-loopback connection when either its exe sits
+    in a suspicious path, or an outbound connection targets a non-standard
+    remote port. Inbound (accepted) connections only count toward the exe check:
+    their "remote port" is the client's ephemeral port, so the port heuristic
+    would flag every SSH login. Snapshot only — this is current artifact state,
+    not behavioral monitoring.
     """
     findings = []
+    connections = artifacts.get("connections", [])
+    listening_ports = _listening_tcp_ports(connections)
     conns_by_pid: dict = {}
-    for conn in artifacts.get("connections", []):
+    for conn in connections:
         pid = str(conn.get("pid", ""))
         if pid:
             conns_by_pid.setdefault(pid, []).append(conn)
@@ -371,9 +400,10 @@ def rule_process_suspicious_connection(artifacts: dict) -> List[Finding]:
     for proc in artifacts.get("processes", []):
         pid = str(proc.get("pid", ""))
         exe = proc.get("exe", "")
-        outbound = [c for c in conns_by_pid.get(pid, []) if _is_outbound(c)]
-        if not outbound:
+        established = [c for c in conns_by_pid.get(pid, []) if _is_remote_established(c)]
+        if not established:
             continue
+        outbound = [c for c in established if not _is_inbound(c, listening_ports)]
         # HIGH only for exes in writable temp dirs or deleted from disk;
         # an unusual-but-plausible install location (e.g. /opt) is MEDIUM.
         exe_path = exe[:-len(" (deleted)")] if exe.endswith(" (deleted)") else exe
@@ -382,15 +412,16 @@ def rule_process_suspicious_connection(artifacts: dict) -> List[Finding]:
         nonstandard = [c for c in outbound if c.get("remote_port", "") not in _COMMON_REMOTE_PORTS]
         if not (suspicious_exe or nonstandard):
             continue
-        target = outbound[0]
+        target = (nonstandard or outbound or established)[0]
         remote = f"{target.get('remote_addr', '')}:{target.get('remote_port', '')}"
+        direction = "outbound connection to" if target in outbound else "inbound connection from"
         findings.append(Finding(
             rule_id="PROCESS_SUSPICIOUS_CONNECTION",
             severity=Severity.HIGH if high_risk_exe else Severity.MEDIUM,
-            title="Process with suspicious outbound connection",
+            title="Process with suspicious network connection",
             description=(
                 f"Process '{proc.get('name', '')}' (pid={pid}, exe={exe}) has an "
-                f"outbound connection to {remote}"
+                f"{direction} {remote}"
             ),
             artifact_path=f"/proc/{pid}/exe",
             raw_value=remote,
@@ -657,34 +688,97 @@ def rule_setuid_inventory(artifacts: dict) -> List[Finding]:
     return findings
 
 
+def _parse_pam_stacks(content: str) -> dict:
+    """Group a pam.d file's auth/account lines by type as (control, module, line).
+
+    Only auth and account matter for a bypass: pam_permit in session/password
+    stacks can't grant a login. ``@include`` and ``include``/``substack`` lines
+    are kept with an "include" control — the included file is checked on its own.
+    """
+    stacks: dict = {}
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("@include"):
+            for ptype in ("auth", "account"):
+                stacks.setdefault(ptype, []).append(("include", "", stripped))
+            continue
+        tokens = stripped.split()
+        ptype = tokens[0].lstrip("-")
+        if ptype not in ("auth", "account") or len(tokens) < 3:
+            continue
+        if tokens[1].startswith("["):
+            # Bracketed controls can contain spaces: [success=1 default=ignore]
+            end = next((i for i, t in enumerate(tokens[1:], 1) if t.endswith("]")), None)
+            if end is None or end + 1 >= len(tokens):
+                continue
+            control, module = " ".join(tokens[1:end + 1]), tokens[end + 1]
+        else:
+            control, module = tokens[1], tokens[2]
+        if control in ("include", "substack"):
+            control = "include"
+        stacks.setdefault(ptype, []).append((control, os.path.basename(module), stripped))
+    return stacks
+
+
+def _pam_control_gates(control: str) -> bool:
+    # A control that can make the stack fail: stock Ubuntu's gate is
+    # `requisite pam_deny.so`; `[... default=die]` does the same job.
+    if control in ("required", "requisite", "include"):
+        return True
+    return control.startswith("[") and ("default=die" in control or "default=bad" in control)
+
+
+def _pam_permit_bypass_line(content: str):
+    """Return the pam_permit.so line that can grant auth/account on its own, else None.
+
+    Stock Ubuntu ends every common-* stack with `required pam_permit.so` behind a
+    `requisite pam_deny.so` gate — harmless. It becomes a bypass when pam_permit
+    short-circuits the stack (sufficient / success=done), or when nothing else
+    in that stack can fail it (the deny gate was removed or demoted).
+    """
+    for stack in _parse_pam_stacks(content).values():
+        permits = [e for e in stack if e[1] == "pam_permit.so"]
+        if not permits:
+            continue
+        for control, _module, line in permits:
+            if control == "sufficient" or (control.startswith("[") and "success=done" in control):
+                return line
+        if not any(_pam_control_gates(c) for c, m, _ in stack if m != "pam_permit.so"):
+            return permits[0][2]
+    return None
+
+
 def rule_pam_backdoor(artifacts: dict) -> List[Finding]:
     findings = []
     for entry in artifacts.get("pam_files", []):
         path = entry.get("path", "")
-        content = entry.get("content", "")
-        for line in content.splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
-            if "pam_permit.so" in stripped:
-                finding = Finding(
-                    rule_id="PAM_BACKDOOR",
-                    severity=Severity.HIGH,
-                    title="PAM config unconditionally permits authentication",
-                    description=(
-                        f"'{path}' loads pam_permit.so, which always succeeds — a common backdoor "
-                        "technique to bypass authentication for a service"
-                    ),
-                    artifact_path=path,
-                    raw_value=stripped,
-                    remediation_available=False,
-                    remediation_description=None,
-                    guided_remediation=f"Review and remove the pam_permit.so line from {path}",
-                )
-                apply_signal(finding, "content_match", 30,
-                             "pam_permit.so is present verbatim in the PAM stack — not inferred")
-                findings.append(finding)
-                break  # one finding per file is enough signal
+        line = _pam_permit_bypass_line(entry.get("content", ""))
+        if line is None:
+            continue
+        finding = Finding(
+            rule_id="PAM_BACKDOOR",
+            severity=Severity.HIGH,
+            title="PAM config unconditionally permits authentication",
+            description=(
+                f"'{path}' uses pam_permit.so in a way that can grant authentication on its "
+                "own (it short-circuits the stack, or no other module can fail it) — a common "
+                "backdoor technique to bypass authentication for a service"
+            ),
+            artifact_path=path,
+            raw_value=line,
+            remediation_available=False,
+            remediation_description=None,
+            guided_remediation=(
+                f"Review {path}: remove the pam_permit.so line, or restore the "
+                "`requisite pam_deny.so` gate in front of it"
+            ),
+        )
+        apply_signal(finding, "content_match", 30,
+                     "pam_permit.so can decide the auth/account stack — read from the PAM config, "
+                     "not inferred")
+        findings.append(finding)  # one finding per file is enough signal
 
     nsswitch = artifacts.get("nsswitch_content", "")
     reported_modules = set()

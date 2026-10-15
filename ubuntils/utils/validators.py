@@ -26,6 +26,8 @@ KNOWN_SETUID_BINARIES = frozenset({
     "/usr/lib/snapd/snap-confine", "/usr/lib/eject/dmcrypt-get-device",
     "/usr/lib/xorg/Xorg.wrap", "/usr/sbin/mount.nfs", "/usr/sbin/mount.cifs",
     "/usr/bin/vmware-user-suid-wrapper", "/usr/bin/traceroute6.iputils",
+    # Ubuntu 25.10+/26.04 default to sudo-rs; the C sudo stays installed as sudo.ws
+    "/usr/lib/cargo/bin/sudo", "/usr/lib/cargo/bin/su", "/usr/bin/sudo.ws",
 })
 
 # Stock setgid binaries (group shadow/tty/crontab/_ssh/mlocate/utmp/mail).
@@ -50,17 +52,32 @@ ALLOWED_NSS_MODULES = frozenset({
     "sss", "ldap", "winbind", "wins",
 })
 
-# Common built-in modules on stock Ubuntu server/container hosts (networking,
-# filesystem overlay, virtualization). Deliberately NOT exhaustive for desktop/
-# hardware drivers (GPU, Wi-Fi, proprietary vendor modules) — see README caveat;
-# responders on such hosts should allowlist their host's modules via --config.
+# Common built-in modules on stock Ubuntu server/desktop/VM hosts (networking,
+# filesystem, virtualization, generic input/sound, x86 and arm64 crypto).
+# Exact names only. Deliberately NOT exhaustive for hardware drivers (GPU,
+# Wi-Fi chipsets, proprietary vendor modules) — see README caveat; responders
+# on such hosts should allowlist their host's modules via --config.
 ALLOWED_KERNEL_MODULES = frozenset({
     "overlay", "br_netfilter", "veth", "xt_conntrack", "xt_nat", "xt_tcpudp",
     "xt_MASQUERADE", "xt_addrtype", "xt_comment", "xt_mark", "xt_multiport",
     "iptable_filter", "iptable_nat", "ip_tables", "ip6_tables", "nf_conntrack",
     "nf_nat", "nf_defrag_ipv4", "nf_defrag_ipv6", "sch_fq_codel",
+    "nf_tables", "nfnetlink", "tcp_diag", "udp_diag", "inet_diag", "qrtr",
+    "binfmt_misc", "autofs4", "nls_iso8859_1", "efi_pstore", "dmi_sysfs",
+    "acpi_tad", "ahci_platform", "cfg80211",
     "vboxdrv", "vboxnetflt", "vboxnetadp",
     "virtio_net", "virtio_blk", "virtio_pci", "virtio_ring",
+    "virtio_gpu", "virtio_dma_buf", "virtio_console", "virtio_balloon", "virtio_rng",
+    "virtio_scsi", "virtio_input", "virtiofs",
+    "vsock", "vmw_vsock_virtio_transport", "vmw_vsock_virtio_transport_common",
+    "hid", "hid_generic", "usbhid", "input_leds", "joydev",
+    "snd", "soundcore", "snd_timer", "snd_pcm", "snd_hwdep", "snd_rawmidi",
+    "snd_seq", "snd_seq_device", "snd_seq_dummy", "snd_seq_midi", "snd_seq_midi_event",
+    "snd_hrtimer", "snd_hda_core", "snd_hda_codec", "snd_hda_codec_generic",
+    "snd_hda_intel", "snd_intel_dspcfg",
+    # arm64 crypto extensions (aarch64 hosts and VMs)
+    "aes_neon_bs", "aes_neon_blk", "aes_ce_blk", "aes_ce_cipher", "ghash_ce",
+    "polyval_ce", "sha1_ce", "sha2_ce", "sha3_ce", "sha512_ce", "sm4", "crct10dif_ce",
 })
 
 

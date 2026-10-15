@@ -57,3 +57,6 @@ CLAUDE.md
 docs/*
 !docs/debugging-common-issues.md
 .superpowers/
+
+# Scan reports (contain host details — never commit)
+report.json
