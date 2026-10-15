@@ -15,15 +15,16 @@
   },
   "uac": {
     "cmd": [
-      "{uac_dir}/uac",
+      "./uac",
       "-p",
       "ir_triage",
       "{out}"
     ],
-    "notes": "Unix-like Artifacts Collector. Pass --set uac_dir=/path/to/uac (the unpacked release).",
+    "notes": "Unix-like Artifacts Collector. Pass --set uac_dir=/path/to/uac (the unpacked release); UAC refuses to start outside that directory, so I2 is N/A. ir_triage is slow: use --timeout 3600.",
     "expect_output": [
       "{out}/uac-*"
-    ]
+    ],
+    "run_from": "{uac_dir}"
   },
   "chkrootkit": {
     "cmd": [
