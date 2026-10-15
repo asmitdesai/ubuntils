@@ -82,11 +82,13 @@ class PackageCollector(BaseCollector):
             if not line:
                 continue
             if line.startswith("missing"):
-                # "missing   /usr/bin/sshd" -> ["missing", "/usr/bin/sshd"] (extra
-                # whitespace collapses via split(None, 2))
+                # "missing   /usr/bin/sshd" or, for a conffile,
+                # "missing   c /etc/init.d/foo" (whitespace collapses via split)
                 parts = line.split(None, 2)
-                path = parts[-1].strip()
-                entries.append({"path": path, "flags": "", "is_conffile": False, "missing": True})
+                is_conffile = len(parts) == 3 and parts[1] == "c"
+                path = (parts[2] if is_conffile else " ".join(parts[1:])).strip()
+                entries.append({"path": path, "flags": "", "is_conffile": is_conffile,
+                                "missing": True})
                 continue
             flags_and_rest = line.split(" ", 1)
             if len(flags_and_rest) != 2:
@@ -118,8 +120,43 @@ class PackageCollector(BaseCollector):
                 "package ownership lookup (`dpkg-query -S`) unavailable — "
                 "PACKAGE_TAMPERED reported per file"
             )
+        md5sums_cache: dict = {}
         for entry in entries:
             entry["package"] = owners.get(entry["path"])
+            entry["is_directory"] = self._missing_is_directory(entry, md5sums_cache)
+
+    def _missing_is_directory(self, entry: dict, cache: dict):
+        """True if a missing, owned, non-conffile path is a directory (or
+        symlink), False if it's a regular file, None if unknown.
+
+        dpkg's <pkg>.md5sums lists every regular file the package ships and
+        nothing else, so an owned path absent from it isn't a regular file.
+        Bundles don't capture /var/lib/dpkg/info, so offline this is None.
+        """
+        package = entry.get("package")
+        if not entry.get("missing") or not package:
+            return None
+        if entry.get("is_conffile"):
+            return False
+        if package not in cache:
+            cache[package] = self._read_md5sums_paths(package)
+        regular_files = cache[package]
+        if regular_files is None:
+            return None
+        return entry["path"].lstrip("/") not in regular_files
+
+    def _read_md5sums_paths(self, package: str):
+        # Multi-Arch: same packages are "libc6:arm64.md5sums"; others drop the arch.
+        candidates = [package] + ([package.split(":", 1)[0]] if ":" in package else [])
+        for name in candidates:
+            try:
+                content = self.source.read_text(f"/var/lib/dpkg/info/{name}.md5sums")
+            except Exception:
+                continue
+            # "<md5>  usr/bin/foo" — the path may itself contain spaces.
+            return {line.split(None, 1)[1].strip() for line in content.splitlines()
+                    if len(line.split(None, 1)) == 2}
+        return None
 
     def _immutable_flag_entries(self) -> list:
         stdout, _stderr, rc = self.source.run(

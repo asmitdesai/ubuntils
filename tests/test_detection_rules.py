@@ -2,7 +2,6 @@ import os
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from ubuntils.detectors.engine import ALL_RULES, DetectionEngine
 from ubuntils.detectors.finding import Severity
@@ -1082,3 +1081,27 @@ def test_package_tampered_falls_back_to_per_file_without_ownership():
     assert set(by_path) == {"/usr/bin/passwd", "/usr/bin/sshd", "/var/lib/foo/state"}
     assert by_path["/usr/bin/passwd"].severity == Severity.HIGH
     assert by_path["/var/lib/foo/state"].severity == Severity.MEDIUM
+
+
+def test_package_tampered_package_with_only_missing_directories_is_low():
+    from ubuntils.detectors.rules import rule_package_tampered
+    entry = _dpkg("/etc/apparmor.d/disable", "apparmor", missing=True)
+    entry["is_directory"] = True
+    findings = rule_package_tampered({"dpkg_verify_entries": [entry]})
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.severity == Severity.LOW
+    assert "missing_directory" in [s["name"] for s in f.signals]
+    assert "missing_file" not in [s["name"] for s in f.signals]
+    assert "1 missing director" in f.description
+
+
+def test_package_tampered_missing_file_still_high_alongside_missing_dirs():
+    from ubuntils.detectors.rules import rule_package_tampered
+    d = _dpkg("/var/wazuh-manager/packages_files", "wazuh-manager", missing=True)
+    d["is_directory"] = True
+    f_ = _dpkg("/etc/init.d/wazuh-manager", "wazuh-manager", missing=True)
+    f_["is_directory"] = False
+    findings = rule_package_tampered({"dpkg_verify_entries": [d, f_]})
+    assert findings[0].severity == Severity.HIGH
+    assert "missing_file" in [s["name"] for s in findings[0].signals]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import structlog
 from textual import work
-from textual.app import App, ComposeResult
+from textual.app import App
 from textual.message import Message
 
 from ubuntils.collectors import ALL_COLLECTORS

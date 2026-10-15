@@ -3,9 +3,19 @@ from __future__ import annotations
 import glob as _glob
 import os
 import shutil
+import stat
 from abc import ABC, abstractmethod
 
 from ubuntils.utils.shell import run_command
+
+# Ceiling for files in user-controlled locations (shell init files,
+# authorized_keys, per-user units). Real ones are a few KB.
+USER_FILE_MAX_BYTES = 1024 * 1024
+
+
+class UnsafeFileError(OSError):
+    """A user-controlled file that isn't safe to read as root: not a regular
+    file (FIFO, device, socket) or larger than USER_FILE_MAX_BYTES."""
 
 
 class ArtifactSource(ABC):
@@ -44,6 +54,20 @@ class ArtifactSource(ABC):
     @abstractmethod
     def run(self, name: str, argv: list[str], timeout: int = 30) -> tuple[str, str, int]:
         ...
+
+    def read_user_text(self, path: str, max_bytes: int = USER_FILE_MAX_BYTES) -> str:
+        """Read a file a non-root user controls (anything under a home dir).
+
+        Any user can point ~/.bashrc at /dev/zero, make it a FIFO, or a 100 GB
+        sparse file — read as root by a plain read_text(), that hangs or
+        exhausts memory and blinds the scan. Symlinks are still followed
+        (dotfile managers symlink ~/.bashrc), but the target must be a regular
+        file of at most ``max_bytes``. Raises UnsafeFileError otherwise.
+        """
+        text = self.read_text(path)
+        if len(text) > max_bytes:
+            raise UnsafeFileError(f"{path}: larger than {max_bytes} bytes — not read")
+        return text
 
 
 class SourceContainmentError(Exception):
@@ -87,6 +111,28 @@ class LiveSource(ArtifactSource):
     def read_bytes(self, path: str) -> bytes:
         with open(self._resolve(path), "rb") as f:
             return f.read()
+
+    def read_user_text(self, path: str, max_bytes: int = USER_FILE_MAX_BYTES) -> str:
+        # O_NONBLOCK: opening a FIFO would otherwise block forever. The type
+        # and size checks run on the opened fd, so a swap after the check
+        # can't redirect the read.
+        fd = os.open(self._resolve(path), os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise UnsafeFileError(f"{path}: not a regular file — not read")
+            if st.st_size > max_bytes:
+                raise UnsafeFileError(f"{path}: larger than {max_bytes} bytes — not read")
+            os.set_blocking(fd, True)
+            with os.fdopen(fd, "rb") as f:
+                fd = -1  # now owned by f
+                data = f.read(max_bytes + 1)
+        finally:
+            if fd != -1:
+                os.close(fd)
+        if len(data) > max_bytes:  # grew after the fstat
+            raise UnsafeFileError(f"{path}: larger than {max_bytes} bytes — not read")
+        return data.decode("utf-8", errors="replace")
 
     def exists(self, path: str) -> bool:
         try:
@@ -137,7 +183,17 @@ class BundleSource(ArtifactSource):
             self._cleanup_dir = None
 
     def _resolve(self, path: str) -> str:
-        return os.path.join(self.root_dir, path.lstrip("/"))
+        # Paths come from the bundle itself (home directories in its
+        # /etc/passwd, include targets in its sudoers…), so a hostile bundle
+        # could otherwise climb out with "/../../home/analyst/.ssh/…" and get
+        # the analyst's own files read into the report.
+        root = os.path.realpath(self.root_dir)
+        resolved = os.path.realpath(os.path.join(root, path.lstrip("/")))
+        if resolved != root and not resolved.startswith(root + os.sep):
+            raise SourceContainmentError(
+                f"path {path!r} resolves outside the bundle — refusing to read it"
+            )
+        return resolved
 
     def read_text(self, path: str) -> str:
         with open(self._resolve(path), encoding="utf-8", errors="replace") as f:
@@ -148,17 +204,21 @@ class BundleSource(ArtifactSource):
             return f.read()
 
     def exists(self, path: str) -> bool:
-        return os.path.exists(self._resolve(path))
+        try:
+            return os.path.exists(self._resolve(path))
+        except SourceContainmentError:
+            return False
 
     def lstat(self, path: str) -> os.stat_result:
         return os.lstat(self._resolve(path))
 
     def glob(self, pattern: str) -> list[str]:
-        resolved = self._resolve(pattern)
-        results = []
-        for hit in sorted(_glob.glob(resolved)):
-            results.append("/" + os.path.relpath(hit, self.root_dir))
-        return results
+        try:
+            resolved = self._resolve(pattern)
+        except SourceContainmentError:
+            return []
+        root = os.path.realpath(self.root_dir)
+        return ["/" + os.path.relpath(hit, root) for hit in sorted(_glob.glob(resolved))]
 
     def readlink(self, path: str) -> str:
         # Bundles never contain symlinks (the reader rejects them), and

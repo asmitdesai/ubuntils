@@ -9,7 +9,7 @@
   `data.rule_id`, which is unique to ubuntils' JSONL schema on this
   localfile path.
 
-  Rule IDs 100100-100103 are chosen from Wazuh's user-reserved custom rule
+  Rule IDs 100100-100104 are chosen from Wazuh's user-reserved custom rule
   ID range (100000+); adjust if they collide with other custom rules on
   your manager.
 -->
@@ -36,5 +36,13 @@
     <if_sid>100100</if_sid>
     <field name="data.severity">LOW</field>
     <description>ubuntils LOW severity finding: $(data.title)</description>
+  </rule>
+
+  <!-- Escalate HIGH findings that ubuntils is also confident about (its
+       confidence_band combines content, timestamp and timeline evidence). -->
+  <rule id="100104" level="14">
+    <if_sid>100101</if_sid>
+    <field name="data.confidence_band">HIGH</field>
+    <description>ubuntils HIGH severity, HIGH confidence finding: $(data.title)</description>
   </rule>
 </group>

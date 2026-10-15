@@ -1,6 +1,17 @@
 from ubuntils.collectors.base import BaseCollector
 from ubuntils.utils.validators import is_login_shell
 
+# System-wide files every login or interactive shell sources (MITRE
+# T1546.004). /etc/profile.d/*.sh is globbed separately.
+SYSTEM_SHELL_INIT_FILES = (
+    "/etc/profile", "/etc/bash.bashrc",
+    "/etc/zsh/zshenv", "/etc/zsh/zprofile", "/etc/zsh/zshrc", "/etc/zsh/zlogin",
+)
+USER_SHELL_INIT_FILES = (
+    ".bashrc", ".bash_profile", ".bash_login", ".profile",
+    ".zshenv", ".zprofile", ".zshrc", ".zlogin",
+)
+
 
 class EnvironmentCollector(BaseCollector):
     def collect(self) -> dict:
@@ -9,30 +20,44 @@ class EnvironmentCollector(BaseCollector):
 
         definitions.extend(self._read_ld_so_preload())
         definitions.extend(self._read_env_file("/etc/environment", "system"))
-        definitions.extend(self._read_shell_init("/etc/profile", "system"))
-        for path in self.source.glob("/etc/profile.d/*.sh"):
-            definitions.extend(self._read_shell_init(path, "system"))
+
+        system_files = list(SYSTEM_SHELL_INIT_FILES)
+        try:
+            system_files += self.source.glob("/etc/profile.d/*.sh")
+        except Exception:
+            pass
+        for path in system_files:
+            self._add_shell_init(path, "system", definitions, shell_init_files,
+                                 user_controlled=False)
 
         for username, home in self._get_login_users():
-            for filename in (".bashrc", ".bash_profile", ".profile", ".zshrc", ".zprofile"):
-                path = f"{home}/{filename}"
-                if not self.source.exists(path):
-                    continue
-                definitions.extend(self._read_shell_init(path, username))
-                try:
-                    st = self.source.lstat(path)
-                    content = self.source.read_text(path)
-                except Exception:
-                    continue
-                shell_init_files.append({
-                    "owner": username,
-                    "source": path,
-                    "mtime": float(st.st_mtime),
-                    "ctime": float(st.st_ctime),
-                    "content": content,
-                })
+            for filename in USER_SHELL_INIT_FILES:
+                self._add_shell_init(f"{home.rstrip('/')}/{filename}", username,
+                                     definitions, shell_init_files, user_controlled=True)
 
         return {"env_definitions": definitions, "shell_init_files": shell_init_files}
+
+    def _add_shell_init(self, path: str, owner: str, definitions: list,
+                        shell_init_files: list, user_controlled: bool) -> None:
+        if not self.source.exists(path):
+            return
+        try:
+            st = self.source.lstat(path)
+            # A user's own files can be a FIFO, /dev/zero, or a huge sparse
+            # file planted to hang the scan; read those defensively.
+            content = (self.source.read_user_text(path) if user_controlled
+                       else self.source.read_text(path))
+        except Exception as exc:
+            self.degraded.append(f"skipped {path}: {exc}")
+            return
+        definitions.extend(self._shell_init_definitions(content, path, owner))
+        shell_init_files.append({
+            "owner": owner,
+            "source": path,
+            "mtime": float(st.st_mtime),
+            "ctime": float(st.st_ctime),
+            "content": content,
+        })
 
     def _get_login_users(self):
         try:
@@ -95,10 +120,11 @@ class EnvironmentCollector(BaseCollector):
             pass
         return entries
 
-    def _read_shell_init(self, path: str, owner: str) -> list:
+    @staticmethod
+    def _shell_init_definitions(content: str, path: str, owner: str) -> list:
         entries = []
         try:
-            for line in self.source.read_text(path).splitlines():
+            for line in content.splitlines():
                 raw = line.strip()
                 if not raw or raw.startswith("#"):
                     continue

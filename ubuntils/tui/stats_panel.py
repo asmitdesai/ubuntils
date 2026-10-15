@@ -1,5 +1,6 @@
 import platform
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.widget import Widget
 from textual.widgets import Static
@@ -18,6 +19,9 @@ def format_stats(stats: dict) -> str:
     suppressed = stats.get("suppressed_by_baseline", 0)
     if suppressed:
         lines.append(f"Suppressed by baseline: {suppressed}")
+    allowlisted = stats.get("suppressed_by_allowlist", 0)
+    if allowlisted:
+        lines.append(f"Suppressed by allowlist: {allowlisted}")
     integrity = stats.get("bundle_integrity")
     if integrity and integrity != "live":
         lines.append(f"Bundle integrity: {integrity.upper()}")
@@ -43,4 +47,5 @@ class StatsPanel(Widget):
         self._stats = stats
 
     def compose(self) -> ComposeResult:
-        yield Static(format_stats(self._stats))
+        # Degraded reasons and errors carry brackets ("[Errno 2]") — plain Text.
+        yield Static(Text(format_stats(self._stats)))

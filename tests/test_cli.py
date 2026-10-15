@@ -35,7 +35,6 @@ def test_scan_help(runner):
 
 def _fake_pipeline(**kwargs):
     from ubuntils.detectors.finding import Finding, Severity
-    from ubuntils.remediators.base import RemediationResult, RemediationStatus
     from ubuntils.timeline.builder import TimelineEvent
     import datetime
 
@@ -121,7 +120,6 @@ def test_scan_since_invalid_errors(runner):
 
 
 def test_pipeline_since_filters_timeline():
-    from ubuntils.collectors import ALL_COLLECTORS
     from ubuntils.timeline.builder import TimelineEvent
 
     old = TimelineEvent(
@@ -230,7 +228,6 @@ async def test_tui_app_scan_worker_uses_livesource():
 
 def test_run_pipeline_handles_collector_failure():
     """_run_pipeline should continue and count failures when a collector raises."""
-    from ubuntils.collectors import ALL_COLLECTORS
 
     bad_collector = MagicMock()
     bad_collector.collect.side_effect = RuntimeError("boom")
@@ -238,9 +235,9 @@ def test_run_pipeline_handles_collector_failure():
 
     with (
         patch("ubuntils.pipeline.ALL_COLLECTORS", [type(bad_collector)]),
-        patch(f"ubuntils.pipeline.DetectionEngine") as mock_engine,
-        patch(f"ubuntils.pipeline.TimelineBuilder") as mock_tl,
-        patch(f"ubuntils.pipeline.get_ubuntu_version", return_value="22.04"),
+        patch("ubuntils.pipeline.DetectionEngine") as mock_engine,
+        patch("ubuntils.pipeline.TimelineBuilder") as mock_tl,
+        patch("ubuntils.pipeline.get_ubuntu_version", return_value="22.04"),
     ):
         mock_engine.return_value.run.return_value = []
         mock_tl.return_value.build.return_value = []
@@ -446,14 +443,15 @@ def test_run_pipeline_applies_timeline_corroboration_signal(tmp_path, monkeypatc
     )
     src = LiveSource(root=str(tmp_path))
 
-    # Fake correlate() to guarantee at least one finding gets related_events,
-    # without depending on real syslog/journald content in the test environment.
-    def _fake_correlate(findings, timeline):
-        for f in findings:
-            if f.rule_id == "USER_UID_ZERO":
-                f.related_events.append("sentinel")
+    # A timeline event naming the account and showing account creation —
+    # supplied directly so the test doesn't depend on the runner's logs.
+    from ubuntils.timeline.builder import TimelineEvent
 
-    monkeypatch.setattr("ubuntils.pipeline.correlate", _fake_correlate)
+    event = TimelineEvent(timestamp=dt.datetime.now(dt.timezone.utc), source="journald",
+                          description="new user: name=ghost, UID=0", program="useradd")
+    fake_builder = MagicMock()
+    fake_builder.return_value.build.return_value = [event]
+    monkeypatch.setattr("ubuntils.pipeline.TimelineBuilder", fake_builder)
 
     findings, *_ = _run_pipeline(source=src, remediate=False, confirm=False)
     uid_zero = next(f for f in findings if f.rule_id == "USER_UID_ZERO")

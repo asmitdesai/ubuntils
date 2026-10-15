@@ -26,7 +26,6 @@ from ubuntils.detectors.engine import DetectionEngine
 from ubuntils.detectors.finding import (
     Finding, RemediationResult, RemediationStatus, Severity,
 )
-from ubuntils.detectors.scoring import apply_signal
 from ubuntils.integrations.wazuh import is_wazuh_agent_present, write_wazuh_alerts
 from ubuntils.remediators import REMEDIATOR_REGISTRY
 from ubuntils.timeline.builder import TimelineBuilder
@@ -175,11 +174,7 @@ def run_scan(
         logger.error("timeline_failed", error=timeline_error)
 
     try:
-        correlate(findings, timeline)
-        for finding in findings:
-            if finding.related_events:
-                apply_signal(finding, "timeline_corroboration", 25,
-                             f"{len(finding.related_events)} nearby timeline event(s)")
+        correlate(findings, timeline)  # also applies timeline_corroboration
     except Exception as exc:
         logger.error("correlation_failed", error=str(exc))
 
@@ -215,6 +210,7 @@ def run_scan(
     bundle_integrity = (bundle_info or {}).get("bundle_integrity", "live")
     rules_failed = list(engine.rules_failed) if engine else ["DetectionEngine"]
     suppressed = engine.suppressed_by_baseline if engine else 0
+    allowlisted = engine.suppressed_by_allowlist if engine else 0
 
     stats = {
         "ubuntu_version": report_ubuntu_version,
@@ -229,6 +225,7 @@ def run_scan(
         },
         "timeline_count": len(timeline),
         "suppressed_by_baseline": suppressed,
+        "suppressed_by_allowlist": allowlisted,
         "bundle_integrity": bundle_integrity,
         "collectors_degraded": collectors_degraded,
         "rules_failed": rules_failed,
@@ -249,6 +246,7 @@ def run_scan(
         "bundle_integrity": bundle_integrity,
         "command_collectors_skipped": command_collectors_skipped,
         "suppressed_by_baseline": suppressed,
+        "suppressed_by_allowlist": allowlisted,
         "baseline_suppressed": (
             [{"rule_id": f.rule_id, "artifact_path": f.artifact_path}
              for f in engine.baseline_suppressed_findings] if engine else []

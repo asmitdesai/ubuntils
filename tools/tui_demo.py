@@ -3,7 +3,6 @@ Driver for manual TUI remediation testing.
 Injects three fake findings and patches the remediator registry to
 simulate a successful remediation (no real files are touched).
 """
-import sys
 import time
 from unittest.mock import MagicMock
 

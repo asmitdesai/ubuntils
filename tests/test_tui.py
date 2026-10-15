@@ -1,7 +1,5 @@
 import datetime
-import platform
 
-import pytest
 
 from ubuntils.detectors.finding import Finding, Severity
 from ubuntils.timeline.builder import TimelineEvent
@@ -310,7 +308,6 @@ async def test_findings_panel_mark_fixed_failed_shows_error():
 # TimelinePanel widget
 # ---------------------------------------------------------------------------
 
-from textual.widgets import ListView
 
 from ubuntils.tui.timeline_panel import TimelinePanel
 
@@ -667,9 +664,7 @@ async def test_remediate_request_posts_failed_when_no_remediator():
 # Full UbuntilsApp end-to-end (scan -> results -> tab navigation)
 # ---------------------------------------------------------------------------
 
-from ubuntils.tui.app import UbuntilsApp
 from ubuntils.tui.results_screen import ResultsScreen as _ResultsScreen
-from ubuntils.tui.scan_screen import ScanScreen as _ScanScreen
 
 
 def _override_factory():
@@ -730,7 +725,6 @@ async def test_app_applies_allowlist_in_own_scan():
 
     def fake_engine_run(self, artifacts):
         # engine receives the allowlist; emulate a UID-0 finding being suppressed
-        from ubuntils.detectors.engine import DetectionEngine
         captured["allowlist"] = self.allowlist
         return self.allowlist.filter([
             _finding(rule_id="USER_UID_ZERO", remediation_available=False),
@@ -806,8 +800,8 @@ class TestRunScanWazuhForwarding:
 
 
 async def test_app_applies_timeline_corroboration_signal_and_surfaces_baseline_suppression():
-    """UbuntilsApp._run_scan must mirror cli.py's _run_pipeline: apply the
-    timeline_corroboration signal after correlate(), and surface
+    """UbuntilsApp._run_scan must mirror cli.py's _run_pipeline: findings get
+    the timeline_corroboration signal from correlation, and surface
     suppressed_by_baseline into stats (not silently drop it)."""
     from ubuntils.utils.baseline import Baseline
 
@@ -817,24 +811,23 @@ async def test_app_applies_timeline_corroboration_signal_and_surfaces_baseline_s
     def fake_engine_run(self, artifacts):
         self.baseline_suppressed_findings = []
         kept, self.baseline_suppressed_findings = self.baseline.filter([
-            _finding(rule_id="USER_UID_ZERO", remediation_available=False),
+            _finding(rule_id="USER_UID_ZERO", remediation_available=False,
+                     artifact_path="/etc/passwd", raw_value="ghost:x:0:0:...:/bin/bash"),
             _finding(rule_id="CRON_TMP_PATH"),
         ])
         self.suppressed_by_baseline = len(self.baseline_suppressed_findings)
         return kept
 
-    def fake_correlate(findings, timeline):
-        for f in findings:
-            if f.rule_id == "USER_UID_ZERO":
-                f.related_events.append("sentinel")
+    event = TimelineEvent(timestamp=datetime.datetime.now(datetime.timezone.utc),
+                          source="journald", description="new user: name=ghost, UID=0",
+                          program="useradd")
 
     with (
         patch("ubuntils.pipeline.ALL_COLLECTORS", []),
         patch("ubuntils.detectors.engine.DetectionEngine.run", fake_engine_run),
-        patch("ubuntils.pipeline.correlate", fake_correlate),
         patch("ubuntils.pipeline.TimelineBuilder") as tb,
     ):
-        tb.return_value.build.return_value = []
+        tb.return_value.build.return_value = [event]
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             await pilot.pause(delay=0.3)
@@ -897,5 +890,5 @@ def test_findings_list_row_shows_confidence_band(tmp_path):
     # `.children` stays empty until then, so inspect the pending list instead.
     list_item = list_view._pending_children[0]
     label = list_item._pending_children[0]
-    label_text = str(label.render())
+    label_text = str(label.content)
     assert "HIGH" in label_text

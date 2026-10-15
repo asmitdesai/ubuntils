@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from rich.markup import escape
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -109,10 +108,13 @@ class FindingDetail(Static):
     """
 
     def __init__(self, **kwargs) -> None:
-        super().__init__(_detail_text(None), **kwargs)
+        super().__init__(Text(_detail_text(None)), **kwargs)
 
     def show(self, finding: Finding | None, result: RemediationResult | None = None) -> None:
-        self.update(_detail_text(finding, result))
+        # Text, never a markup string: raw values and log lines are attacker
+        # text, and "[/bold]" in a cron line would crash the TUI (MarkupError)
+        # the moment the responder selected that finding.
+        self.update(Text(_detail_text(finding, result)))
 
 
 class FindingsPanel(Widget):
@@ -149,10 +151,8 @@ class FindingsPanel(Widget):
             path = f.artifact_path[:35]
             items.append(
                 ListItem(
-                    Label(
-                        f"[{color} bold]{sev}[/{color} bold]  {rule}  "
-                        f"{escape(path)}  ({f.confidence_band})"
-                    ),
+                    Label(Text.assemble((sev, f"bold {color}"),
+                                        f"  {rule}  {path}  ({f.confidence_band})")),
                     id=f"finding-{i}",
                 )
             )
@@ -190,5 +190,5 @@ class FindingsPanel(Widget):
         sev = _SEVERITY_SHORT[finding.severity]
         rule = f"{finding.rule_id[:20]:<20}"
         path = finding.artifact_path[:35]
-        label.update(f"[green]✓ {sev}[/green]  {rule}  {escape(path)}  [fixed]")
+        label.update(Text.assemble((f"✓ {sev}", "green"), f"  {rule}  {path}  [fixed]"))
         self.query_one(FindingDetail).show(finding, result)

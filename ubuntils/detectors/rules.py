@@ -188,6 +188,10 @@ def _systemd_exec_reasons(exec_start: str, owner_uid) -> list:
     reasons = []
     if path_in_writable_tmp(exec_start) or command_references_writable_tmp(exec_start):
         reasons.append("references a world-writable temp directory")
+    if _CURL_TO_SHELL_RE.search(exec_start):
+        reasons.append("downloads and executes code (curl/wget piped to a shell)")
+    if _BASE64_DECODE_RE.search(exec_start):
+        reasons.append("decodes base64 at runtime")
     if owner_uid is not None and owner_uid != 0:
         reasons.append(f"runs a binary owned by uid {owner_uid}, not root")
     return reasons
@@ -216,11 +220,13 @@ def rule_suspicious_systemd_timer(artifacts: dict) -> List[Finding]:
         if not reasons or (unit, exec_start) in reported:
             continue
         reported.add((unit, exec_start))
+        dropin = entry.get("dropin", False)
+        where = f" (drop-in override {artifact_path})" if dropin else ""
         finding = Finding(
             rule_id="SUSPICIOUS_SYSTEMD_TIMER",
             severity=Severity.HIGH,
             title=f"Systemd {kind} with suspicious ExecStart",
-            description=f"Systemd {kind} '{unit}' ExecStart {'; '.join(reasons)}",
+            description=f"Systemd {kind} '{unit}'{where} ExecStart {'; '.join(reasons)}",
             artifact_path=artifact_path,
             raw_value=exec_start,
             remediation_available=False,
@@ -233,17 +239,51 @@ def rule_suspicious_systemd_timer(artifacts: dict) -> List[Finding]:
         )
         for reason in reasons:
             apply_signal(finding, "content_match", 15, f"ExecStart {reason}")
+        if dropin:
+            apply_signal(finding, "dropin_override", 10,
+                         "set in a drop-in, where it overrides the unit file's own command")
         findings.append(finding)
     return findings
 
 
+def _apply_timestamp_signals(finding: Finding, mtime: float, ctime: float, cutoff: float,
+                             has_content_signal: bool) -> None:
+    """Score a file's recency. ctime can't be set from userspace, so a recent
+    ctime behind an old mtime is the signature of `touch -d` timestomping."""
+    mtime_recent, ctime_recent = mtime >= cutoff, ctime >= cutoff
+    if mtime_recent and ctime_recent:
+        apply_signal(finding, "ctime_corroborates_mtime", 20,
+                     "ctime is also within the window — harder to forge than mtime alone")
+    elif ctime_recent:
+        apply_signal(finding, "mtime_backdated", 25,
+                     "ctime is recent but mtime is older — the modification time looks "
+                     "deliberately backdated (timestomped)")
+    elif mtime_recent and not has_content_signal:
+        apply_signal(finding, "mtime_only", -20,
+                     "recency is the only signal; ctime is not recent (mtime may be forged)")
+
+
 def rule_ssh_unauthorized_key(artifacts: dict) -> List[Finding]:
     findings = []
-    now = time.time()
-    cutoff = now - _7_DAYS_SECONDS
-    for key_entry in artifacts.get("authorized_keys", []):
-        file_mtime = key_entry.get("file_mtime", 0.0)
-        if file_mtime < cutoff:
+    cutoff = time.time() - _7_DAYS_SECONDS
+    keys = artifacts.get("authorized_keys", [])
+
+    def _path(entry):
+        return entry.get("path") or f"{entry.get('home', '')}/.ssh/authorized_keys"
+
+    keys_per_file: dict = {}
+    for entry in keys:
+        keys_per_file[_path(entry)] = keys_per_file.get(_path(entry), 0) + 1
+
+    for key_entry in keys:
+        path = _path(key_entry)
+        mtime = key_entry.get("file_mtime", 0.0)
+        ctime = key_entry.get("file_ctime", 0.0)
+        recent = mtime >= cutoff or ctime >= cutoff
+        # authorized_keys2 has been deprecated since OpenSSH 3.0 but is still
+        # read by default — a key there is a hiding place, whatever its age.
+        legacy_file = path.endswith("/authorized_keys2")
+        if not (recent or legacy_file):
             continue
         key_repr = " ".join(filter(None, [
             key_entry.get("key_type", ""),
@@ -253,15 +293,18 @@ def rule_ssh_unauthorized_key(artifacts: dict) -> List[Finding]:
         finding = Finding(
             rule_id="SSH_UNAUTHORIZED_KEY",
             severity=Severity.MEDIUM,
-            title="Recently added SSH authorized key",
+            title="Recently added SSH authorized key" if recent else
+                  "SSH key in the legacy authorized_keys2 file",
             description=(
-                f"authorized_keys file for '{key_entry.get('username', '')}' "
-                "was modified within the last 7 days"
+                f"{path} (user '{key_entry.get('username', '')}') "
+                + ("changed within the last 7 days" if recent else
+                   "holds a key — a file few admins check, still honoured by sshd")
             ),
-            artifact_path=f"{key_entry.get('home', '')}/.ssh/authorized_keys",
-            raw_value=key_repr,
+            artifact_path=path,
+            # The exact line, so remediation can find it (options and all).
+            raw_value=key_entry.get("raw_line") or key_repr,
             remediation_available=True,
-            remediation_description="Remove the unauthorized key entry from authorized_keys",
+            remediation_description=f"Remove this key line from {path}",
         )
 
         options = key_entry.get("options", "")
@@ -269,16 +312,20 @@ def rule_ssh_unauthorized_key(artifacts: dict) -> List[Finding]:
         if has_dangerous_option:
             apply_signal(finding, "content_match", 30,
                          f"dangerous key option present: {options!r}")
-
-        file_ctime = key_entry.get("file_ctime", 0.0)
-        ctime_also_recent = file_ctime >= cutoff
-        if ctime_also_recent:
-            apply_signal(finding, "ctime_corroborates_mtime", 20,
-                         "ctime is also within the window — harder to forge than mtime alone")
-        elif not has_dangerous_option:
-            apply_signal(finding, "mtime_only", -20,
-                         "recency is the only signal; ctime is not recent (mtime may be forged)")
-
+        if legacy_file:
+            apply_signal(finding, "legacy_keys_file", 20,
+                         "key lives in authorized_keys2, deprecated since OpenSSH 3.0")
+        if recent:
+            _apply_timestamp_signals(finding, mtime, ctime, cutoff,
+                                     has_dangerous_option or legacy_file)
+        n_keys = keys_per_file[path]
+        if n_keys > 1 and not (has_dangerous_option or legacy_file):
+            # File timestamps say *that* the file changed, not which key was
+            # added — every key in it would otherwise be auto-removed, the
+            # admin's own included. Keep these below the remediation gate.
+            apply_signal(finding, "ambiguous_key", -40,
+                         f"{path} holds {n_keys} keys; its timestamps can't tell "
+                         "which one was added")
         findings.append(finding)
     return findings
 
@@ -346,14 +393,56 @@ def rule_sudoers_nopasswd(artifacts: dict) -> List[Finding]:
     return findings
 
 
+# Kernel-thread names. A userspace implant renaming itself "[kworker/0:1]" is
+# the most common Linux masquerade (MITRE T1036.004) — and easy to catch:
+# real kernel threads have no executable, so /proc/<pid>/exe doesn't resolve.
+_KTHREAD_NAME_RE = re.compile(
+    r"^\[?(kworker|kthreadd|ksoftirqd|kswapd\d*|migration|rcu_\w+|watchdogd?|kauditd|"
+    r"khungtaskd|kcompactd\d*|khugepaged|kdevtmpfs|kblockd|jbd2|irq|cpuhp|oom_reaper|"
+    r"writeback|kintegrityd|ksmd|kthrotld|scsi_eh_\d+)\b"
+)
+
+
+def _impersonates_kernel_thread(name: str, cmdline: str) -> bool:
+    bracketed = cmdline.startswith("[") and cmdline.endswith("]")
+    return bracketed or bool(_KTHREAD_NAME_RE.match(name)) or bool(_KTHREAD_NAME_RE.match(cmdline))
+
+
 def rule_process_masquerade(artifacts: dict) -> List[Finding]:
     findings = []
     for proc in artifacts.get("processes", []):
         name = proc.get("name", "")
         exe = proc.get("exe", "")
-        if name not in KNOWN_SYSTEM_BINARIES:
-            continue
+        cmdline = proc.get("cmdline", "")
+        pid = proc.get("pid", "")
         if not exe:
+            # Kernel threads have no exe; neither does anything read offline.
+            continue
+        guided = (
+            f"Confirm pid {pid} is malicious "
+            f"(`ls -l /proc/{pid}/exe`, `cat /proc/{pid}/cmdline`), "
+            f"then terminate it: `kill -9 {pid}`."
+        )
+        if _impersonates_kernel_thread(name, cmdline):
+            finding = Finding(
+                rule_id="PROCESS_MASQUERADE",
+                severity=Severity.HIGH,
+                title="Userspace process disguised as a kernel thread",
+                description=(
+                    f"Process '{name}' (pid={pid}, cmdline={cmdline!r}) looks like a kernel "
+                    f"thread but runs the executable {exe} — real kernel threads have none"
+                ),
+                artifact_path=f"/proc/{pid}/exe",
+                raw_value=exe,
+                remediation_available=False,
+                remediation_description=None,
+                guided_remediation=guided,
+            )
+            apply_signal(finding, "content_match", 30,
+                         "kernel-thread name with a userspace executable cannot be legitimate")
+            findings.append(finding)
+            continue
+        if name not in KNOWN_SYSTEM_BINARIES:
             continue
         if not path_in_standard_bins(exe):
             findings.append(Finding(
@@ -361,19 +450,14 @@ def rule_process_masquerade(artifacts: dict) -> List[Finding]:
                 severity=Severity.MEDIUM,
                 title="Process masquerading as system binary",
                 description=(
-                    f"Process '{name}' (pid={proc.get('pid', '')}) has exe path "
+                    f"Process '{name}' (pid={pid}) has exe path "
                     f"outside standard binary directories: {exe}"
                 ),
-                artifact_path=f"/proc/{proc.get('pid', '')}/exe",
+                artifact_path=f"/proc/{pid}/exe",
                 raw_value=exe,
                 remediation_available=False,
                 remediation_description=None,
-                guided_remediation=(
-                    f"Confirm pid {proc.get('pid', '')} is malicious "
-                    f"(`ls -l /proc/{proc.get('pid', '')}/exe`, "
-                    f"`cat /proc/{proc.get('pid', '')}/cmdline`), "
-                    f"then terminate it: `kill -9 {proc.get('pid', '')}`."
-                ),
+                guided_remediation=guided,
             ))
     return findings
 
@@ -514,17 +598,24 @@ def rule_shell_rc_modification(artifacts: dict) -> List[Finding]:
 
     for entry in artifacts.get("shell_init_files", []):
         mtime = entry.get("mtime", 0.0)
-        if mtime < cutoff:
+        ctime = entry.get("ctime", 0.0)
+        recent = mtime >= cutoff or ctime >= cutoff
+        # Suspicious content is reported however old the file is — a
+        # curl|bash planted three days ago is no less of a backdoor.
+        content_suspicious = _rc_content_is_suspicious(entry.get("content", ""))
+        if not (recent or content_suspicious):
             continue
         source = entry.get("source", "")
         owner = entry.get("owner", "")
         finding = Finding(
             rule_id="SHELL_RC_MODIFICATION",
-            severity=Severity.LOW,
-            title="Shell init file recently modified",
+            severity=Severity.MEDIUM if content_suspicious else Severity.LOW,
+            title=("Shell init file contains a suspicious command" if content_suspicious
+                   else "Shell init file recently modified"),
             description=(
                 f"Shell init file '{source}' for user '{owner}' "
-                "was modified within the last 48 hours"
+                + ("contains a download-and-execute, base64-decode, or writable-tmp PATH line"
+                   if content_suspicious else "was modified within the last 48 hours")
             ),
             artifact_path=source,
             raw_value=source,
@@ -536,23 +627,12 @@ def rule_shell_rc_modification(artifacts: dict) -> List[Finding]:
                 f"then revert any malicious lines by hand."
             ),
         )
-
-        content = entry.get("content", "")
-        content_suspicious = _rc_content_is_suspicious(content)
         if content_suspicious:
             apply_signal(finding, "content_match", 30,
                          "content matches a known-suspicious pattern "
                          "(curl/wget-to-shell, base64 -d, or a writable-tmp PATH prepend)")
-
-        ctime = entry.get("ctime", 0.0)
-        ctime_also_recent = ctime >= cutoff
-        if ctime_also_recent:
-            apply_signal(finding, "ctime_corroborates_mtime", 20,
-                         "ctime is also within the window — harder to forge than mtime alone")
-        elif not content_suspicious:
-            apply_signal(finding, "mtime_only", -20,
-                         "recency is the only signal; ctime is not recent (mtime may be forged)")
-
+        if recent:
+            _apply_timestamp_signals(finding, mtime, ctime, cutoff, content_suspicious)
         findings.append(finding)
     return findings
 
@@ -574,7 +654,8 @@ def _is_reportable_dpkg_entry(entry: dict) -> bool:
 def _apply_var_only_downgrade(finding: Finding, paths: list) -> None:
     # Packages keep runtime state under /var (queues, databases, caches) that
     # dpkg still lists in their manifest; a Wazuh manager alone reports 1000+.
-    if all(p == "/var" or p.startswith("/var/") for p in paths):
+    if finding.severity == Severity.HIGH and \
+            all(p == "/var" or p.startswith("/var/") for p in paths):
         finding.severity = Severity.MEDIUM
         apply_signal(finding, "mutable_data_path", -20,
                      "every changed file is under /var, where packages keep runtime data "
@@ -635,19 +716,26 @@ def _package_group_finding(package: str, entries: list) -> Finding:
     module name), so `--config` can allowlist a known-noisy package in one line.
     """
     missing = [e for e in entries if e.get("missing", False)]
+    missing_dirs = [e for e in missing if e.get("is_directory") is True]
+    missing_files = [e for e in missing if e.get("is_directory") is not True]
     modified = [e for e in entries if not e.get("missing", False)]
-    lines = [f"missing     {e['path']}" for e in missing]
+    lines = [f"missing     {e['path']}" for e in missing_files]
     lines += [f"{e.get('flags', '')}   {e['path']}" for e in modified]
+    lines += [f"missing     {e['path']}  (directory)" for e in missing_dirs]
     if len(lines) > _PACKAGE_LISTING_CAP:
         extra = len(lines) - _PACKAGE_LISTING_CAP
         lines = lines[:_PACKAGE_LISTING_CAP] + [f"… and {extra} more"]
     finding = Finding(
         rule_id="PACKAGE_TAMPERED",
-        severity=Severity.HIGH,
+        # An empty directory going away (removed by hand, or by the package's
+        # own scripts) is housekeeping, not tampering.
+        severity=Severity.HIGH if modified or missing_files else Severity.LOW,
         title="Package files modified or missing since installation",
         description=(
-            f"Package '{package}' has {len(modified)} modified and {len(missing)} missing "
+            f"Package '{package}' has {len(modified)} modified and {len(missing_files)} missing "
             "file(s) compared to its dpkg manifest"
+            + (f", plus {len(missing_dirs)} missing director{'y' if len(missing_dirs) == 1 else 'ies'}"
+               if missing_dirs else "")
         ),
         artifact_path=package,
         raw_value="\n".join(lines),
@@ -661,9 +749,12 @@ def _package_group_finding(package: str, entries: list) -> Finding:
     if modified:
         apply_signal(finding, "content_match", 30,
                      "dpkg --verify reports a real content/mode/size mismatch")
-    if missing:
+    if missing_files:
         apply_signal(finding, "missing_file", 35,
                      "package-owned file absent from disk — cannot be an incidental edit")
+    if missing_dirs:
+        apply_signal(finding, "missing_directory", 10,
+                     "package-owned directory (or symlink) absent — usually housekeeping")
     _apply_var_only_downgrade(finding, [e["path"] for e in entries])
     return finding
 

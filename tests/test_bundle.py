@@ -174,7 +174,7 @@ def test_read_bundle_detects_tampering(tmp_path):
         metadata={"hostname": "h", "ubuntu_version": "U", "tool_version": "2.0.0"},
     )
     # Corrupt the gzip payload after the fact.
-    import gzip, io, tarfile, json, os
+    import tarfile, json
     extract = tmp_path / "x"
     with tarfile.open(out, "r:gz") as tf:
         tf.extractall(extract)
