@@ -47,7 +47,7 @@ Each tool gets a baseline run with nothing planted, then one run per group. Resu
 
 **A run only counts if the tool actually worked.** Profiles list the exit codes a healthy run returns (`ok_returncodes`, default `[0]`) and outputs it always produces (`expect_output`, globs). A run that misses either is reported as **BROKEN-RUN** instead of PASS or MISSED — a tool that dies at startup would otherwise "survive" every trap and "miss" every technique. If the baseline run is broken, that tool is skipped.
 
-Tools are described in `profiles.json`: a command with `{out}` (a per-run output directory), `{cwd}` (the per-run working directory), `{repo}` and any `--set key=value` placeholders, plus optional `env` and `extra_outputs` (log files the tool writes elsewhere; only the part appended during the run is captured). Add a profile to test another tool.
+Tools are described in `profiles.json`: a command with `{out}` (a per-run output directory), `{cwd}` (the per-run working directory), `{repo}` and any `--set key=value` placeholders, plus optional `env`, `run_from` (a directory the tool must be started from — UAC refuses to run anywhere else; such tools get **N/A** for I2) and `extra_outputs` (log files the tool writes elsewhere; only the part appended during the run is captured). Add a profile to test another tool.
 
 ## Safety
 
@@ -60,6 +60,7 @@ The harness is built to be safe on a VM that matters to you, but only run it on 
 
 ## Limits
 
+- **A PASS only means something if the tool reads the planted files.** A rootkit scanner that never opens users' shell files or SSH keys "passes" R1–R3 and I1 without being tested. Compare each run's duration with the baseline in `summary.json`, and check what the tool reads, before treating a PASS as "handles this safely".
 - **It doesn't exercise every launch path.** Tools that re-exec themselves under `sudo` (like ubuntils when run as a normal user) are launched here already as root, so I2 doesn't exercise that path; test it by hand.
 - **Visibility is text matching, not a judgment of quality.** A detector that flags V2 without quoting the URL counts as MISSED.
 - **Results describe one tool version on one host.** Record both — `summary.json` keeps each baseline's output for that.

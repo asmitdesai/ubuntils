@@ -646,13 +646,24 @@ def run_group(tool: str, profile: dict, group: Group, run_dir: Path, values: Dic
     out_dir, cwd = work / "out", work / "cwd"
     out_dir.mkdir(parents=True)
     cwd.mkdir()
+    run_from = profile.get("run_from")
+    if run_from and group.hostile_cwd:
+        # The tool can only start from its own directory, so "launched from
+        # an attacker's directory" isn't a way it can be run.
+        rows = []
+        for trap in traps.values():
+            rows.append({"tool": tool, "trap": trap.id, "group": group.name, "title": trap.title,
+                         "verdict": "N/A (must run from its own directory)", "run": None})
+            log(f"  {trap.id:3} N/A — {tool} only runs from its own directory")
+        return rows
+    run_cwd = Path(run_from.format(**values)) if run_from else cwd
     extra = {path: (os.path.getsize(path) if os.path.exists(path) else 0)
              for path in profile.get("extra_outputs", [])}
     hijacked: List[str] = []
     try:
         group.plant(Plant(token), traps, cwd)
-        cmd = render_cmd(profile, {**values, "out": str(out_dir), "cwd": str(cwd)})
-        run = run_tool(cmd, cwd, work / "stdout.txt", work / "stderr.txt", args.timeout,
+        cmd = render_cmd(profile, {**values, "out": str(out_dir), "cwd": str(run_cwd)})
+        run = run_tool(cmd, run_cwd, work / "stdout.txt", work / "stderr.txt", args.timeout,
                        args.max_rss_mb * 2**20, args.max_disk_gb * 2**30,
                        env={**os.environ, **profile.get("env", {})})
         hijacked = sorted(p.name[len(".hh-hijacked-"):] for p in Path("/root").glob(HIJACK_GLOB))
@@ -671,7 +682,7 @@ def run_group(tool: str, profile: dict, group: Group, run_dir: Path, values: Dic
                 src.seek(offset)
                 dst.write(src.read(64 * 2**20))
     terminal = read_capped(work / "stdout.txt") + read_capped(work / "stderr.txt")
-    broken = run_problem(profile, {**values, "out": str(out_dir), "cwd": str(cwd)}, run)
+    broken = run_problem(profile, {**values, "out": str(out_dir), "cwd": str(run_cwd)}, run)
     found = scan_outputs([work], [t.marker.encode() for t in traps.values()]
                          + [b"\x1b]2;" + t.marker.encode() for t in traps.values()])
     rows = []
@@ -751,15 +762,17 @@ def cmd_run(args) -> None:
         base_dir = run_dir / tool / "baseline"
         (base_dir / "out").mkdir(parents=True)
         (base_dir / "cwd").mkdir()
+        base_cwd = (Path(profile["run_from"].format(**values)) if profile.get("run_from")
+                    else base_dir / "cwd")
         base = run_tool(render_cmd(profile, {**values, "out": str(base_dir / "out"),
-                                             "cwd": str(base_dir / "cwd")}),
-                        base_dir / "cwd", base_dir / "stdout.txt", base_dir / "stderr.txt",
+                                             "cwd": str(base_cwd)}),
+                        base_cwd, base_dir / "stdout.txt", base_dir / "stderr.txt",
                         args.timeout, args.max_rss_mb * 2**20, args.max_disk_gb * 2**30,
                         env={**os.environ, **profile.get("env", {})})
         baselines[tool] = asdict(base)
         log(f"  baseline: {base.outcome} rc={base.returncode} in {base.duration_s}s")
         problem = run_problem(profile, {**values, "out": str(base_dir / "out"),
-                                        "cwd": str(base_dir / "cwd")}, base)
+                                        "cwd": str(base_cwd)}, base)
         if base.outcome != "exited" or problem:
             log(f"  ! baseline run failed ({problem or base.outcome}) — skipping {tool}; "
                 f"see {base_dir}/stderr.txt")
