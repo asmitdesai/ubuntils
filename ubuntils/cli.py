@@ -47,6 +47,7 @@ COLLECT_FILES = [
     "/usr/lib/os-release",
     "/etc/hostname",
     "/etc/timezone",
+    "/var/lib/dpkg/status",
     "/var/log/syslog",
     "/var/log/messages",
     "/var/log/audit/audit.log",

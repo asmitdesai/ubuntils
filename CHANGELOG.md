@@ -42,6 +42,8 @@ Validated on a live Ubuntu 26.04 LTS arm64 host. A clean VM that produced 1,243 
 - MEDIUM when every changed file is under `/var` (package runtime data); LOW when only directories are missing (checked against the package's `.md5sums`).
 - Falls back to per-file findings, and records a degraded collector, when ownership can't be determined.
 - Missing conffiles keep their conffile marker.
+- Packages removed but not purged (`config-files` state) are skipped — their leftover directories going missing isn't tampering. Package state comes from `/var/lib/dpkg/status`, which bundles now capture.
+- Descriptions only mention nonzero counts ("has 1 missing directory").
 
 ### Changed — confidence scoring and the timeline
 - `timeline_corroboration` (+25) is applied only when a timeline event names the finding's artifact alongside the rule's kind of activity. Previously any keyword match counted, and on a real host every finding got the bonus.

@@ -4,8 +4,8 @@ Forensic triage for live Ubuntu systems — automated artifact collection, persi
 
 [![CI](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml/badge.svg)](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
-![Tests](https://img.shields.io/badge/tests-500%20passing-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-94.56%25-green)
+![Tests](https://img.shields.io/badge/tests-503%20passing-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-94.59%25-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Arch](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-lightgrey)
 ![Ubuntu](https://img.shields.io/badge/ubuntu-20.04%20%7C%2022.04%20%7C%2024.04%20%7C%2026.04-orange)
@@ -589,7 +589,7 @@ Raw value:     mtime=2024-01-15 14:22:01 (6 hours ago)
 Remediation:   not available
 ```
 
-**PACKAGE_TAMPERED** — System-owned binaries and configuration files are the foundation of trust. This rule detects when package-owned files have been modified, deleted, or have content/mode/size mismatches using `dpkg --verify`. Conffile-only edits (expected local configuration changes) are excluded from reporting to avoid noise. Changed files are grouped into **one finding per owning package** (looked up with `dpkg-query -S`), listing up to 20 of the files; the artifact is the package name, so a known-noisy package can be allowlisted by name with `--config`. A package whose changed files are all under `/var` is reported as MEDIUM with lower confidence, because packages such as a Wazuh manager keep runtime data there that `dpkg` still lists in their manifest — a single Wazuh host otherwise produced 1,100+ HIGH findings. A missing path that isn't in the package's `/var/lib/dpkg/info/<pkg>.md5sums` (which lists only regular files) is a directory or symlink: it gets a weak `missing_directory` signal instead of `missing_file`, and a package whose only problem is missing directories is reported as LOW — an empty directory going away is housekeeping, not tampering. Missing conffiles are still treated as files. Bundles don't capture `.md5sums`, so offline every missing path counts as a file. If ownership can't be determined (an older bundle, or the lookup failed) the rule falls back to one finding per file and the scan notes the degraded lookup. Flag-only — tampering may be legitimate (custom local edits) or malicious (file replacement); deciding requires human judgment.
+**PACKAGE_TAMPERED** — System-owned binaries and configuration files are the foundation of trust. This rule detects when package-owned files have been modified, deleted, or have content/mode/size mismatches using `dpkg --verify`. Conffile-only edits (expected local configuration changes) are excluded from reporting to avoid noise. Changed files are grouped into **one finding per owning package** (looked up with `dpkg-query -S`), listing up to 20 of the files; the artifact is the package name, so a known-noisy package can be allowlisted by name with `--config`. A package whose changed files are all under `/var` is reported as MEDIUM with lower confidence, because packages such as a Wazuh manager keep runtime data there that `dpkg` still lists in their manifest — a single Wazuh host otherwise produced 1,100+ HIGH findings. A missing path that isn't in the package's `/var/lib/dpkg/info/<pkg>.md5sums` (which lists only regular files) is a directory or symlink: it gets a weak `missing_directory` signal instead of `missing_file`, and a package whose only problem is missing directories is reported as LOW — an empty directory going away is housekeeping, not tampering. Missing conffiles are still treated as files. Packages that were removed but not purged (dpkg state `config-files`, read from `/var/lib/dpkg/status`) are skipped entirely: dpkg keeps checking the empty directory skeleton they leave behind, and its disappearance is cleanup, not tampering. Bundles don't capture `.md5sums`, so offline every missing path counts as a file. If ownership can't be determined (an older bundle, or the lookup failed) the rule falls back to one finding per file and the scan notes the degraded lookup. Flag-only — tampering may be legitimate (custom local edits) or malicious (file replacement); deciding requires human judgment.
 
 *Example finding:*
 ```
@@ -960,7 +960,7 @@ VirusTotal hash lookups and MISP IOC export were dropped from this release. Viru
 - [x] Confidence scoring: timeline corroboration only for events that name the artifact; whole-word, program-aware correlation; syslog/journald duplicates collapsed
 - [x] Pre-conference security audit: no working-directory imports on the root re-exec, contained bundle reads, bounded reads of user-controlled files, markup-safe TUI
 - [x] New coverage: `authorized_keys2`/`AuthorizedKeysFile`, systemd drop-ins, `/etc/bash.bashrc` and zsh files, kernel-thread impersonation; mtime *or* ctime for timestamp rules
-- [x] 500 tests at 94.56% coverage
+- [x] 503 tests at 94.59% coverage
 
 **v3.0.0 / v4.0.0 (exploratory)**
 - Web dashboard for multi-host triage

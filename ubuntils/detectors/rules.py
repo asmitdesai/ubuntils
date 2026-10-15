@@ -641,6 +641,10 @@ _PACKAGE_LISTING_CAP = 20
 
 
 def _is_reportable_dpkg_entry(entry: dict) -> bool:
+    if entry.get("package_state") == "config-files":
+        # Removed but not purged: dpkg still lists the directory skeleton it
+        # left behind, and an empty leftover directory going away is cleanup.
+        return False
     if entry.get("missing", False):
         return True
     # Conffiles are expected to be user-edited; only their content hash (5) matters
@@ -709,6 +713,20 @@ def _package_file_finding(entry: dict) -> Finding:
     return finding
 
 
+def _count_phrase(modified: list, missing_files: list, missing_dirs: list) -> str:
+    """"3 modified files and 1 missing directory" — only the nonzero counts."""
+    def plural(n, one, many):
+        return f"{n} {one if n == 1 else many}"
+    parts = []
+    if modified:
+        parts.append(plural(len(modified), "modified file", "modified files"))
+    if missing_files:
+        parts.append(plural(len(missing_files), "missing file", "missing files"))
+    if missing_dirs:
+        parts.append(plural(len(missing_dirs), "missing directory", "missing directories"))
+    return ", ".join(parts[:-1]) + (" and " if len(parts) > 1 else "") + parts[-1]
+
+
 def _package_group_finding(package: str, entries: list) -> Finding:
     """One finding for every reportable file of a package.
 
@@ -731,12 +749,8 @@ def _package_group_finding(package: str, entries: list) -> Finding:
         # own scripts) is housekeeping, not tampering.
         severity=Severity.HIGH if modified or missing_files else Severity.LOW,
         title="Package files modified or missing since installation",
-        description=(
-            f"Package '{package}' has {len(modified)} modified and {len(missing_files)} missing "
-            "file(s) compared to its dpkg manifest"
-            + (f", plus {len(missing_dirs)} missing director{'y' if len(missing_dirs) == 1 else 'ies'}"
-               if missing_dirs else "")
-        ),
+        description=f"Package '{package}' has {_count_phrase(modified, missing_files, missing_dirs)} "
+                    "compared to its dpkg manifest",
         artifact_path=package,
         raw_value="\n".join(lines),
         remediation_available=False,
