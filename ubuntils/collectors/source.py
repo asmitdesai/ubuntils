@@ -164,17 +164,35 @@ class LiveSource(ArtifactSource):
         return run_command(argv, timeout=timeout)
 
 
+_STAT_SEQUENCE_NAMES = {"st_mode", "st_ino", "st_dev", "st_nlink", "st_uid", "st_gid", "st_size"}
+
+
+def _with_times(st: os.stat_result, mtime: float, ctime: float) -> os.stat_result:
+    """A copy of ``st`` with its mtime and ctime replaced."""
+    seq = list(st)
+    seq[8], seq[9] = int(mtime), int(ctime)
+    extra = {n: getattr(st, n) for n in dir(st)
+             if n.startswith("st_") and n not in _STAT_SEQUENCE_NAMES}
+    extra.update(st_mtime=float(mtime), st_ctime=float(ctime),
+                 st_mtime_ns=int(mtime * 1e9), st_ctime_ns=int(ctime * 1e9))
+    return os.stat_result(seq, extra)
+
+
 class BundleSource(ArtifactSource):
     """Reads files captured into a bundle and replays captured command output.
     Never touches the live host or runs a command — pure offline replay."""
 
-    def __init__(self, root_dir: str, command_index: dict, cleanup_dir: str | None = None):
+    def __init__(self, root_dir: str, command_index: dict, cleanup_dir: str | None = None,
+                 file_times: dict | None = None):
         """``command_index`` maps a command name to its captured-output path,
         or to a ``(path, exit_code)`` tuple recording how the command exited at
-        collection time. ``cleanup_dir``, if given, is removed by cleanup()."""
+        collection time. ``cleanup_dir``, if given, is removed by cleanup().
+        ``file_times`` maps a captured file's source path to the ``(mtime,
+        ctime)`` it had on the collected host."""
         self.root_dir = root_dir.rstrip("/")
         self.command_index = command_index
         self._cleanup_dir = cleanup_dir
+        self.file_times = file_times or {}
 
     def cleanup(self) -> None:
         """Delete the extracted bundle (it may contain /etc/shadow)."""
@@ -210,7 +228,12 @@ class BundleSource(ArtifactSource):
             return False
 
     def lstat(self, path: str) -> os.stat_result:
-        return os.lstat(self._resolve(path))
+        # The extracted copy's times are when it was collected/extracted, not
+        # when the host's file last changed — rules that ask "modified in the
+        # last 48 hours?" need the times the manifest recorded.
+        st = os.lstat(self._resolve(path))
+        times = self.file_times.get(os.path.normpath("/" + path.lstrip("/")))
+        return _with_times(st, *times) if times else st
 
     def glob(self, pattern: str) -> list[str]:
         try:

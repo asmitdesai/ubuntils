@@ -115,7 +115,8 @@ def _read_extracted(path: str, work: str) -> tuple:
         c.name: (os.path.join(base, c.bundle_path), c.exit_code)
         for c in manifest.commands
     }
+    file_times = {fe.source_path: (fe.mtime, fe.ctime) for fe in manifest.files if fe.sha256 != ""}
     source = BundleSource(root_dir=os.path.join(base, "files"), command_index=command_index,
-                          cleanup_dir=work)
+                          cleanup_dir=work, file_times=file_times)
     info = {"bundle_integrity": integrity, "manifest": stored, "bundle_sha256": expected_digest}
     return source, info
