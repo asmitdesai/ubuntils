@@ -2,6 +2,12 @@
 
 Notable changes per release. Earlier releases (1.0.0 through 2.1.0) are summarised in the README's [Roadmap](README.md#roadmap).
 
+## Unreleased
+
+### Fixed
+- `CRON_TMP_PATH` and `CRON_ROOT_EXEC` remediation never worked on a real host: the rules report only the cron command, and the remediator looked for a line equal to it, so every fix failed with "Line not found". It now matches the crontab line that parses to that command. Found by running `--remediate --confirm` against the demo lab.
+- `analyze BUNDLE` reported every captured shell init file (`/etc/profile`) as modified in the last 48 hours: file times came from the extracted copy instead of the times the manifest recorded on the collected host.
+
 ## 2.2.0 — 2026-10-16
 
 Validated on a live Ubuntu 26.04 LTS arm64 host. A clean VM that produced 1,243 findings on 2.1.0 produces 13 on 2.2.0, all of them attributable to the Wazuh manager installed on it.
