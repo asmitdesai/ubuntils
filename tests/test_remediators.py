@@ -92,6 +92,41 @@ class TestCronRemediator:
         result = remediator.remediate(finding, dry_run=False)
         assert result.status == RemediationStatus.FAILED
 
+    def test_removes_system_crontab_entry_from_real_rule_finding(self, tmp_path):
+        # The rules report only the command as raw_value; the remediator has
+        # to find the whole line ("schedule user command") from it.
+        from ubuntils.detectors.rules import rule_cron_tmp_path
+        cron_file = tmp_path / "evil"
+        cron_file.write_text("# keep\n0 0 * * * root /tmp/evil.sh\n* * * * * root /usr/bin/legit\n")
+        [finding] = rule_cron_tmp_path({"cron_entries": [{
+            "owner": "root", "run_as": "root", "schedule": "0 0 * * *",
+            "command": "/tmp/evil.sh", "source": str(cron_file), "kind": "crontab",
+        }]})
+
+        result = CronRemediator(backup_base=str(tmp_path / "backups")).remediate(
+            finding, dry_run=False)
+
+        assert result.status == RemediationStatus.SUCCESS, result.message
+        assert cron_file.read_text() == "# keep\n* * * * * root /usr/bin/legit\n"
+
+    def test_removes_user_crontab_entry_from_real_rule_finding(self, tmp_path):
+        from ubuntils.detectors.rules import rule_cron_root_exec
+        spool = tmp_path / "crontabs"
+        spool.mkdir()
+        cron_file = spool / "eve"
+        cron_file.write_text("@reboot sudo /usr/bin/true\n0 * * * * /usr/bin/legit\n")
+        [finding] = rule_cron_root_exec({"cron_entries": [{
+            "owner": "eve", "run_as": "eve", "schedule": "@reboot",
+            "command": "sudo /usr/bin/true", "source": str(cron_file), "kind": "crontab",
+        }]})
+
+        with patch("ubuntils.remediators.cron._USER_CRONTAB_DIR", str(spool)):
+            result = CronRemediator(backup_base=str(tmp_path / "backups")).remediate(
+                finding, dry_run=False)
+
+        assert result.status == RemediationStatus.SUCCESS, result.message
+        assert cron_file.read_text() == "0 * * * * /usr/bin/legit\n"
+
 
 # ---------------------------------------------------------------------------
 # EnvironmentRemediator

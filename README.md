@@ -4,8 +4,8 @@ Forensic triage for live Ubuntu systems — automated artifact collection, persi
 
 [![CI](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml/badge.svg)](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
-![Tests](https://img.shields.io/badge/tests-509%20passing-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-94.65%25-green)
+![Tests](https://img.shields.io/badge/tests-512%20passing-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-94.79%25-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Arch](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-lightgrey)
 ![Ubuntu](https://img.shields.io/badge/ubuntu-20.04%20%7C%2022.04%20%7C%2024.04%20%7C%2026.04-orange)

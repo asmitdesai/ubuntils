@@ -322,3 +322,32 @@ def test_read_bundle_rejects_symlink_member(tmp_path):
         assert False, "expected BundleError"
     except BundleError:
         pass
+
+
+def test_read_bundle_reports_host_mtime_not_extraction_time(tmp_path):
+    # SHELL_RC_MODIFICATION asks "changed in the last 48 hours?" — a bundled
+    # file must report the times it had on the collected host, or every
+    # captured shell init file looks freshly modified.
+    root = tmp_path / "root"
+    (root / "etc").mkdir(parents=True)
+    profile = root / "etc" / "profile"
+    profile.write_text("# profile\n")
+    os.utime(profile, (1_600_000_000, 1_600_000_000))
+    host_ctime = os.lstat(profile).st_ctime
+    out = tmp_path / "bundle.tar.gz"
+    write_bundle(
+        source=LiveSource(root=str(root)),
+        files_to_capture=["/etc/profile"],
+        commands_to_capture=[],
+        out_path=str(out),
+        metadata={"hostname": "h1", "ubuntu_version": "U", "tool_version": "2.0.0"},
+    )
+
+    source, _info = read_bundle(str(out))
+    try:
+        st = source.lstat("/etc/profile")
+    finally:
+        source.cleanup()
+
+    assert st.st_mtime == 1_600_000_000
+    assert st.st_ctime == host_ctime
