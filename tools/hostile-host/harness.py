@@ -48,7 +48,7 @@ import zipfile
 from base64 import b64encode
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
@@ -571,6 +571,32 @@ def read_capped(path: Path, cap: int = 64 * 2**20) -> bytes:
         return f.read(cap)
 
 
+LOG_HEAD = 4096
+
+
+def log_mark(path: str) -> Optional[Tuple[int, int, bytes]]:
+    """Inode, size and first bytes of a log, to tell later whether it was only appended to."""
+    try:
+        with open(path, "rb") as f:
+            return os.fstat(f.fileno()).st_ino, os.fstat(f.fileno()).st_size, f.read(LOG_HEAD)
+    except FileNotFoundError:
+        return None
+
+
+def appended_since(path: str, mark: Optional[Tuple[int, int, bytes]]) -> int:
+    """Offset where this run's part of the log starts: 0 if the tool rewrote the log.
+
+    rkhunter copies its log to .old and truncates it in place, so the inode stays the
+    same and the new log can be longer than the old one; only the content shows it."""
+    if mark is None:
+        return 0
+    inode, size, head = mark
+    now = log_mark(path)
+    if now is None or now[0] != inode or now[1] < size or now[2][:len(head)] != head:
+        return 0
+    return size
+
+
 # ─── verdicts ────────────────────────────────────────────────────────────────
 
 GOOD = {"PASS", "SEEN"}
@@ -662,8 +688,7 @@ def run_group(tool: str, profile: dict, group: Group, run_dir: Path, values: Dic
             log(f"  {trap.id:3} N/A — {tool} only runs from its own directory")
         return rows
     run_cwd = Path(run_from.format(**values)) if run_from else cwd
-    extra = {path: (os.path.getsize(path) if os.path.exists(path) else 0)
-             for path in profile.get("extra_outputs", [])}
+    extra = {path: log_mark(path) for path in profile.get("extra_outputs", [])}
     hijacked: List[str] = []
     try:
         group.plant(Plant(token), traps, cwd)
@@ -680,11 +705,11 @@ def run_group(tool: str, profile: dict, group: Group, run_dir: Path, values: Dic
         failed = undo_all()
         if failed:
             log("  ! cleanup problems: " + "; ".join(failed))
-    # Appended part of logs the tool writes elsewhere (e.g. rkhunter.log)
-    for path, offset in extra.items():
+    # This run's part of logs the tool writes elsewhere (e.g. rkhunter.log)
+    for path, mark in extra.items():
         if os.path.exists(path):
             with open(path, "rb") as src, open(work / ("extra-" + Path(path).name), "wb") as dst:
-                src.seek(offset)
+                src.seek(appended_since(path, mark))
                 dst.write(src.read(64 * 2**20))
     terminal = read_capped(work / "stdout.txt") + read_capped(work / "stderr.txt")
     broken = run_problem(profile, {**values, "out": str(out_dir), "cwd": str(run_cwd)}, run)
