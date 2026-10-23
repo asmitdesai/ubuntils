@@ -16,7 +16,7 @@ Each group runs separately, against a fresh unprivileged "victim" account, so on
 | I1 | integrity | victim's `authorized_keys` and `.bash_history` are symlinks to a root-only canary secret | **LEAK** — the secret appears in the tool's output |
 | I2 | integrity | the tool is launched from a directory of trojan commands (`ps`, `ss`, `find`, …) and Python modules (`json`, `subprocess`, …) | **HIJACKED** — a trojan ran as root |
 | I3 | integrity | terminal escape sequences in file names (`/tmp`, `/dev`), a cron file and a process's argv | **INJECTED** — raw escapes reach the analyst's terminal; RAW-IN-REPORT if only in output files |
-| I4 | integrity | file names containing newlines followed by a fake "nothing suspicious found" line | **FORGED** — the fake line appears as a line of the tool's output |
+| I4 | integrity | file names containing newlines followed by a fake "nothing suspicious found" line | **FORGED** — the fake line appears as a line of the tool's terminal output; FORGED-IN-REPORT if only in output files |
 | V1 | visibility | an SSH key in the legacy `~/.ssh/authorized_keys2` | **MISSED** — no trace of it in the output |
 | V2 | visibility | a systemd drop-in override piping `curl` into `bash` | MISSED |
 | V3 | visibility | a process named `kworker` running from `/dev/shm` | MISSED |
@@ -28,7 +28,7 @@ Each group runs separately, against a fresh unprivileged "victim" account, so on
 - **I1:** did the canary secret appear anywhere in the tool's output?
 - **I2:** did any trojan create its marker in `/root`, which only root can write?
 - **I3:** did the exact escape sequence appear in stdout or stderr?
-- **I4:** does a line *begin* with the forged marker?
+- **I4:** does a line *begin* with the forged marker — in stdout or stderr, or (a raw newline followed by the marker) in an output file?
 - **V:** did the marker appear anywhere in the output?
 
 For a collector (UAC, Cat-Scale), **SEEN** means "collected"; for a detector (chkrootkit, rkhunter, ubuntils) it means "mentioned". Read V results with that in mind — a collector that gathers everything SEEs things it never judged.

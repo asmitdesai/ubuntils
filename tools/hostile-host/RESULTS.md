@@ -62,7 +62,7 @@ UAC missed the append-only flag because `ir_triage` doesn't record file attribut
 | I1 symlinks to a root-only secret | PASS | PASS | PASS | PASS |
 | I2 trojan commands in the working directory | PASS | PASS | PASS | N/A ‡ |
 | I3 terminal escape sequences | PASS | PASS | PASS | withheld † |
-| I4 newline-forged report lines | PASS | PASS | PASS | PASS |
+| I4 newline-forged report lines | PASS | PASS | PASS | withheld † |
 | V1 key in `authorized_keys2` | SEEN | MISSED | MISSED | SEEN |
 | V2 systemd drop-in piping `curl` into `bash` | SEEN | MISSED | MISSED | SEEN |
 | V3 `kworker` running from `/dev/shm` | SEEN | SEEN | SEEN | SEEN |
@@ -85,17 +85,20 @@ The harness README warns that a PASS only counts if the tool actually reads the 
 | chkrootkit | 19.6 s | 19.1–20.6 s | **Probably not.** Run times didn't change, and it doesn't read users' shell files or SSH keys. Its R1–R3 and I1 PASSes are untested, not proven safe. |
 | rkhunter | 150.3 s | 163.3–175.5 s | **Probably not**, for the same reason. |
 
-### Harness fix made during this run
+### Harness fixes made during this run
 
-The first rkhunter results were wrong. For logs a tool writes elsewhere (`extra_outputs`), the harness kept only the bytes past the log's size before the run. rkhunter doesn't append to `/var/log/rkhunter.log`: it copies it to `.old` and then empties it and rewrites it in place. So the capture came back empty in 6 of 7 runs. As a result, V3 read MISSED although the log named the decoy, and I1 and I3 never checked the log.
+**rkhunter's log wasn't captured.** The first rkhunter results were wrong. For logs a tool writes elsewhere (`extra_outputs`), the harness kept only the bytes past the log's size before the run. rkhunter doesn't append to `/var/log/rkhunter.log`: it copies it to `.old` and then empties it and rewrites it in place. So the capture came back empty in 6 of 7 runs. As a result, V3 read MISSED although the log named the decoy, and I1 and I3 never checked the log.
 
-Commit `b7475bd` records the log's inode, size and first 4 KiB before each run, and reads the whole log if any of them changed. rkhunter was then re-run: all 7 trap runs captured their full log, and V3 changed to SEEN. The table above shows the re-run.
+Commit `5514456` records the log's inode, size and first 4 KiB before each run, and reads the whole log if any of them changed. rkhunter was then re-run: all 7 trap runs captured their full log, and V3 changed to SEEN. The table above shows the re-run.
+
+**I4 never looked at output files.** I3 searches everything a tool produced and reports RAW-IN-REPORT when escapes appear only in output files, but I4 checked only stdout and stderr. A tool that wrote forged lines into its report files passed. I4 now also reports FORGED-IN-REPORT when an output file contains a raw newline followed by the forged marker. A tool that escapes newlines, as JSON does, writes no such bytes. All four tools' saved I4 outputs were re-judged with the fix: ubuntils, chkrootkit and rkhunter stay PASS, and UAC's result is withheld (†).
 
 ## What this does and doesn't show
 
 - ubuntils caught everything the lab and the harness plant, and it survived every robustness and integrity trap after actually reading the hostile files. The bug classes fixed in 2.2.0 didn't come back.
 - Both tests were written around ubuntils's own rules and its 2026-10 audit, so a full score shows the rules fire. It doesn't show what ubuntils would miss. Planting techniques it has no rule for would be the next step.
 - rkhunter and chkrootkit look for known rootkits and changed system binaries, not persistence, so their low visibility scores are expected. They aren't directly comparable to ubuntils.
+- ubuntils's I3 and I4 PASSes are untested rather than proven: none of the trap's file names, cron file or process name appeared in its report at all.
 - The noise ubuntils raised on this host (411 package findings, 2 connection findings) would bury real findings on a minimal or container-like system.
 - Not covered:
   - the kernel-module artifact (the container can't load one)

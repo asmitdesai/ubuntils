@@ -638,8 +638,11 @@ def judge(trap: Trap, run: RunResult, terminal: bytes, found: set, hijacked: Lis
         return ("RAW-IN-REPORT" if seq in found else "PASS") + unfinished
     if trap.oracle == "forge":
         marker = trap.marker.encode()
-        forged = any(line.startswith(marker) for line in terminal.splitlines())
-        return ("FORGED" if forged else "PASS") + unfinished
+        if any(line.startswith(marker) for line in terminal.splitlines()):
+            return "FORGED" + unfinished
+        # A raw newline before the marker: the forged line is a line of an output
+        # file. A tool that escapes newlines (JSON's \n) writes no such bytes.
+        return ("FORGED-IN-REPORT" if b"\n" + marker in found else "PASS") + unfinished
     if trap.oracle == "visible":
         return ("SEEN" if trap.marker.encode() in found else "MISSED") + unfinished
     raise ValueError(trap.oracle)
@@ -714,7 +717,8 @@ def run_group(tool: str, profile: dict, group: Group, run_dir: Path, values: Dic
     terminal = read_capped(work / "stdout.txt") + read_capped(work / "stderr.txt")
     broken = run_problem(profile, {**values, "out": str(out_dir), "cwd": str(run_cwd)}, run)
     found = scan_outputs([work], [t.marker.encode() for t in traps.values()]
-                         + [b"\x1b]2;" + t.marker.encode() for t in traps.values()])
+                         + [b"\x1b]2;" + t.marker.encode() for t in traps.values()]
+                         + [b"\n" + t.marker.encode() for t in traps.values()])
     rows = []
     for trap in traps.values():
         verdict = judge(trap, run, terminal, found, hijacked, broken)
