@@ -1,12 +1,13 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "ubuntils"
 description = "Ubuntu incident response tool for forensic artifact collection, detection, and guided remediation"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Asmit Desai", email = "asmitdesai02@gmail.com" }]
 requires-python = ">=3.9"
 keywords = ["incident-response", "forensics", "ubuntu", "security", "dfir"]
@@ -14,7 +15,6 @@ classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: System Administrators",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.9",
