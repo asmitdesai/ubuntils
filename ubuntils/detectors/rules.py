@@ -799,8 +799,14 @@ def _package_group_finding(package: str, entries: list) -> Finding:
     missing_dirs = [e for e in missing if e.get("is_directory") is True]
     missing_files = [e for e in missing if e.get("is_directory") is not True]
     modified = [e for e in entries if not e.get("missing", False)]
-    lines = [f"missing     {e['path']}" for e in missing_files]
-    lines += [f"{e.get('flags', '')}   {e['path']}" for e in modified]
+    # Most telling first, so the listing cap never hides them behind a long
+    # run of routine entries: modified files outside /var (a trojaned binary),
+    # then missing files, then /var runtime data, then missing directories.
+    def _is_var(e):
+        return e["path"] == "/var" or e["path"].startswith("/var/")
+    lines = [f"{e.get('flags', '')}   {e['path']}" for e in modified if not _is_var(e)]
+    lines += [f"missing     {e['path']}" for e in missing_files]
+    lines += [f"{e.get('flags', '')}   {e['path']}" for e in modified if _is_var(e)]
     lines += [f"missing     {e['path']}  (directory)" for e in missing_dirs]
     if len(lines) > _PACKAGE_LISTING_CAP:
         extra = len(lines) - _PACKAGE_LISTING_CAP
@@ -1060,20 +1066,46 @@ def rule_pam_backdoor(artifacts: dict) -> List[Finding]:
     return findings
 
 
+# Kernel taint flags a module can carry (Documentation/admin-guide/tainted-kernels).
+_MODULE_TAINT_FLAGS = {
+    "P": "proprietary licence",
+    "O": "built out of tree",
+    "E": "unsigned",
+    "F": "force-loaded",
+    "C": "from the staging tree",
+    "X": "auxiliary (unsupported)",
+}
+
+
 def rule_kernel_module_suspicious(artifacts: dict) -> List[Finding]:
     findings = []
     for module in artifacts.get("kernel_modules", []):
         name = module.get("name", "")
         if name in ALLOWED_KERNEL_MODULES:
             continue
+        # "" = the kernel recorded no taint: an in-tree, signed module that
+        # ships with the running kernel (kvm, aesni_intel, floppy…). LKM
+        # rootkits are built out of tree, which taints them (O, usually E).
+        # None = unknown (offline, older bundles): fall back to the allowlist.
+        taint = module.get("taint")
+        if taint == "":
+            continue
+        reasons = [_MODULE_TAINT_FLAGS[f] for f in (taint or "") if f in _MODULE_TAINT_FLAGS]
+        tainted = bool(reasons)
         finding = Finding(
             rule_id="KERNEL_MODULE_SUSPICIOUS",
-            # LOW: the baseline is intentionally narrow and legitimate
-            # hardware/vendor drivers miss it constantly — HIGH flooded every
-            # laptop/desktop scan. Allowlist known modules via --config.
-            severity=Severity.LOW,
-            title="Loaded kernel module not in the expected set",
+            # LOW without taint data: the allowlist is intentionally narrow and
+            # legitimate drivers miss it constantly — HIGH flooded every
+            # laptop/desktop scan. A module the kernel itself marks as out of
+            # tree or unsigned is a real lead: MEDIUM.
+            severity=Severity.MEDIUM if tainted else Severity.LOW,
+            title=("Loaded kernel module is out-of-tree or unsigned" if tainted
+                   else "Loaded kernel module not in the expected set"),
             description=(
+                f"Module '{name}' is loaded and the kernel marks it as {', '.join(reasons)} "
+                f"(taint '{taint}') — LKM rootkits look like this, as do third-party "
+                "drivers (NVIDIA, VirtualBox, VMware). Verify it"
+                if tainted else
                 f"Module '{name}' is loaded but is not in ubuntils' baseline of common built-in "
                 "modules. This may be a legitimate hardware/vendor driver (see README) or an "
                 "unexpected/malicious module — verify manually"
@@ -1088,10 +1120,12 @@ def rule_kernel_module_suspicious(artifacts: dict) -> List[Finding]:
         )
         # Deliberately a small weight: this baseline is intentionally narrow (see the README
         # caveat and Global Constraints), so being unallowlisted alone is weak evidence —
-        # legitimate hardware/vendor drivers hit this constantly. Keep the finding at MEDIUM
-        # confidence by default; a responder's --config allowlist is the real fix for noise,
-        # not an inflated confidence score here.
+        # legitimate hardware/vendor drivers hit this constantly. A responder's --config
+        # allowlist is the real fix for noise, not an inflated confidence score here.
         apply_signal(finding, "unallowlisted_module", 10,
                      "module name is not present in ubuntils' built-in module baseline")
+        if tainted:
+            apply_signal(finding, "module_taint", 15,
+                         f"kernel taint flags '{taint}': {', '.join(reasons)}")
         findings.append(finding)
     return findings

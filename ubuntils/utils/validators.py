@@ -72,6 +72,9 @@ ALLOWED_KERNEL_MODULES = frozenset({
     "binfmt_misc", "autofs4", "nls_iso8859_1", "efi_pstore", "dmi_sysfs",
     "acpi_tad", "ahci_platform", "cfg80211",
     "vboxdrv", "vboxnetflt", "vboxnetadp",
+    # Ubuntu's own ZFS (installer option for root-on-ZFS); its CDDL licence
+    # taints the kernel (P, O) although the package ships with Ubuntu.
+    "zfs", "spl",
     "virtio_net", "virtio_blk", "virtio_pci", "virtio_ring",
     "virtio_gpu", "virtio_dma_buf", "virtio_console", "virtio_balloon", "virtio_rng",
     "virtio_scsi", "virtio_input", "virtiofs",

@@ -4,8 +4,8 @@ Forensic triage for live Ubuntu systems — automated artifact collection, persi
 
 [![CI](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml/badge.svg)](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
-![Tests](https://img.shields.io/badge/tests-539%20passing-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-94.67%25-green)
+![Tests](https://img.shields.io/badge/tests-546%20passing-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-94.69%25-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Arch](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-lightgrey)
 ![Ubuntu](https://img.shields.io/badge/ubuntu-20.04%20%7C%2022.04%20%7C%2024.04%20%7C%2026.04-orange)
@@ -463,7 +463,7 @@ A summary view of the scan: detected Ubuntu version, architecture, scan duration
 | PACKAGE_TAMPERED | HIGH / MEDIUM / LOW | No | Package-owned files modified, missing, or whose content/mode/size mismatches the package manifest (via `dpkg --verify`), one finding per package; MEDIUM when every changed file is under `/var`, LOW when only directories are missing |
 | IMMUTABLE_FLAG_SET | MEDIUM | No | Immutable (`i`) or append-only (`a`) flags set on sensitive files like /etc/passwd, /etc/sudoers, or /etc/pam.d/* (detected via `lsattr`) |
 | PAM_BACKDOOR | HIGH | No | A `pam_permit.so` line in an /etc/pam.d/* auth/account stack that can grant access on its own (`sufficient`/`success=done`, or no `pam_deny`-style gate in that stack), or an NSS module in /etc/nsswitch.conf outside an allowlist (files/sss/ldap/winbind/...) |
-| KERNEL_MODULE_SUSPICIOUS | LOW | No | Loaded kernel modules outside an allowlist of common built-in modules — note: hardware-heavy hosts (GPUs, Wi-Fi cards, proprietary drivers) will see false positives; add expected modules via `--config` |
+| KERNEL_MODULE_SUSPICIOUS | MEDIUM / LOW | No | Loaded kernel modules the kernel marks as out-of-tree, unsigned, proprietary or force-loaded (MEDIUM), unless allowlisted; modules shipped with the running kernel are not reported. Without taint data (offline, older bundles) any module outside an allowlist of common built-ins is reported LOW |
 | SETUID_INVENTORY | LOW | No | Unexpected setuid or setgid binaries outside a known baseline set (the two bits are checked and reported separately) |
 
 ### Why each rule exists
@@ -630,7 +630,7 @@ Raw value:     passwd: files evilmod
 Remediation:   not available
 ```
 
-**KERNEL_MODULE_SUSPICIOUS** — Kernel modules run in ring 0 with unrestricted access. Attackers frequently load custom kernel modules for rootkits, packet sniffing, or process hiding. This rule compares currently loaded modules against a small allowlist of expected built-in modules (common to most systems). It is **LOW** severity because that allowlist is deliberately narrow. **Note:** hardware-heavy hosts with GPU drivers, Wi-Fi cards, or proprietary drivers will generate false positives. Responders should add their host's expected modules via `--config`, allowlisting by module name (used as the `artifact_path`). Flag-only — kernel module investigation requires forensic tools and human expertise.
+**KERNEL_MODULE_SUSPICIOUS** — Kernel modules run in ring 0 with unrestricted access. Attackers frequently load custom kernel modules for rootkits, packet sniffing, or process hiding. Rather than guess from module names, the rule asks the kernel: every loaded module's taint flags are read from `/proc/modules`. A module built with the running kernel and signed by it carries no taint and is not reported, whatever hardware it drives — a clean Ubuntu 24.04 KVM guest has 26 such modules (`kvm_intel`, `aesni_intel`, `floppy`, …) that a name list alone flagged. An LKM rootkit is built out of tree, so the kernel marks it `O` (and `E` when module signing isn't enforced); out-of-tree, unsigned, proprietary or force-loaded modules are reported **MEDIUM**, naming the flags. Third-party drivers carry the same flags — NVIDIA and VMware modules will be reported; VirtualBox's and Ubuntu's own ZFS are allowlisted. A rootkit that hides itself from the module list entirely is beyond any live check; this rule finds the ones that don't. When taint data isn't available (offline analysis of a bundle from an older ubuntils, or `--root`), the rule falls back to comparing names against a small allowlist of common built-in modules and reports anything else as **LOW**. Responders should add their host's expected modules via `--config`, allowlisting by module name (used as the `artifact_path`). Flag-only — kernel module investigation requires forensic tools and human expertise.
 
 *Example finding:*
 ```
@@ -875,7 +875,7 @@ non-production environment before relying on them.
 | EnvironmentCollector | `/etc/ld.so.preload`, `/etc/environment`, system shell init files (`/etc/profile`, `/etc/profile.d/*`, `/etc/bash.bashrc`, `/etc/zsh/*`), and user shell init files |
 | PackageCollector | System package integrity via `dpkg --verify` (attributed to packages via `dpkg-query -S`), immutable flag attributes via `lsattr`, and setuid/setgid binaries via `find` |
 | PamCollector | `/etc/pam.d/*` files and `/etc/nsswitch.conf` |
-| KernelCollector | Loaded kernel modules via `lsmod` |
+| KernelCollector | Loaded kernel modules via `lsmod`, with each module's taint flags from `/proc/modules` |
 
 ### Collector dependencies
 

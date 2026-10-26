@@ -52,6 +52,8 @@ COLLECT_FILES = [
     # Where Docker's and Ubuntu's minimized images put their path-exclude
     # filters (the directory itself can't be globbed into a static list).
     "/etc/dpkg/dpkg.cfg.d/excludes",
+    # Per-module taint flags (out-of-tree, unsigned) for KERNEL_MODULE_SUSPICIOUS.
+    "/proc/modules",
     "/var/log/syslog",
     "/var/log/messages",
     "/var/log/audit/audit.log",
