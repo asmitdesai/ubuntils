@@ -27,7 +27,7 @@ class EnvironmentRemediator(BaseRemediator):
             return f"Removed preload entry from {finding.artifact_path}"
         new_lines = []
         for line in lines:
-            if line.rstrip("\n") == finding.raw_value and not line.lstrip().startswith("#"):
+            if self._same_line(line, finding.raw_value) and not line.lstrip().startswith("#"):
                 new_lines.append(f"# {line}")
             else:
                 new_lines.append(line)
