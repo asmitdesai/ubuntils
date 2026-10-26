@@ -23,6 +23,7 @@ KNOWN_SETUID_BINARIES = frozenset({
     "/usr/lib/dbus-1.0/dbus-daemon-launch-helper",
     "/usr/sbin/pppd",
     "/usr/lib/policykit-1/polkit-agent-helper-1", "/usr/libexec/polkit-agent-helper-1",
+    "/usr/lib/polkit-1/polkit-agent-helper-1",  # polkit 124+ (Ubuntu 24.04)
     "/usr/lib/snapd/snap-confine", "/usr/lib/eject/dmcrypt-get-device",
     "/usr/lib/xorg/Xorg.wrap", "/usr/sbin/mount.nfs", "/usr/sbin/mount.cifs",
     "/usr/bin/vmware-user-suid-wrapper", "/usr/bin/traceroute6.iputils",
@@ -50,6 +51,11 @@ ALLOWED_NSS_MODULES = frozenset({
     # Domain-joined/LDAP-integrated hosts: SSSD, LDAP, and Samba/Winbind are
     # extremely common on real Ubuntu fleets and are routine, not suspicious.
     "sss", "ldap", "winbind", "wins",
+    # Stock on Ubuntu cloud images: libnss-extrausers (Ubuntu Core and
+    # minimized images) and Google OS Login (every Ubuntu image on GCE).
+    "extrausers", "oslogin", "cache_oslogin",
+    # libvirt's guest name resolution (libnss-libvirt).
+    "libvirt", "libvirt_guest",
 })
 
 # Common built-in modules on stock Ubuntu server/desktop/VM hosts (networking,

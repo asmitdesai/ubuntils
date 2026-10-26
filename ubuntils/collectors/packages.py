@@ -1,3 +1,5 @@
+import fnmatch
+
 from ubuntils.collectors.base import BaseCollector
 
 
@@ -41,12 +43,20 @@ FIND_SETUID_TIMEOUT = 300
 DPKG_OWNERS_ARGV = ["dpkg-query", "-S", "/*"]
 DPKG_OWNERS_TIMEOUT = 120
 
+# dpkg's own configuration. Docker's official Ubuntu images and Ubuntu's
+# "minimized" cloud images ship path-exclude filters here (no man pages, docs
+# or translations), so those files are never installed — yet `dpkg --verify`
+# still reports every one of them as missing. Shared with cli.COLLECT_FILES.
+DPKG_CFG_FILE = "/etc/dpkg/dpkg.cfg"
+DPKG_CFG_DIR = "/etc/dpkg/dpkg.cfg.d"
+
 
 class PackageCollector(BaseCollector):
     def collect(self) -> dict:
         dpkg_entries, dpkg_failed = self._dpkg_verify_entries()
         if dpkg_entries:
             self._attribute_packages(dpkg_entries)
+            self._mark_path_excluded(dpkg_entries)
         setuid_entries, setuid_failed = self._setuid_binaries()
         if dpkg_failed:
             self.degraded.append("`dpkg --verify` failed or timed out")
@@ -99,6 +109,54 @@ class PackageCollector(BaseCollector):
             path = rest[2:].strip() if is_conffile else rest
             entries.append({"path": path, "flags": flags, "is_conffile": is_conffile, "missing": False})
         return entries, False
+
+    def _dpkg_path_filters(self) -> list:
+        """[(include, glob)] from dpkg's config, in the order dpkg applies them.
+
+        dpkg reads dpkg.cfg.d/* (sorted) before dpkg.cfg. Options are written
+        without the leading "--", as "path-exclude=GLOB" or "path-exclude GLOB".
+        """
+        try:
+            paths = sorted(self.source.glob(f"{DPKG_CFG_DIR}/*"))
+        except Exception:
+            paths = []
+        filters = []
+        for path in paths + [DPKG_CFG_FILE]:
+            try:
+                text = self.source.read_text(path)
+            except Exception:
+                continue
+            for line in text.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                key, _, value = line.replace("=", " ", 1).partition(" ")
+                value = value.strip()
+                if key in ("path-exclude", "path-include") and value:
+                    filters.append((key == "path-include", value))
+        return filters
+
+    def _mark_path_excluded(self, entries: list) -> None:
+        """Flag missing paths that dpkg was configured never to install.
+
+        Same matching as dpkg: fnmatch-style globs where '*' also matches '/',
+        and the last filter that matches a path decides. Only *missing* entries
+        are flagged — a filtered path whose content changed still means
+        something wrote a file dpkg didn't.
+        """
+        filters = self._dpkg_path_filters()
+        if not filters:
+            return
+        for entry in entries:
+            if not entry.get("missing"):
+                continue
+            path = entry["path"]
+            excluded = False
+            for include, pattern in filters:
+                if fnmatch.fnmatchcase(path, pattern):
+                    excluded = not include
+            if excluded:
+                entry["path_excluded"] = True
 
     def _attribute_packages(self, entries: list) -> None:
         """Set each entry's "package" to its owning package, or None if unknown."""
