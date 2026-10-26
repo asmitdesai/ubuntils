@@ -10,6 +10,7 @@ tool, "collection failed" must never look the same as "clean".
 """
 from __future__ import annotations
 
+import math
 import platform
 import socket
 import time
@@ -166,7 +167,13 @@ def run_scan(
     timeline: list = []
     timeline_error = None
     try:
-        timeline = TimelineBuilder(source=source).build()
+        # journald is queried for 7 days by default; a --since reaching
+        # further back must widen that query, not silently cut it at 7 days.
+        since_days = 7
+        if since is not None:
+            age = datetime.now(timezone.utc) - since
+            since_days = max(since_days, math.ceil(age.total_seconds() / 86400))
+        timeline = TimelineBuilder(source=source).build(since_days=since_days)
         if since is not None:
             timeline = [e for e in timeline if e.timestamp >= since]
     except Exception as exc:

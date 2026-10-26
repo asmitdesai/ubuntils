@@ -11,19 +11,26 @@ import os
 import stat
 
 
-def open_private_for_write(path: str, mode: int = 0o600) -> int:
+def open_private_for_write(path: str, mode: int = 0o600, new_owner=None) -> int:
     """Open ``path`` for writing, owner-only, never following a symlink.
 
     Refuses symlinks (O_NOFOLLOW) and anything that isn't a regular file
     (FIFOs, devices). Truncation happens only after the opened fd is verified
     to be a regular file, and permissions are set on the fd (fchmod), not the
     path, so nothing can be redirected between check and use.
+    ``new_owner`` (uid, gid) is applied only when this call creates the
+    file — an existing file is never handed to anyone.
     Returns a raw fd opened O_WRONLY.
     """
     flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW
     if hasattr(os, "O_NONBLOCK"):
         flags |= os.O_NONBLOCK  # never block on a FIFO planted at `path`
-    fd = os.open(path, flags, mode)
+    created = False
+    try:
+        fd = os.open(path, flags | os.O_EXCL, mode)
+        created = True
+    except FileExistsError:
+        fd = os.open(path, flags, mode)
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
@@ -31,6 +38,8 @@ def open_private_for_write(path: str, mode: int = 0o600) -> int:
         if hasattr(os, "O_NONBLOCK"):
             os.set_blocking(fd, True)
         os.fchmod(fd, mode)
+        if created and new_owner is not None:
+            os.fchown(fd, *new_owner)
         os.ftruncate(fd, 0)
     except BaseException:
         os.close(fd)
@@ -38,7 +47,7 @@ def open_private_for_write(path: str, mode: int = 0o600) -> int:
     return fd
 
 
-def write_private_text(path: str, text: str, mode: int = 0o600) -> None:
-    fd = open_private_for_write(path, mode)
+def write_private_text(path: str, text: str, mode: int = 0o600, new_owner=None) -> None:
+    fd = open_private_for_write(path, mode, new_owner)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(text)
