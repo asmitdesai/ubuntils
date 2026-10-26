@@ -309,6 +309,8 @@ async def test_findings_panel_mark_fixed_failed_shows_error():
 # ---------------------------------------------------------------------------
 
 
+from textual.widgets import DataTable
+
 from ubuntils.tui.timeline_panel import TimelinePanel
 
 
@@ -326,8 +328,8 @@ async def test_timeline_panel_row_count_matches_events():
 
     async with _App().run_test() as pilot:
         await pilot.pause()
-        lv = pilot.app.query_one(ListView)
-        assert len(lv.children) == 5
+        table = pilot.app.query_one(TimelinePanel).query_one(DataTable)
+        assert table.row_count == 5
 
 
 async def test_timeline_panel_empty_events():
@@ -337,8 +339,8 @@ async def test_timeline_panel_empty_events():
 
     async with _App().run_test() as pilot:
         await pilot.pause()
-        lv = pilot.app.query_one(ListView)
-        assert len(lv.children) == 0
+        table = pilot.app.query_one(TimelinePanel).query_one(DataTable)
+        assert table.row_count == 0
 
 
 async def test_stats_panel_renders_all_fields():

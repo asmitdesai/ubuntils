@@ -75,14 +75,22 @@ class BaseRemediator(ABC):
             raise
 
     @staticmethod
-    def _lines_without(lines: list, raw_value: str) -> list:
-        return [line for line in lines if line.rstrip("\n") != raw_value]
+    def _same_line(line: str, raw_value: str) -> bool:
+        """Whole-line match, ignoring surrounding whitespace: collectors report
+        some lines stripped (an indented `export LD_PRELOAD=…`, a sudoers rule
+        with trailing spaces), and those must still be found."""
+        wanted = raw_value.strip()
+        return bool(wanted) and line.strip() == wanted
+
+    @classmethod
+    def _lines_without(cls, lines: list, raw_value: str) -> list:
+        return [line for line in lines if not cls._same_line(line, raw_value)]
 
     def _line_present(self, path: str, raw_value: str) -> bool:
         """Line-exact membership test — the same comparison apply() uses, so
         verify() can't report FAILED because raw_value happens to be a
         substring of some other surviving line."""
-        return any(line.rstrip("\n") == raw_value for line in self._read_lines(path))
+        return any(self._same_line(line, raw_value) for line in self._read_lines(path))
 
     def _require_line(self, finding: Finding, what: str = "Line") -> None:
         if not self._line_present(finding.artifact_path, finding.raw_value):

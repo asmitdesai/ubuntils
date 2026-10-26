@@ -9,7 +9,7 @@ import structlog
 
 from ubuntils import __version__
 from ubuntils.collectors.packages import (
-    DPKG_OWNERS_ARGV, SENSITIVE_ATTR_PATHS, SETUID_FIND_ARGS,
+    DPKG_CFG_FILE, DPKG_OWNERS_ARGV, SENSITIVE_ATTR_PATHS, SETUID_FIND_ARGS,
 )
 from ubuntils.collectors.source import LiveSource
 from ubuntils.detectors.custom_rules import load_custom_rules
@@ -48,6 +48,10 @@ COLLECT_FILES = [
     "/etc/hostname",
     "/etc/timezone",
     "/var/lib/dpkg/status",
+    DPKG_CFG_FILE,
+    # Where Docker's and Ubuntu's minimized images put their path-exclude
+    # filters (the directory itself can't be globbed into a static list).
+    "/etc/dpkg/dpkg.cfg.d/excludes",
     "/var/log/syslog",
     "/var/log/messages",
     "/var/log/audit/audit.log",
@@ -150,10 +154,27 @@ def _load_inputs(config_path, baseline_path, rules_path, since_value) -> tuple:
     return since, allowlist, baseline, custom_rules
 
 
+def _sudo_invoker():
+    """(uid, gid) of the user who ran us through sudo, or None.
+
+    `scan` re-executes itself under sudo, so without this a report written to
+    `--output ~/report.json` is root-owned 0600 and its own author can't read it.
+    """
+    if os.geteuid() != 0:
+        return None
+    try:
+        uid, gid = int(os.environ["SUDO_UID"]), int(os.environ["SUDO_GID"])
+    except (KeyError, ValueError):
+        return None
+    return (uid, gid) if uid != 0 else None
+
+
 def _emit_report(report: str, output_path) -> None:
     if output_path:
         try:
-            write_private_text(output_path, report + "\n")
+            # Owner-only either way; a report ubuntils creates belongs to the
+            # user who asked for it.
+            write_private_text(output_path, report + "\n", new_owner=_sudo_invoker())
         except OSError as exc:
             raise click.ClickException(f"Cannot write report to {output_path}: {exc}")
         click.echo(f"Report written to {output_path}", err=True)

@@ -337,70 +337,118 @@ def _qualifies_for_nopasswd_check(user_info: dict) -> bool:
     return not uid_is_system(user_info.get("uid", 0)) and is_login_shell(user_info.get("shell", ""))
 
 
+def _sudoers_principal_members(principal: str, users: list, users_by_name: dict):
+    """(kind, label, qualifying usernames) for one sudoers User_List item, or
+    None for items that can't be resolved to local accounts (+netgroup)."""
+    if principal == "ALL":
+        return "all", "every user", sorted(
+            u["username"] for u in users if _qualifies_for_nopasswd_check(u))
+    if principal.startswith("%"):
+        group = principal[1:]
+        if group.startswith("#") and group[1:].isdigit():
+            gid = int(group[1:])
+            match = (lambda u: u.get("gid") == gid)
+        else:
+            match = (lambda u: group in u.get("groups", []) or u.get("primary_group") == group)
+        return "group", f"group '{group}'", sorted(
+            u["username"] for u in users if match(u) and _qualifies_for_nopasswd_check(u))
+    if principal.startswith("+"):
+        return None
+    if principal.startswith("#") and principal[1:].isdigit():
+        uid = int(principal[1:])
+        user_info = next((u for u in users if u.get("uid") == uid), None)
+    else:
+        user_info = users_by_name.get(principal)
+    if user_info is None or not _qualifies_for_nopasswd_check(user_info):
+        return "user", principal, []
+    return "user", user_info["username"], [user_info["username"]]
+
+
 def rule_sudoers_nopasswd(artifacts: dict) -> List[Finding]:
     findings = []
     users = artifacts.get("users", [])
     users_by_name = {u["username"]: u for u in users}
 
     for rule in artifacts.get("sudoers_rules", []):
-        options = rule.get("options", "")
-        if "NOPASSWD" not in options:
+        nopasswd = "NOPASSWD" in rule.get("options", "")
+        # "Defaults:alice !authenticate" is NOPASSWD by another name.
+        auth_disabled = rule.get("authenticate_disabled_by") or []
+        if not (nopasswd or auth_disabled):
             continue
-        principal = rule.get("user", "")
+        principals = rule.get("principals") or [rule.get("user", "")]
+        source = rule.get("source", "")
+        raw_line = rule.get("raw_line", "")
+        how = "NOPASSWD" if nopasswd else "passwordless (!authenticate)"
+        if auth_disabled and not nopasswd:
+            how_detail = f" — authentication disabled by {'; '.join(auth_disabled)}"
+        else:
+            how_detail = ""
 
-        if principal.startswith("%"):
-            # Group rule: resolve members (supplementary or primary group).
-            group = principal[1:]
-            members = sorted(
-                u["username"] for u in users
-                if (group in u.get("groups", []) or u.get("primary_group") == group)
-                and _qualifies_for_nopasswd_check(u)
-            )
+        for principal in principals:
+            resolved = _sudoers_principal_members(principal, users, users_by_name)
+            if resolved is None:
+                continue
+            kind, label, members = resolved
             if not members:
                 continue
-            # Flag-only: deleting a group-wide rule like %sudo can strip all
-            # sudo access from the system, which remediation must never do.
+            if kind != "user":
+                # Flag-only: deleting a group-wide rule like %sudo (or an ALL
+                # rule) can strip all sudo access from the system, which
+                # remediation must never do.
+                findings.append(Finding(
+                    rule_id="SUDOERS_NOPASSWD",
+                    severity=Severity.MEDIUM,
+                    title=(f"{how} sudoers entry for every user" if kind == "all" else
+                           f"{how} sudoers entry for a group with non-system members"),
+                    description=(
+                        f"{label[0].upper()}{label[1:]} has {how} sudo access; "
+                        f"members: {', '.join(members)}{how_detail}"
+                    ),
+                    artifact_path=source,
+                    raw_value=raw_line,
+                    remediation_available=False,
+                    remediation_description=None,
+                    guided_remediation=(
+                        f"Edit with `visudo -f {source}` and drop the NOPASSWD tag or "
+                        f"!authenticate default (or narrow the rule) — do not delete a group "
+                        f"rule that may be the system's only sudo access."
+                    ),
+                ))
+                continue
+
+            username = members[0]
+            uid = users_by_name[username].get("uid", 0)
+            # Removing the line is only a safe fix when it grants exactly this
+            # user, sits on one physical line, and NOPASSWD is the problem (with
+            # only !authenticate, deleting the rule would revoke sudo outright).
+            auto = (nopasswd and len(principals) == 1 and not rule.get("continued", False))
             findings.append(Finding(
                 rule_id="SUDOERS_NOPASSWD",
                 severity=Severity.MEDIUM,
-                title="NOPASSWD sudoers entry for a group with non-system members",
-                description=(
-                    f"Group '{group}' has NOPASSWD sudo access; members: {', '.join(members)}"
+                title=f"{how} sudoers entry for non-system user",
+                description=f"User '{username}' (uid={uid}) has {how} sudo access{how_detail}",
+                artifact_path=source,
+                raw_value=raw_line,
+                remediation_available=auto,
+                remediation_description=(
+                    "Remove the NOPASSWD sudoers entry and create a backup" if auto else None
                 ),
-                artifact_path=rule.get("source", ""),
-                raw_value=rule.get("raw_line", ""),
-                remediation_available=False,
-                remediation_description=None,
                 guided_remediation=(
-                    f"Edit with `visudo -f {rule.get('source', '')}` and drop the NOPASSWD tag "
-                    f"(or narrow the rule) — do not delete a group rule that may be the "
-                    f"system's only sudo access."
+                    None if auto else
+                    f"Edit with `visudo -f {source}` and drop the NOPASSWD tag or "
+                    f"!authenticate default for '{username}'."
                 ),
             ))
-            continue
-
-        user_info = users_by_name.get(principal)
-        if user_info is None or not _qualifies_for_nopasswd_check(user_info):
-            continue
-        uid = user_info.get("uid", 0)
-        findings.append(Finding(
-            rule_id="SUDOERS_NOPASSWD",
-            severity=Severity.MEDIUM,
-            title="NOPASSWD sudoers entry for non-system user",
-            description=f"User '{principal}' (uid={uid}) has NOPASSWD sudo access",
-            artifact_path=rule.get("source", ""),
-            raw_value=rule.get("raw_line", ""),
-            remediation_available=True,
-            remediation_description="Remove the NOPASSWD sudoers entry and create a backup",
-        ))
     return findings
 
 
 # Kernel-thread names. A userspace implant renaming itself "[kworker/0:1]" is
 # the most common Linux masquerade (MITRE T1036.004) — and easy to catch:
 # real kernel threads have no executable, so /proc/<pid>/exe doesn't resolve.
+# Only kernel spellings: the userspace `watchdog` daemon (Debian package
+# watchdog) is not a kernel thread, but "watchdogd" and "watchdog/0" are.
 _KTHREAD_NAME_RE = re.compile(
-    r"^\[?(kworker|kthreadd|ksoftirqd|kswapd\d*|migration|rcu_\w+|watchdogd?|kauditd|"
+    r"^\[?(kworker|kthreadd|ksoftirqd|kswapd\d*|migration|rcu_\w+|watchdogd|watchdog/\d+|kauditd|"
     r"khungtaskd|kcompactd\d*|khugepaged|kdevtmpfs|kblockd|jbd2|irq|cpuhp|oom_reaper|"
     r"writeback|kintegrityd|ksmd|kthrotld|scsi_eh_\d+)\b"
 )
@@ -653,6 +701,11 @@ def _is_reportable_dpkg_entry(entry: dict) -> bool:
     if entry.get("package_state") == "config-files":
         # Removed but not purged: dpkg still lists the directory skeleton it
         # left behind, and an empty leftover directory going away is cleanup.
+        return False
+    if entry.get("path_excluded", False):
+        # dpkg's path-exclude config (Docker and minimized cloud images drop
+        # docs, man pages and translations) means it never installed this
+        # file, though `dpkg --verify` still calls it missing.
         return False
     if entry.get("missing", False):
         return True

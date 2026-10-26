@@ -3,6 +3,7 @@ from __future__ import annotations
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.containers import VerticalScroll
 from textual.widget import Widget
 from textual.widgets import Label, ListItem, ListView, Static
 
@@ -12,7 +13,8 @@ _SEVERITY_ORDER = {Severity.HIGH: 0, Severity.MEDIUM: 1, Severity.LOW: 2}
 
 
 def sort_findings(findings: list[Finding]) -> list[Finding]:
-    return sorted(findings, key=lambda f: _SEVERITY_ORDER[f.severity])
+    # Most severe first, and the most confident within each severity.
+    return sorted(findings, key=lambda f: (_SEVERITY_ORDER[f.severity], -f.confidence))
 
 
 def format_detail(finding: Finding) -> str:
@@ -77,7 +79,7 @@ def _detail_text(finding: Finding | None, result: RemediationResult | None = Non
     elif finding.remediation_available:
         desc = finding.remediation_description or "Automated remediation available."
         lines.append(f"Fix:       {desc}")
-        lines += ["", "R: remediate"]
+        lines += ["", "R: remediate    PgUp/PgDn: scroll this detail"]
     else:
         lines += ["", "No automated remediation available for this finding."]
 
@@ -100,9 +102,7 @@ _SEVERITY_SHORT = {
 class FindingDetail(Static):
     DEFAULT_CSS = """
     FindingDetail {
-        /* 16 rows: base detail + up to 5 related events + guided remediation block */
-        height: 16;
-        border-top: solid $primary;
+        height: auto;
         padding: 1 2;
     }
     """
@@ -121,6 +121,8 @@ class FindingsPanel(Widget):
     BINDINGS = [
         Binding("r", "remediate", "Remediate", show=False),
         Binding("escape", "collapse", "Collapse", show=False),
+        Binding("pagedown", "scroll_detail(1)", "Scroll detail", show=False),
+        Binding("pageup", "scroll_detail(-1)", "Scroll detail", show=False),
     ]
 
     DEFAULT_CSS = """
@@ -131,9 +133,11 @@ class FindingsPanel(Widget):
     FindingsPanel ListView {
         height: 1fr;
     }
-    FindingsPanel FindingDetail {
-        /* 16 rows: base detail + up to 5 related events + guided remediation block */
+    FindingsPanel #detail-scroll {
+        /* Fixed share of the screen; a long detail (a package with 20 changed
+           files, signals, related events) scrolls instead of being cut off. */
         height: 16;
+        border-top: solid $primary;
     }
     """
 
@@ -141,6 +145,9 @@ class FindingsPanel(Widget):
         super().__init__(**kwargs)
         self._findings = sort_findings(findings)
         self._selected: Finding | None = None
+        # Findings already remediated successfully, by index: running the
+        # remediator again would only fail with "line not found".
+        self._fixed: set = set()
 
     def compose(self) -> ComposeResult:
         items = []
@@ -157,16 +164,24 @@ class FindingsPanel(Widget):
                 )
             )
         yield ListView(*items)
-        yield FindingDetail(id="detail")
+        detail_scroll = VerticalScroll(FindingDetail(id="detail"), id="detail-scroll")
+        # Never takes focus: the list keeps the keyboard (and the 1-4 tab
+        # keys keep working); PgUp/PgDn scroll the detail instead.
+        detail_scroll.can_focus = False
+        yield detail_scroll
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         idx = event.list_view.index
         if idx is not None and 0 <= idx < len(self._findings):
             self._selected = self._findings[idx]
             self.query_one(FindingDetail).show(self._selected)
+            self.query_one("#detail-scroll", VerticalScroll).scroll_home(animate=False)
 
     def action_remediate(self) -> None:
         if self._selected is not None and self._selected.remediation_available:
+            if self._findings.index(self._selected) in self._fixed:
+                self.app.notify("Already remediated.", severity="information")
+                return
             from ubuntils.tui.confirm_modal import ConfirmModal, RemediateRequest
             finding = self._selected
 
@@ -175,6 +190,13 @@ class FindingsPanel(Widget):
                     self.post_message(RemediateRequest(finding))
 
             self.app.push_screen(ConfirmModal(finding), _on_confirmed)
+
+    def action_scroll_detail(self, direction: int) -> None:
+        scroll = self.query_one("#detail-scroll", VerticalScroll)
+        if direction > 0:
+            scroll.scroll_page_down(animate=False)
+        else:
+            scroll.scroll_page_up(animate=False)
 
     def action_collapse(self) -> None:
         self._selected = None
@@ -190,5 +212,11 @@ class FindingsPanel(Widget):
         sev = _SEVERITY_SHORT[finding.severity]
         rule = f"{finding.rule_id[:20]:<20}"
         path = finding.artifact_path[:35]
-        label.update(Text.assemble((f"✓ {sev}", "green"), f"  {rule}  {path}  [fixed]"))
+        # A failed remediation changed nothing; the row must not claim it did.
+        if result.status == RemediationStatus.SUCCESS:
+            self._fixed.add(idx)
+            label.update(Text.assemble((f"✓ {sev}", "green"), f"  {rule}  {path}  [fixed]"))
+        else:
+            label.update(Text.assemble((f"✗ {sev}", "bold red"),
+                                       f"  {rule}  {path}  [remediation failed]"))
         self.query_one(FindingDetail).show(finding, result)

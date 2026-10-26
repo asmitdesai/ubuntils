@@ -427,7 +427,7 @@ def test_pipeline_attaches_related_events(monkeypatch):
     )
     from ubuntils import pipeline
     monkeypatch.setattr(pipeline.DetectionEngine, "run", lambda self, artifacts: [finding])
-    monkeypatch.setattr(pipeline.TimelineBuilder, "build", lambda self: [event])
+    monkeypatch.setattr(pipeline.TimelineBuilder, "build", lambda self, **kw: [event])
 
     with patch("ubuntils.pipeline.ALL_COLLECTORS", []):
         result = cli._run_pipeline(source=LiveSource(), remediate=False, confirm=False)
