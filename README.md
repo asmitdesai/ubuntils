@@ -4,8 +4,8 @@ Forensic triage for live Ubuntu systems — automated artifact collection, persi
 
 [![CI](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml/badge.svg)](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
-![Tests](https://img.shields.io/badge/tests-512%20passing-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-94.79%25-green)
+![Tests](https://img.shields.io/badge/tests-539%20passing-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-94.67%25-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Arch](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-lightgrey)
 ![Ubuntu](https://img.shields.io/badge/ubuntu-20.04%20%7C%2022.04%20%7C%2024.04%20%7C%2026.04-orange)
@@ -52,10 +52,10 @@ pipx ensurepath            # then open a new shell
 git clone https://github.com/asmitdesai/ubuntils.git
 cd ubuntils
 pipx install -e .
-ubuntils scan              # not `ubuntils scan` — see below
+ubuntils scan              # not `sudo ubuntils scan` — see below
 ```
 
-Run it as your normal user: `scan` and `collect` re-invoke themselves under `sudo`. Typing `ubuntils …` yourself fails with `command not found`, because sudo's `secure_path` doesn't include `~/.local/bin` where pipx puts the command. If you need to start it from a root shell, call the installed binary by path (`~youruser/.local/bin/ubuntils scan`), or install into a virtual environment instead:
+Run it as your normal user: `scan` and `collect` re-invoke themselves under `sudo`. Typing `sudo ubuntils …` yourself fails with `command not found`, because sudo's `secure_path` doesn't include `~/.local/bin` where pipx puts the command. If you need to start it from a root shell, call the installed binary by path (`~youruser/.local/bin/ubuntils scan`), or install into a virtual environment instead:
 
 ```bash
 python3 -m venv .venv
@@ -72,7 +72,7 @@ pip install -r requirements.txt -e .
 ubuntils scan
 ```
 
-ubuntils requires root for full artifact access. If you run `ubuntils scan` as a non-root user it will automatically re-invoke itself with `sudo` using the same Python interpreter (by absolute path), so the correct environment is used without forwarding your `PATH` into the root process. Every external command (`ss`, `dpkg`, `systemctl`, …) is resolved on a fixed, root-owned search path, never your `PATH`. Running without root will skip `/etc/shadow`, some `/proc` entries, and protected cron files, and will log warnings for each.
+ubuntils requires root for full artifact access. If you run `ubuntils scan` as a non-root user it will automatically re-invoke itself with `sudo` using the same Python interpreter (by absolute path), so the correct environment is used without forwarding your `PATH` into the root process. Every external command (`ss`, `dpkg`, `systemctl`, …) is resolved on a fixed, root-owned search path, never your `PATH`. Running without root will skip `/etc/shadow`, some `/proc` entries, and protected cron files, and will log warnings for each. A report that `scan --output FILE` creates after re-invoking itself through `sudo` is owned by you (still mode `0600`), so you can open it without `sudo`; an existing file keeps its owner, and `collect` bundles stay root-only because they contain `/etc/shadow`.
 
 ---
 
@@ -259,7 +259,7 @@ assert hashlib.sha256(json.dumps(doc, indent=2, sort_keys=True).encode()).hexdig
 ubuntils collect --output /path/to/bundle.tar.gz
 ```
 
-Requires root, like `scan`. Reads a fixed list of files (`/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/sudoers`, `/etc/ld.so.preload`, `/etc/environment`, `/etc/crontab`, `/etc/profile`, `/var/log/syslog`, `/var/log/messages`, `/var/log/audit/audit.log`) and runs a fixed list of commands (`ss -tunap`, `netstat -tunap`, `systemctl list-timers` in both JSON and text form, and `journalctl -o json` for the last 7 days), hashes each captured item, and writes everything plus a `manifest.json` into a `.tar.gz` bundle. The captured log files and journalctl output are what let `analyze BUNDLE` build a real timeline offline. If `--output` is omitted, the bundle is written to `./ubuntils-bundle-<UTC timestamp>.tar.gz` in the current directory.
+Requires root, like `scan`. Reads a fixed list of files (`/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/sudoers`, `/etc/ld.so.preload`, `/etc/environment`, `/etc/crontab`, `/etc/profile`, `/etc/nsswitch.conf`, OS release, hostname and timezone, dpkg's status file and `path-exclude` config, `/var/log/syslog`, `/var/log/messages`, `/var/log/audit/audit.log`) and runs a fixed list of commands (`ss -tunap`, `netstat -tunap`, `systemctl list-timers` in both JSON and text form, and `journalctl -o json` for the last 7 days), hashes each captured item, and writes everything plus a `manifest.json` into a `.tar.gz` bundle. The captured log files and journalctl output are what let `analyze BUNDLE` build a real timeline offline. If `--output` is omitted, the bundle is written to `./ubuntils-bundle-<UTC timestamp>.tar.gz` in the current directory.
 
 ### `ubuntils analyze`
 
@@ -431,13 +431,13 @@ Backup:    /var/backups/ubuntils/20260115_142201/etc_cron.d_cleanup
 Rollback:  cp /var/backups/ubuntils/20260115_142201/etc_cron.d_cleanup /etc/cron.d/cleanup
 ```
 
-On failure, the detail pane shows the error. The backup is always created before any change is attempted.
+On failure, the row is marked `[remediation failed]` and the detail pane shows the error. The backup is always created before any change is attempted. A finding that was fixed can't be remediated a second time.
 
-Press `Esc` to collapse the detail pane.
+A long detail (a package with many changed files, several signals and related events) scrolls: press `PgUp`/`PgDn`. Press `Esc` to collapse the detail pane.
 
 ### Timeline tab (key `3`)
 
-A scrollable chronological list of correlated log events. Each row shows timestamp, source, the logging program, and the message. Events are pulled from syslog, journald, and auditd and deduplicated — including the copy rsyslog makes of every journald message, which otherwise doubles a large share of the timeline. Identical messages repeated within a single source (a burst of failed logins) are kept.
+A scrollable chronological table of correlated log events. Each row shows the timestamp (UTC), source, the logging program, and the message. Only the rows on screen are rendered, so a week of journald on a busy host (tens of thousands of events) opens in seconds. Events are pulled from syslog, journald, and auditd and deduplicated — including the copy rsyslog makes of every journald message, which otherwise doubles a large share of the timeline. Identical messages repeated within a single source (a burst of failed logins) are kept.
 
 ### Stats tab (key `4`)
 
@@ -456,7 +456,7 @@ A summary view of the scan: detected Ubuntu version, architecture, scan duration
 | SSH_UNAUTHORIZED_KEY | MEDIUM | Yes | Keys in any file sshd reads (`authorized_keys`, `authorized_keys2`, every `AuthorizedKeysFile`) changed within 7 days by mtime *or* ctime, and any key in the legacy `authorized_keys2` |
 | USER_UID_ZERO | HIGH | No | Any account other than `root` with UID 0 (a hidden second superuser) |
 | USER_EMPTY_PASSWORD | HIGH | No | A login-shell account whose /etc/shadow password field is empty (Ubuntu's default PAM `nullok` lets it log in with no password) |
-| SUDOERS_NOPASSWD | MEDIUM | Yes* | NOPASSWD sudoers grants for users with UID ≥ 1000 and a login shell, directly or via a `%group` rule; included files are followed. *Group rules are flag-only (removing `%sudo` could remove all sudo access) |
+| SUDOERS_NOPASSWD | MEDIUM | Yes* | NOPASSWD (or `Defaults:user !authenticate`) sudoers grants for users with UID ≥ 1000 and a login shell, directly, via a `%group`, a user list, a `User_Alias` or `ALL`; included files are followed. *Flag-only unless the line grants exactly one user (removing `%sudo` could remove all sudo access) |
 | PROCESS_MASQUERADE | HIGH / MEDIUM | No | HIGH: a userspace process named like a kernel thread (`[kworker/0:1]`). MEDIUM: processes whose name matches a known system binary but whose executable is outside the standard system directories (/usr/bin, /usr/sbin, /bin, /sbin, /usr/local/{bin,sbin}, /usr/lib, /usr/libexec, /lib, /snap) |
 | PROCESS_SUSPICIOUS_CONNECTION | HIGH / MEDIUM | No | Processes holding a non-loopback connection whose executable is in a world-writable temp dir or deleted from disk (HIGH), or is outside the standard system directories, or that make an outbound connection to a non-standard remote port (MEDIUM). Inbound connections (on a listening port) skip the port check |
 | SHELL_RC_MODIFICATION | LOW / MEDIUM | No | System and per-user shell init files (`/etc/bash.bashrc`, `/etc/profile.d/*`, `~/.bashrc`, `~/.zshenv`, …) changed within 48 hours by mtime or ctime (LOW), or containing a download-and-execute, base64-decode or writable-tmp `PATH` line at any age (MEDIUM) |
@@ -523,7 +523,7 @@ Raw value:     ssh-rsa AAAAB3NzaC1... attacker@evil
 Remediation:   available
 ```
 
-**SUDOERS_NOPASSWD** — Password-free sudo for a human user account (UID ≥ 1000 with a login shell) is a privilege escalation vector that survives the removal of other persistence mechanisms. Legitimate NOPASSWD grants are almost always for service accounts with no login shell. Group rules (`%sudo ALL=(ALL) NOPASSWD:ALL`) are resolved to their members, and `#include`/`@includedir` files are followed. Group findings are flag-only: deleting a rule like `%sudo` could remove every sudo grant on the system.
+**SUDOERS_NOPASSWD** — Password-free sudo for a human user account (UID ≥ 1000 with a login shell) is a privilege escalation vector that survives the removal of other persistence mechanisms. Legitimate NOPASSWD grants are almost always for service accounts with no login shell. Group rules (`%sudo ALL=(ALL) NOPASSWD:ALL`) are resolved to their members, and `#include`/`@includedir` files are followed. The parser follows sudo's own syntax rather than the common shape of a rule, so the usual ways of hiding a grant are caught too: a rule split over lines with a trailing `\`, a user list (`alice, bob ALL=…`) or `User_Alias`, `NOPASSWD:` placed before a later command in the list (`/usr/bin/id, NOPASSWD: /bin/bash`), and `Defaults:alice !authenticate`, which makes every rule for alice passwordless without the word NOPASSWD appearing anywhere. Only a single-line rule for exactly one user is auto-remediated; group, `ALL`, multi-user, multi-line and `!authenticate` findings are flag-only — deleting the line could remove other users' sudo access, every sudo grant on the system, or (for `!authenticate`) the user's sudo access outright instead of just the password exemption.
 
 *Example finding:*
 ```
@@ -534,7 +534,7 @@ Raw value:     alice ALL=(ALL) NOPASSWD: ALL
 Remediation:   available
 ```
 
-**PROCESS_MASQUERADE** — Naming a malicious binary after a known system process (sshd, python3, bash) is a basic technique to avoid detection in `ps` output. This rule cross-references the process name from `/proc/<pid>/status` against the resolved exe path from `/proc/<pid>/exe`. Standard locations include `/usr/local/{bin,sbin}`, `/usr/lib`, `/usr/libexec`, and `/snap`, so systemd (`/usr/lib/systemd/systemd`) and snap packages don't trip it. It also catches the most common Linux masquerade: an implant that names itself after a kernel thread (`kworker/0:1`, or a bracketed `[kworker/0:1]` command line). Real kernel threads have no executable, so a kernel-thread name backed by a file on disk is reported HIGH. Flag-only — killing a process requires human judgment.
+**PROCESS_MASQUERADE** — Naming a malicious binary after a known system process (sshd, python3, bash) is a basic technique to avoid detection in `ps` output. This rule cross-references the process name from `/proc/<pid>/status` against the resolved exe path from `/proc/<pid>/exe`. Standard locations include `/usr/local/{bin,sbin}`, `/usr/lib`, `/usr/libexec`, and `/snap`, so systemd (`/usr/lib/systemd/systemd`) and snap packages don't trip it. It also catches the most common Linux masquerade: an implant that names itself after a kernel thread (`kworker/0:1`, or a bracketed `[kworker/0:1]` command line). Real kernel threads have no executable, so a kernel-thread name backed by a file on disk is reported HIGH. Only kernel spellings count: `watchdogd` and `watchdog/0` are kernel threads, the userspace `watchdog` daemon is not. Flag-only — killing a process requires human judgment.
 
 *Example finding:*
 ```
@@ -589,7 +589,7 @@ Raw value:     mtime=2024-01-15 14:22:01 (6 hours ago)
 Remediation:   not available
 ```
 
-**PACKAGE_TAMPERED** — System-owned binaries and configuration files are the foundation of trust. This rule detects when package-owned files have been modified, deleted, or have content/mode/size mismatches using `dpkg --verify`. Conffile-only edits (expected local configuration changes) are excluded from reporting to avoid noise. Changed files are grouped into **one finding per owning package** (looked up with `dpkg-query -S`), listing up to 20 of the files; the artifact is the package name, so a known-noisy package can be allowlisted by name with `--config`. A package whose changed files are all under `/var` is reported as MEDIUM with lower confidence, because packages such as a Wazuh manager keep runtime data there that `dpkg` still lists in their manifest — a single Wazuh host otherwise produced 1,100+ HIGH findings. A missing path that isn't in the package's `/var/lib/dpkg/info/<pkg>.md5sums` (which lists only regular files) is a directory or symlink: it gets a weak `missing_directory` signal instead of `missing_file`, and a package whose only problem is missing directories is reported as LOW — an empty directory going away is housekeeping, not tampering. Missing conffiles are still treated as files. Packages that were removed but not purged (dpkg state `config-files`, read from `/var/lib/dpkg/status`) are skipped entirely: dpkg keeps checking the empty directory skeleton they leave behind, and its disappearance is cleanup, not tampering. Bundles don't capture `.md5sums`, so offline every missing path counts as a file. If ownership can't be determined (an older bundle, or the lookup failed) the rule falls back to one finding per file and the scan notes the degraded lookup. Flag-only — tampering may be legitimate (custom local edits) or malicious (file replacement); deciding requires human judgment.
+**PACKAGE_TAMPERED** — System-owned binaries and configuration files are the foundation of trust. This rule detects when package-owned files have been modified, deleted, or have content/mode/size mismatches using `dpkg --verify`. Conffile-only edits (expected local configuration changes) are excluded from reporting to avoid noise. Changed files are grouped into **one finding per owning package** (looked up with `dpkg-query -S`), listing up to 20 of the files; the artifact is the package name, so a known-noisy package can be allowlisted by name with `--config`. A package whose changed files are all under `/var` is reported as MEDIUM with lower confidence, because packages such as a Wazuh manager keep runtime data there that `dpkg` still lists in their manifest — a single Wazuh host otherwise produced 1,100+ HIGH findings. A missing path that isn't in the package's `/var/lib/dpkg/info/<pkg>.md5sums` (which lists only regular files) is a directory or symlink: it gets a weak `missing_directory` signal instead of `missing_file`, and a package whose only problem is missing directories is reported as LOW — an empty directory going away is housekeeping, not tampering. Missing conffiles are still treated as files. Files that dpkg was configured never to install are skipped too: Docker's official Ubuntu images and Ubuntu's minimized cloud images ship `path-exclude` filters in `/etc/dpkg/dpkg.cfg.d/` (no docs, man pages or translations), and `dpkg --verify` still reports every one of those files as missing — 375 HIGH findings on a stock `ubuntu:24.04` container. ubuntils applies the filters the way dpkg does (`dpkg.cfg.d/*` then `dpkg.cfg`, last matching `path-exclude`/`path-include` wins) to *missing* files only; a filtered path whose content changed is still reported. Packages that were removed but not purged (dpkg state `config-files`, read from `/var/lib/dpkg/status`) are skipped entirely: dpkg keeps checking the empty directory skeleton they leave behind, and its disappearance is cleanup, not tampering. Bundles don't capture `.md5sums`, so offline every missing path counts as a file. If ownership can't be determined (an older bundle, or the lookup failed) the rule falls back to one finding per file and the scan notes the degraded lookup. Flag-only — tampering may be legitimate (custom local edits) or malicious (file replacement); deciding requires human judgment.
 
 *Example finding:*
 ```

@@ -6,6 +6,15 @@ Notable changes per release. Earlier releases (1.0.0 through 2.1.0) are summaris
 
 ### Fixed
 - `CRON_TMP_PATH` and `CRON_ROOT_EXEC` remediation never worked on a real host: the rules report only the cron command, and the remediator looked for a line equal to it, so every fix failed with "Line not found". It now matches the crontab line that parses to that command. Found by running `--remediate --confirm` against the demo lab.
+- `PACKAGE_TAMPERED` produced hundreds of HIGH false positives on Docker's Ubuntu images and Ubuntu's minimized cloud images (375 on a stock `ubuntu:24.04` container): their dpkg `path-exclude` filters skip docs, man pages and translations, and `dpkg --verify` reports each skipped file as missing. Missing files matching the host's `path-exclude` filters are now skipped; `collect` captures the filter config for offline analysis.
+- `SUDOERS_NOPASSWD` missed passwordless sudo written in valid sudoers syntax other than the common shape: a rule continued over two lines with `\`, a user list or `User_Alias`, `NOPASSWD:` before a later command in the list, and `Defaults:user !authenticate`. All four were confirmed with `sudo -l` and are now detected; findings that removing one line can't safely fix are flag-only.
+- `PROCESS_MASQUERADE` reported the userspace `watchdog` daemon as a HIGH fake kernel thread.
+- Stock Ubuntu 24.04 and cloud-image components were reported: the polkit 124 setuid helper (`/usr/lib/polkit-1/polkit-agent-helper-1`) and the `extrausers`, `oslogin`/`cache_oslogin` (every Ubuntu image on GCE) and `libvirt` NSS modules.
+- Remediation failed with "Line not found" on indented lines, such as an `export LD_PRELOAD=…` inside an `if` block, because the collectors report the line stripped. Lines now match ignoring surrounding whitespace.
+- The TUI's Timeline tab built one widget per event: 2,000 events took about 9 seconds to open and 20,000 crashed the app, well under a week of journald on a real host. It is now a table that renders only visible rows.
+- A failed TUI remediation still marked the finding `[fixed]` in the list; it now shows `[remediation failed]`, and a fixed finding can't be remediated twice. The finding detail scrolls (`PgUp`/`PgDn`) instead of cutting off long findings, and the Summary tab lists the most severe findings first.
+- `--since` further back than 7 days still queried only 7 days of journald.
+- `scan --output FILE` run as a normal user (the documented way) wrote a root-owned `0600` report its author couldn't read. A report ubuntils creates is now owned by the user who invoked `sudo`.
 - `analyze BUNDLE` reported every captured shell init file (`/etc/profile`) as modified in the last 48 hours: file times came from the extracted copy instead of the times the manifest recorded on the collected host.
 
 ## 2.2.0 — 2026-10-16
