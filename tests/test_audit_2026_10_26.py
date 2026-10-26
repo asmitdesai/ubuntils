@@ -363,3 +363,72 @@ async def test_T4_timeline_panel_handles_a_large_journal():
         assert pilot.app.query_one(DataTable).row_count == 20000
     # One widget per event took minutes (or never finished) at this size.
     assert time.monotonic() - start < 30
+
+
+# ─── D5: kernel modules — trust the kernel's taint flags, not just a name list ─
+
+# The 26 stock modules a clean Ubuntu 24.04 QEMU/KVM VM reported as LOW findings.
+_STOCK_X86_VM_MODULES = (
+    "cpuid tls intel_rapl_msr intel_rapl_common kvm_intel kvm irqbypass serio_raw "
+    "i2c_piix4 ghash_clmulni_intel aesni_intel i2c_smbus mac_hid rapl vmgenid msr "
+    "parport_pc ppdev lp parport qemu_fw_cfg x_tables psmouse bochs pata_acpi floppy"
+).split()
+
+
+def _kernel_artifacts(tmp_path, proc_modules):
+    files = {"/proc/modules": proc_modules} if proc_modules is not None else {"/etc/x": ""}
+    lsmod = "Module Size Used by\n" + "".join(
+        f"{line.split()[0]} 1 0\n" for line in (proc_modules or "kvm 1 0 - Live 0x0\n").splitlines())
+    src = _ReplaySource(_tree(tmp_path, files), {"lsmod": (lsmod, "", 0)})
+    from ubuntils.collectors.kernel import KernelCollector
+    return KernelCollector(source=src).collect()
+
+
+def test_D5_collector_reads_taint_flags(tmp_path):
+    mods = _kernel_artifacts(tmp_path, (
+        "kvm 1507328 1 kvm_intel, Live 0xffffffffc0a00000\n"
+        "diamorphine 16384 0 - Live 0xffffffffc0b00000 (OE)\n"))["kernel_modules"]
+    assert {m["name"]: m["taint"] for m in mods} == {"kvm": "", "diamorphine": "OE"}
+
+
+def test_D5_without_proc_modules_taint_is_unknown(tmp_path):
+    [mod] = _kernel_artifacts(tmp_path, None)["kernel_modules"]
+    assert mod["taint"] is None
+
+
+def test_D5_untainted_stock_modules_are_not_reported():
+    mods = [{"name": n, "size": "1", "used_by": [], "taint": ""} for n in _STOCK_X86_VM_MODULES]
+    assert rules.rule_kernel_module_suspicious({"kernel_modules": mods}) == []
+
+
+def test_D5_out_of_tree_unsigned_module_is_medium():
+    [f] = rules.rule_kernel_module_suspicious({"kernel_modules": [
+        {"name": "diamorphine", "size": "1", "used_by": [], "taint": "OE"}]})
+    assert f.severity == Severity.MEDIUM
+    assert "out of tree" in f.description and "unsigned" in f.description
+    assert any(s["name"] == "module_taint" for s in f.signals)
+
+
+def test_D5_unknown_taint_keeps_the_allowlist_behaviour():
+    [f] = rules.rule_kernel_module_suspicious({"kernel_modules": [
+        {"name": "floppy", "size": "1", "used_by": [], "taint": None}]})
+    assert f.severity == Severity.LOW
+
+
+def test_D5_bundles_capture_proc_modules():
+    from ubuntils.cli import COLLECT_FILES
+    assert "/proc/modules" in COLLECT_FILES
+
+
+# ─── D6: the package listing cap never hides the telling entries ─────────────
+
+def test_D6_modified_binary_listed_before_missing_files_and_var_data():
+    entries = [{"path": f"/usr/share/doc/p/f{i}", "missing": True, "flags": "",
+                "package": "p", "is_directory": False} for i in range(40)]
+    entries += [{"path": f"/var/lib/p/q{i}", "missing": False, "flags": "??5??????",
+                 "package": "p"} for i in range(40)]
+    entries.append({"path": "/usr/bin/p", "missing": False, "flags": "??5??????", "package": "p"})
+    [f] = rules.rule_package_tampered({"dpkg_verify_entries": entries})
+    lines = f.raw_value.splitlines()
+    assert lines[0].endswith("/usr/bin/p")
+    assert lines[1].startswith("missing")
