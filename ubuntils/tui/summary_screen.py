@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ubuntils.detectors.finding import Finding, RemediationResult, Severity
 from ubuntils.timeline.builder import TimelineEvent
+from ubuntils.tui.findings_panel import sort_findings
 
 _SEV_BULLET = {Severity.HIGH: "●", Severity.MEDIUM: "○", Severity.LOW: "○"}
 _SEV_LABEL = {Severity.HIGH: "HIGH", Severity.MEDIUM: "MED ", Severity.LOW: "LOW "}
@@ -50,7 +51,8 @@ def _build_summary(
     ]
 
     if findings:
-        shown = findings[:_MAX_FINDINGS_SHOWN]
+        # The most severe findings, not whichever rules happened to run first.
+        shown = sort_findings(findings)[:_MAX_FINDINGS_SHOWN]
         for f in shown:
             bullet = _SEV_BULLET[f.severity]
             sev = _SEV_LABEL[f.severity]
