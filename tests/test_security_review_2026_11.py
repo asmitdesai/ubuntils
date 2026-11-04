@@ -183,3 +183,98 @@ async def test_F03_confirm_modal_warns_about_a_blocked_finding():
         await pilot.pause()
         warning = pilot.app.screen.query_one("#blocked-warning", Static)
         assert "file holds 2 keys" in str(warning.render())
+
+
+# ─── F-02: never write into an existing file someone else owns ──────────────
+
+def test_F02_report_refuses_an_existing_file_owned_by_another_user(tmp_path, monkeypatch):
+    import pytest
+    from ubuntils.utils import safe_io
+    planted = tmp_path / "report.json"
+    planted.write_text("attacker's file")
+    # We "are" a different uid than the file's owner (the attacker).
+    monkeypatch.setattr(safe_io.os, "geteuid", lambda: planted.stat().st_uid + 1)
+    with pytest.raises(OSError, match="owned by uid"):
+        safe_io.write_private_text(str(planted), "secret report")
+    assert planted.read_text() == "attacker's file"
+
+
+def test_F02_report_accepts_an_existing_file_owned_by_the_sudo_user(tmp_path, monkeypatch):
+    from ubuntils.utils import safe_io
+    mine = tmp_path / "report.json"
+    mine.write_text("old")
+    owner = mine.stat().st_uid
+    monkeypatch.setattr(safe_io.os, "geteuid", lambda: owner + 1)  # "root"
+    safe_io.write_private_text(str(mine), "new", trusted_uids={owner})
+    assert mine.read_text() == "new"
+
+
+def test_F02_report_refuses_a_hardlinked_file(tmp_path):
+    import pytest
+    from ubuntils.utils import safe_io
+    target = tmp_path / "target"
+    target.write_text("keep me")
+    os.link(target, tmp_path / "report.json")
+    with pytest.raises(OSError, match="hard links"):
+        safe_io.write_private_text(str(tmp_path / "report.json"), "secret report")
+    assert target.read_text() == "keep me"
+
+
+def test_F02_cli_report_refusal_is_a_clean_error(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+    from ubuntils.cli import main
+    from ubuntils.pipeline import ScanResult
+    monkeypatch.setattr("ubuntils.cli._ensure_root", lambda: None)
+    monkeypatch.setattr("ubuntils.cli.run_scan", lambda *a, **k: ScanResult(
+        findings=[], timeline=[], stats={}, scan_metadata={}, artifact_counts={}))
+    target = tmp_path / "victim"
+    target.write_text("keep me")
+    os.link(target, tmp_path / "report.json")
+    result = CliRunner().invoke(main, ["scan", "--output", str(tmp_path / "report.json")])
+    assert result.exit_code != 0
+    assert "Cannot write report" in result.output
+    assert target.read_text() == "keep me"
+
+
+def test_F02_bundle_is_never_written_into_an_existing_file(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+    from ubuntils.cli import main
+    monkeypatch.setattr("ubuntils.cli._ensure_root", lambda: None)
+    planted = tmp_path / "bundle.tar.gz"
+    planted.write_text("")  # pre-created by an attacker, who would keep owning it
+    result = CliRunner().invoke(main, ["collect", "--output", str(planted)])
+    assert result.exit_code != 0
+    assert "already exists" in result.output
+    assert planted.read_text() == ""
+
+
+def test_F02_default_bundle_path_is_private_and_unpredictable(tmp_path, monkeypatch):
+    import stat
+    from ubuntils import cli
+    bundle_dir = tmp_path / "var" / "lib" / "ubuntils" / "bundles"
+    monkeypatch.setattr(cli, "DEFAULT_BUNDLE_DIR", str(bundle_dir))
+    first, second = cli._default_bundle_path(), cli._default_bundle_path()
+    assert first != second
+    assert os.path.dirname(first) == str(bundle_dir)
+    assert os.path.basename(first).startswith("ubuntils-bundle-")
+    assert stat.S_IMODE(bundle_dir.stat().st_mode) == 0o700
+
+
+def test_F02_default_bundle_dir_must_not_be_a_symlink_or_foreign(tmp_path, monkeypatch):
+    import pytest
+    from ubuntils import cli
+    from ubuntils.utils import safe_io
+    elsewhere = tmp_path / "attacker"
+    elsewhere.mkdir()
+    (tmp_path / "lib").mkdir()
+    os.symlink(elsewhere, tmp_path / "lib" / "bundles")
+    monkeypatch.setattr(cli, "DEFAULT_BUNDLE_DIR", str(tmp_path / "lib" / "bundles"))
+    with pytest.raises(OSError):
+        cli._default_bundle_path()
+
+    real = tmp_path / "foreign"
+    real.mkdir(mode=0o700)
+    monkeypatch.setattr(cli, "DEFAULT_BUNDLE_DIR", str(real))
+    monkeypatch.setattr(safe_io.os, "geteuid", lambda: real.stat().st_uid + 1)
+    with pytest.raises(OSError, match="owned by uid"):
+        cli._default_bundle_path()

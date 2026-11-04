@@ -1,4 +1,5 @@
 import os
+import secrets
 import socket
 import sys
 import tarfile
@@ -20,12 +21,17 @@ from ubuntils.utils.baseline import load_baseline
 from ubuntils.utils.config import load_allowlist
 from ubuntils.utils.host import get_ubuntu_version
 from ubuntils.utils.logging import configure_logging
-from ubuntils.utils.safe_io import write_private_text
+from ubuntils.utils.safe_io import ensure_private_dir, write_private_text
 from ubuntils.utils.shell import resolve_command
 from ubuntils.utils.since_parser import parse_since
 
 # Exit status for `analyze` when the bundle fails integrity verification.
 EXIT_BUNDLE_TAMPERED = 3
+
+# Where `collect` writes when no --output is given. A bundle holds
+# /etc/shadow; the working directory may belong to the attacker, and a name
+# predictable to the second lets them pre-create it.
+DEFAULT_BUNDLE_DIR = "/var/lib/ubuntils/bundles"
 
 logger = structlog.get_logger()
 
@@ -171,11 +177,21 @@ def _sudo_invoker():
     return (uid, gid) if uid != 0 else None
 
 
+def _default_bundle_path() -> str:
+    """A fresh, unguessable path in root's own 0700 bundle directory."""
+    ensure_private_dir(os.path.dirname(DEFAULT_BUNDLE_DIR))
+    ensure_private_dir(DEFAULT_BUNDLE_DIR)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return os.path.join(DEFAULT_BUNDLE_DIR,
+                        f"ubuntils-bundle-{stamp}-{secrets.token_hex(4)}.tar.gz")
+
+
 def _emit_report(report: str, output_path) -> None:
     if output_path:
         try:
             # Owner-only either way; a report ubuntils creates belongs to the
-            # user who asked for it.
+            # user who asked for it. An existing file is reused only if it is
+            # already ours or theirs (and not a hard link to something else).
             write_private_text(output_path, report + "\n", new_owner=_sudo_invoker())
         except OSError as exc:
             raise click.ClickException(f"Cannot write report to {output_path}: {exc}")
@@ -252,7 +268,8 @@ def scan(output_json, remediate, confirm, config_path, baseline_path, output_pat
 
 @main.command()
 @click.option("--output", "output_path", type=click.Path(dir_okay=False),
-              help="Bundle path to write (default ./ubuntils-bundle-<timestamp>.tar.gz)")
+              help="Bundle path to write; must not exist yet (default "
+                   "/var/lib/ubuntils/bundles/ubuntils-bundle-<timestamp>-<random>.tar.gz)")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging")
 def collect(output_path, verbose):
     """Acquire a portable, tamper-evident artifact bundle from this host.
@@ -267,22 +284,22 @@ def collect(output_path, verbose):
     configure_logging(json_mode=False, verbose=verbose)
     from ubuntils.bundle.writer import write_bundle
 
-    if not output_path:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        output_path = f"ubuntils-bundle-{stamp}.tar.gz"
-
-    source = LiveSource(root="/")
-    written = write_bundle(
-        source=source,
-        files_to_capture=COLLECT_FILES,
-        commands_to_capture=COLLECT_COMMANDS,
-        out_path=output_path,
-        metadata={
-            "hostname": socket.gethostname(),
-            "ubuntu_version": get_ubuntu_version(),
-            "tool_version": __version__,
-        },
-    )
+    try:
+        if not output_path:
+            output_path = _default_bundle_path()
+        written = write_bundle(
+            source=LiveSource(root="/"),
+            files_to_capture=COLLECT_FILES,
+            commands_to_capture=COLLECT_COMMANDS,
+            out_path=output_path,
+            metadata={
+                "hostname": socket.gethostname(),
+                "ubuntu_version": get_ubuntu_version(),
+                "tool_version": __version__,
+            },
+        )
+    except OSError as exc:
+        raise click.ClickException(f"Cannot write bundle: {exc}")
     click.echo(f"Bundle written to {written}", err=True)
 
 

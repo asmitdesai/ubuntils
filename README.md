@@ -72,7 +72,7 @@ pip install -r requirements.txt -e .
 ubuntils scan
 ```
 
-ubuntils requires root for full artifact access. If you run `ubuntils scan` as a non-root user it will automatically re-invoke itself with `sudo` using the same Python interpreter (by absolute path), so the correct environment is used without forwarding your `PATH` into the root process. Every external command (`ss`, `dpkg`, `systemctl`, …) is resolved on a fixed, root-owned search path, never your `PATH`. Running without root will skip `/etc/shadow`, some `/proc` entries, and protected cron files, and will log warnings for each. A report that `scan --output FILE` creates after re-invoking itself through `sudo` is owned by you (still mode `0600`), so you can open it without `sudo`; an existing file keeps its owner, and `collect` bundles stay root-only because they contain `/etc/shadow`.
+ubuntils requires root for full artifact access. If you run `ubuntils scan` as a non-root user it will automatically re-invoke itself with `sudo` using the same Python interpreter (by absolute path), so the correct environment is used without forwarding your `PATH` into the root process. Every external command (`ss`, `dpkg`, `systemctl`, …) is resolved on a fixed, root-owned search path, never your `PATH`. Running without root will skip `/etc/shadow`, some `/proc` entries, and protected cron files, and will log warnings for each. A report that `scan --output FILE` creates after re-invoking itself through `sudo` is owned by you (still mode `0600`), so you can open it without `sudo`; an existing file is overwritten only if it belongs to you (or root) and isn't a hard link, and it keeps its owner. `collect` bundles stay root-only because they contain `/etc/shadow`, and are never written into a file that already exists.
 
 ---
 
@@ -147,7 +147,8 @@ ubuntils scan [OPTIONS]
   --verbose           Verbose structlog output
 
 ubuntils collect [OPTIONS]
-  --output FILE       Bundle path to write (default ./ubuntils-bundle-<timestamp>.tar.gz)
+  --output FILE       Bundle path to write; must not exist yet
+                      (default /var/lib/ubuntils/bundles/ubuntils-bundle-<timestamp>-<random>.tar.gz)
   --verbose           Verbose structlog output
 
 ubuntils analyze (BUNDLE | --root PATH) [OPTIONS]
@@ -259,7 +260,7 @@ assert hashlib.sha256(json.dumps(doc, indent=2, sort_keys=True).encode()).hexdig
 ubuntils collect --output /path/to/bundle.tar.gz
 ```
 
-Requires root, like `scan`. Reads a fixed list of files (`/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/sudoers`, `/etc/ld.so.preload`, `/etc/environment`, `/etc/crontab`, `/etc/profile`, `/etc/nsswitch.conf`, OS release, hostname and timezone, dpkg's status file and `path-exclude` config, `/var/log/syslog`, `/var/log/messages`, `/var/log/audit/audit.log`) and runs a fixed list of commands (`ss -tunap`, `netstat -tunap`, `systemctl list-timers` in both JSON and text form, and `journalctl -o json` for the last 7 days), hashes each captured item, and writes everything plus a `manifest.json` into a `.tar.gz` bundle. The captured log files and journalctl output are what let `analyze BUNDLE` build a real timeline offline. If `--output` is omitted, the bundle is written to `./ubuntils-bundle-<UTC timestamp>.tar.gz` in the current directory.
+Requires root, like `scan`. Reads a fixed list of files (`/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/sudoers`, `/etc/ld.so.preload`, `/etc/environment`, `/etc/crontab`, `/etc/profile`, `/etc/nsswitch.conf`, OS release, hostname and timezone, dpkg's status file and `path-exclude` config, `/var/log/syslog`, `/var/log/messages`, `/var/log/audit/audit.log`) and runs a fixed list of commands (`ss -tunap`, `netstat -tunap`, `systemctl list-timers` in both JSON and text form, and `journalctl -o json` for the last 7 days), hashes each captured item, and writes everything plus a `manifest.json` into a `.tar.gz` bundle. The captured log files and journalctl output are what let `analyze BUNDLE` build a real timeline offline. If `--output` is omitted, the bundle is written to `/var/lib/ubuntils/bundles/ubuntils-bundle-<UTC timestamp>-<random>.tar.gz`. That directory is created `0700` root-only, and `collect` refuses to use it if it is a symlink or owned by anyone else. The working directory isn't used, since it may belong to the attacker. `collect` never writes into an existing file, so an `--output` path that already exists is an error.
 
 ### `ubuntils analyze`
 
