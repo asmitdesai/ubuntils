@@ -134,3 +134,11 @@ def mock_artifact_data():
             {"proto": "tcp", "local": "0.0.0.0:4444", "remote": "10.0.0.1:54321", "state": "ESTABLISHED"}
         ],
     }
+
+
+@pytest.fixture(autouse=True)
+def _preserve_in_tmp(tmp_path_factory, monkeypatch):
+    """Never let a test write evidence copies under /var/lib/ubuntils."""
+    from ubuntils.remediators import preserve
+    monkeypatch.setattr(preserve, "PRESERVE_BASE",
+                        str(tmp_path_factory.mktemp("preserve") / "p"))

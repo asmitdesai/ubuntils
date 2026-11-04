@@ -11,6 +11,8 @@ Work toward 3.0.0 ([PRD](docs/plans/v3.0.0-prd.md), [plan](docs/plans/v3.0.0-pla
 - `scan_metadata.collector_durations_s`: wall time per collector.
 - Every finding, in the JSON report and on the Wazuh line, carries `category` (`persistence` or `hygiene`) and `attack`, the rule's MITRE ATT&CK technique IDs, from `ubuntils/data/rule_meta.yaml`. A test checks that every built-in rule is mapped.
 
+- **Preserve, then fix.** Before `--remediate --confirm` or the TUI's `R` changes anything, the files about to change are copied into `/var/lib/ubuntils/preserve/<time>-<random>/` with a manifest of their SHA-256, owner, mode, times, inode and parent directory, read through the same symlink-free path as remediation. If any file can't be preserved, nothing is changed. The manifest's SHA-256 is printed and recorded as `scan_metadata.preserve`. `--preserve-full` collects a full bundle first; `--no-preserve --yes` opts out.
+
 ### Security
 - **N-08** The install-trust check before the `sudo` re-exec covered the interpreter, `sys.prefix` and the ubuntils package directory and the directories above them, but not the files inside: a group-writable `site-packages/click/core.py` or `.pth` file under a root-owned prefix let another user change code root was about to run. It now also checks every loaded module file, every file in the ubuntils package, and every `.pth` file in site-packages (about 0.2 s).
 - **N-09** A user file read only up to the 64 MiB ceiling now marks its collector degraded, so the scan reads as incomplete, not just the `USER_FILE_OVERSIZED` finding.

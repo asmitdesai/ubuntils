@@ -626,10 +626,13 @@ async def test_remediate_request_triggers_worker_and_posts_done_on_success():
         def on_remediation_done(self, msg: RemediationDone) -> None:
             received.append(msg)
 
-    with patch("ubuntils.tui.results_screen.REMEDIATOR_REGISTRY") as mock_reg:
+    with patch("ubuntils.tui.results_screen.REMEDIATOR_REGISTRY") as mock_reg, \
+            patch("ubuntils.tui.results_screen.preserve_mod.preserve") as mock_preserve:
         mock_remediator_cls = MagicMock()
         mock_remediator_cls.return_value.remediate.return_value = mock_result
         mock_reg.get.return_value = mock_remediator_cls
+        mock_preserve.return_value.directory = "/var/lib/ubuntils/preserve/x"
+        mock_preserve.return_value.manifest_sha256 = "ab" * 32
 
         async with _App().run_test(size=(100, 30)) as pilot:
             await pilot.pause()
@@ -638,6 +641,34 @@ async def test_remediate_request_triggers_worker_and_posts_done_on_success():
             assert len(received) == 1
             assert received[0].result.status == RemediationStatus.SUCCESS
             assert received[0].result.backup_path == "/var/backups/ubuntils/20260526/cron"
+            assert "evidence preserved in /var/lib/ubuntils/preserve/x" in received[0].result.message
+            mock_preserve.assert_called_once()
+
+
+async def test_remediate_request_changes_nothing_when_preserve_fails():
+    from ubuntils.remediators.preserve import PreserveError
+    finding = _finding(rule_id="CRON_TMP_PATH")
+    received: list[RemediationDone] = []
+
+    class _App(App):
+        def on_mount(self) -> None:
+            self.push_screen(ResultsScreen(findings=[finding], timeline=[], stats=_stats()))
+
+        def on_remediation_done(self, msg: RemediationDone) -> None:
+            received.append(msg)
+
+    with patch("ubuntils.tui.results_screen.REMEDIATOR_REGISTRY") as mock_reg, \
+            patch("ubuntils.tui.results_screen.preserve_mod.preserve",
+                  side_effect=PreserveError("parent is a symlink")):
+        mock_remediator_cls = MagicMock()
+        mock_reg.get.return_value = mock_remediator_cls
+        async with _App().run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            pilot.app.screen.post_message(RemediateRequest(finding))
+            await pilot.pause(delay=0.5)
+            assert received[0].result.status == RemediationStatus.FAILED
+            assert "parent is a symlink" in received[0].result.message
+            mock_remediator_cls.return_value.remediate.assert_not_called()
 
 
 async def test_remediate_request_posts_failed_when_no_remediator():

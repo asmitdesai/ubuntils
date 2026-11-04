@@ -28,9 +28,12 @@ that may already be compromised:
   changing the system clock), so a quiet timestamp proves nothing. Content
   checks (dangerous key options, download-and-execute lines) don't depend on
   timestamps at all.
-- **Remediation mutates the host under investigation.** Backups are written to
-  `/var/backups/ubuntils/` on the same system. If you need a forensically pure
-  image, capture it *before* running any remediation. Every report carries a
+- **Remediation mutates the host under investigation.** Before changing
+  anything, `--remediate --confirm` keeps hashed evidence copies of the files
+  it will change under `/var/lib/ubuntils/preserve/` (`--preserve-full` adds a
+  complete bundle), and backups for rollback go to `/var/backups/ubuntils/`,
+  all on the same system. That is triage evidence, not an image: if you need a
+  forensically pure image, capture it *before* running any remediation. Every report carries a
   `report_sha256` so a collected artifact can be verified later.
 - **`--remediate --confirm` won't act on what it can't attribute, or on what
   would lock an admin out.** These are hard blocks (`blocked_reasons`), checked

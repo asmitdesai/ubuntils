@@ -29,6 +29,7 @@ from ubuntils.detectors.finding import (
 )
 from ubuntils.integrations.wazuh import is_wazuh_agent_present, write_wazuh_alerts
 from ubuntils.remediators import REMEDIATOR_REGISTRY
+from ubuntils.remediators import preserve as preserve_mod
 from ubuntils.timeline.builder import TimelineBuilder
 from ubuntils.timeline.correlator import correlate
 from ubuntils.utils.host import get_hostname, get_ubuntu_version
@@ -75,37 +76,73 @@ def _count_artifacts(result: dict) -> int:
     )
 
 
+def _gate(finding: Finding, min_confidence: int) -> Optional[RemediationResult]:
+    """A SKIPPED result if ``finding`` must not be auto-remediated, else None."""
+    if finding.blocked_reasons or finding.auto_remediation_blocked:
+        # A hard block, not a score: no amount of corroboration lifts it.
+        reasons = [f"{r.code}: {r.detail}" for r in finding.blocked_reasons] \
+            or [finding.auto_remediation_blocked]
+        return RemediationResult(
+            finding_rule_id=finding.rule_id,
+            status=RemediationStatus.SKIPPED,
+            message=(
+                f"auto-remediation blocked: {'; '.join(reasons)} — "
+                "review and remediate manually"
+            ),
+        )
+    if finding.confidence < min_confidence:
+        return RemediationResult(
+            finding_rule_id=finding.rule_id,
+            status=RemediationStatus.SKIPPED,
+            message=(
+                f"confidence {finding.confidence} is below the remediation gate "
+                f"({min_confidence}) — review manually or lower --min-confidence"
+            ),
+        )
+    return None
+
+
 def remediate_findings(findings: List[Finding], confirm: bool,
-                       min_confidence: int = DEFAULT_MIN_REMEDIATION_CONFIDENCE
+                       min_confidence: int = DEFAULT_MIN_REMEDIATION_CONFIDENCE,
+                       preserve_evidence: bool = True,
+                       preserve_out: Optional[list] = None,
                        ) -> List[RemediationResult]:
-    results = []
-    for finding in findings:
-        remediator_cls = REMEDIATOR_REGISTRY.get(finding.rule_id)
-        if remediator_cls is None or not finding.remediation_available:
-            continue
-        if finding.blocked_reasons or finding.auto_remediation_blocked:
-            # A hard block, not a score: no amount of corroboration lifts it.
-            reasons = [f"{r.code}: {r.detail}" for r in finding.blocked_reasons] \
-                or [finding.auto_remediation_blocked]
-            result = RemediationResult(
-                finding_rule_id=finding.rule_id,
-                status=RemediationStatus.SKIPPED,
-                message=(
-                    f"auto-remediation blocked: {'; '.join(reasons)} — "
-                    "review and remediate manually"
-                ),
-            )
-        elif finding.confidence < min_confidence:
-            result = RemediationResult(
-                finding_rule_id=finding.rule_id,
-                status=RemediationStatus.SKIPPED,
-                message=(
-                    f"confidence {finding.confidence} is below the remediation gate "
-                    f"({min_confidence}) — review manually or lower --min-confidence"
-                ),
-            )
+    """Gate, preserve, then fix.
+
+    With ``confirm`` and ``preserve_evidence``, every file an eligible finding
+    would change is copied and hashed first (remediators/preserve.py). If
+    that fails for any file, nothing is changed and every eligible finding
+    is reported FAILED. The PreserveRecord is appended to ``preserve_out``.
+    """
+    candidates = [f for f in findings
+                  if REMEDIATOR_REGISTRY.get(f.rule_id) is not None and f.remediation_available]
+    gated = {id(f): _gate(f, min_confidence) for f in candidates}
+    eligible = [f for f in candidates if gated[id(f)] is None]
+
+    preserve_failure = None
+    if confirm and preserve_evidence and eligible:
+        try:
+            record = preserve_mod.preserve(eligible, base=preserve_mod.PRESERVE_BASE)
+        except (preserve_mod.PreserveError, OSError) as exc:
+            preserve_failure = str(exc)
+            logger.error("preserve_failed", error=preserve_failure)
         else:
-            result = remediator_cls().remediate(finding, dry_run=not confirm)
+            if preserve_out is not None:
+                preserve_out.append(record)
+
+    results = []
+    for finding in candidates:
+        result = gated[id(finding)]
+        if result is None and preserve_failure is not None:
+            result = RemediationResult(
+                finding_rule_id=finding.rule_id,
+                status=RemediationStatus.FAILED,
+                message=(f"not attempted: preserving the evidence failed ({preserve_failure}); "
+                         "nothing was changed"),
+            )
+        elif result is None:
+            result = REMEDIATOR_REGISTRY[finding.rule_id]().remediate(
+                finding, dry_run=not confirm)
         results.append(result)
         logger.info(
             "remediation",
@@ -133,6 +170,8 @@ def run_scan(
     min_confidence: int = DEFAULT_MIN_REMEDIATION_CONFIDENCE,
     forward_wazuh: bool = True,
     on_progress: Optional[ProgressCallback] = None,
+    preserve_evidence: bool = True,
+    preserve_bundle: Optional[dict] = None,
 ) -> ScanResult:
     start = time.monotonic()
     artifacts: dict = {}
@@ -212,7 +251,10 @@ def run_scan(
 
     remediation_results: List[RemediationResult] = []
     if remediate:
-        remediation_results = remediate_findings(findings, confirm, min_confidence)
+        preserved: list = []
+        remediation_results = remediate_findings(findings, confirm, min_confidence,
+                                                 preserve_evidence=preserve_evidence,
+                                                 preserve_out=preserved)
 
     # A bundle's manifest records the *collected* host's identity; the report
     # must describe that host, not the analyst's machine running `analyze`.
@@ -280,6 +322,11 @@ def run_scan(
         "bundle_integrity": bundle_integrity,
         "command_collectors_skipped": command_collectors_skipped,
         "collector_durations_s": collector_durations,
+        # Evidence kept before remediation changed anything (None when nothing
+        # was remediated, or with --no-preserve); preserve_bundle is the full
+        # bundle --preserve-full collected first.
+        "preserve": (preserved[0].to_dict() if remediate and preserved else None),
+        "preserve_bundle": preserve_bundle,
         "suppressed_by_baseline": suppressed,
         "suppressed_by_allowlist": allowlisted,
         "baseline_suppressed": (

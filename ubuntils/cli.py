@@ -258,7 +258,8 @@ def _ensure_root() -> None:
 def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=None,
                   custom_rules=None, bundle_info=None, baseline=None,
                   min_confidence: int = DEFAULT_MIN_REMEDIATION_CONFIDENCE,
-                  forward_wazuh: bool = True) -> tuple:
+                  forward_wazuh: bool = True, preserve_evidence: bool = True,
+                  preserve_bundle=None) -> tuple:
     """Run collectors → detection → timeline → optional remediation.
 
     Returns (findings, timeline, stats, scan_metadata, artifact_counts, remediation_results).
@@ -267,6 +268,7 @@ def _run_pipeline(source, remediate: bool, confirm: bool, allowlist=None, since=
         source, allowlist=allowlist, since=since, custom_rules=custom_rules,
         baseline=baseline, bundle_info=bundle_info, remediate=remediate,
         confirm=confirm, min_confidence=min_confidence, forward_wazuh=forward_wazuh,
+        preserve_evidence=preserve_evidence, preserve_bundle=preserve_bundle,
     )
     return (r.findings, r.timeline, r.stats, r.scan_metadata, r.artifact_counts,
             r.remediation_results)
@@ -330,6 +332,43 @@ def _default_bundle_path() -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     return os.path.join(DEFAULT_BUNDLE_DIR,
                         f"ubuntils-bundle-{stamp}-{secrets.token_hex(4)}.tar.gz")
+
+
+def _bundle_sha256(path: str) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _collect_full_bundle() -> dict:
+    """--preserve-full: a complete `collect` bundle before anything changes."""
+    from ubuntils.bundle.writer import write_bundle
+    click.echo("Collecting a full bundle before remediation (--preserve-full)…", err=True)
+    try:
+        path = write_bundle(
+            source=LiveSource(root="/"), files_to_capture=COLLECT_FILES,
+            commands_to_capture=COLLECT_COMMANDS, out_path=_default_bundle_path(),
+            metadata={"hostname": socket.gethostname(),
+                      "ubuntu_version": get_ubuntu_version(), "tool_version": __version__},
+        )
+    except OSError as exc:
+        raise click.ClickException(f"--preserve-full: cannot write bundle ({exc}); "
+                                   "nothing was changed")
+    digest = _bundle_sha256(path)
+    click.echo(f"Bundle written to {path} (sha256 {digest})", err=True)
+    return {"path": path, "sha256": digest}
+
+
+def _report_preserve(scan_metadata: dict) -> None:
+    record = scan_metadata.get("preserve")
+    if record:
+        click.echo(
+            f"Preserved {len(record['files'])} file(s) before changing anything: "
+            f"{record['directory']}\n  manifest sha256 {record['manifest_sha256']} "
+            "(record this digest in your case notes)", err=True)
 
 
 def _detection_failed(scan_metadata: dict) -> bool:
@@ -400,9 +439,17 @@ def main(ctx, allow_user_install):
               help="Only auto-remediate findings at or above this confidence score")
 @click.option("--no-wazuh", "no_wazuh", is_flag=True,
               help="Never forward findings to a local Wazuh agent, even if one is installed")
+@click.option("--preserve-full", "preserve_full", is_flag=True,
+              help="With --remediate --confirm: collect a full bundle before changing anything "
+                   "(the files about to change are always preserved)")
+@click.option("--no-preserve", "no_preserve", is_flag=True,
+              help="With --remediate --confirm: don't keep evidence copies of the files "
+                   "about to change (needs --yes)")
+@click.option("--yes", "assume_yes", is_flag=True,
+              help="Accept the risk of --no-preserve")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging")
 def scan(output_json, remediate, confirm, config_path, baseline_path, output_path, since_value,
-         rules_path, min_confidence, no_wazuh, verbose):
+         rules_path, min_confidence, no_wazuh, preserve_full, no_preserve, assume_yes, verbose):
     """Scan the system for forensic artifacts and suspicious activity."""
     _ensure_root()
     if output_path:
@@ -412,17 +459,27 @@ def scan(output_json, remediate, confirm, config_path, baseline_path, output_pat
     since, allowlist, baseline, custom_rules = _load_inputs(
         config_path, baseline_path, rules_path, since_value
     )
-    if remediate and confirm:
-        click.echo("deprecation: from ubuntils 3.0, --remediate --confirm first keeps a "
-                   "hashed copy of every file it is about to change (evidence), then "
-                   "changes them.", err=True)
+    if no_preserve and preserve_full:
+        raise click.UsageError("--no-preserve and --preserve-full contradict each other")
+    if no_preserve and not assume_yes:
+        raise click.UsageError(
+            "--no-preserve changes files without keeping evidence copies of them; "
+            "add --yes if that is what you want")
+    if no_preserve:
+        click.echo("warning: --no-preserve: remediation will modify evidence without "
+                   "keeping a copy first", err=True)
+    preserve_bundle = None
+    if remediate and confirm and preserve_full:
+        preserve_bundle = _collect_full_bundle()
 
     if output_json or remediate:
         findings, timeline, stats, scan_metadata, artifact_counts, remediation_results = \
             _run_pipeline(source=LiveSource(root="/"), remediate=remediate, confirm=confirm,
                           allowlist=allowlist, since=since, custom_rules=custom_rules,
                           baseline=baseline, min_confidence=min_confidence,
-                          forward_wazuh=not no_wazuh)
+                          forward_wazuh=not no_wazuh, preserve_evidence=not no_preserve,
+                          preserve_bundle=preserve_bundle)
+        _report_preserve(scan_metadata)
 
         if output_json:
             report = JSONFormatter().format(

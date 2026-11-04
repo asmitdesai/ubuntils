@@ -10,6 +10,7 @@ from textual.widgets import Footer, Header, Static, TabbedContent, TabPane
 
 from ubuntils.detectors.finding import Finding, RemediationResult, RemediationStatus
 from ubuntils.remediators import REMEDIATOR_REGISTRY
+from ubuntils.remediators import preserve as preserve_mod
 from ubuntils.timeline.builder import TimelineEvent
 from ubuntils.tui.confirm_modal import RemediateRequest
 from ubuntils.tui.findings_panel import FindingsPanel
@@ -111,7 +112,19 @@ class ResultsScreen(Screen):
             )
         else:
             try:
+                # Evidence first, as on the CLI: if the file can't be
+                # preserved, it isn't changed.
+                record = preserve_mod.preserve([finding], base=preserve_mod.PRESERVE_BASE)
                 result = remediator_cls().remediate(finding, dry_run=False)
+                if result.status == RemediationStatus.SUCCESS:
+                    result.message += (f" (evidence preserved in {record.directory}, "
+                                       f"manifest sha256 {record.manifest_sha256[:16]}…)")
+            except preserve_mod.PreserveError as exc:
+                result = RemediationResult(
+                    finding_rule_id=finding.rule_id,
+                    status=RemediationStatus.FAILED,
+                    message=f"not attempted: preserving the evidence failed ({exc})",
+                )
             except Exception as exc:
                 result = RemediationResult(
                     finding_rule_id=finding.rule_id,

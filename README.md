@@ -159,6 +159,8 @@ ubuntils scan [OPTIONS]
   --remediate         Run the remediation engine after detection
   --confirm           Required with --remediate to actually apply changes (else dry-run)
   --min-confidence N  Only auto-remediate findings with confidence >= N (default 40)
+  --preserve-full     With --remediate --confirm: collect a full bundle before changing anything
+  --no-preserve --yes With --remediate --confirm: skip the evidence copies (not recommended)
   --no-wazuh          Never forward findings to a local Wazuh agent
   --config FILE       YAML allowlist of findings to suppress (see below)
   --baseline FILE     YAML baseline of environment-specific known-good fingerprints to suppress (see below)
@@ -829,6 +831,12 @@ ubuntils scan --remediate          # dry run
 ubuntils scan --remediate --confirm # apply changes, then open TUI
 ubuntils scan --remediate --confirm --min-confidence 75  # only HIGH-confidence findings
 ```
+
+### Preserve, then fix
+
+Remediation changes the host you are investigating, so before `--remediate --confirm` (or `R` in the TUI) changes anything, ubuntils keeps an evidence copy of every file it is about to change, in `/var/lib/ubuntils/preserve/<UTC time>-<random>/` (root-only, `0700`/`0600`). Its `manifest.json` records each file's SHA-256, size, owner, mode, mtime, ctime, inode and parent directory, and which findings it was preserved for. ubuntils prints the manifest's SHA-256 and records it under `scan_metadata.preserve`: write it in your case notes. Copies are read through the same symlink-free path as remediation, and if any file can't be preserved, nothing is changed. Preserving the lab's five files took 15 ms.
+
+These copies are evidence and are never used to restore anything: undo a fix with `ubuntils rollback`. For a full picture before you change anything, `--preserve-full` collects a complete bundle first (its path and SHA-256 are printed and recorded as `scan_metadata.preserve_bundle`). `--no-preserve --yes` skips the copies.
 
 ### Safeguards
 
