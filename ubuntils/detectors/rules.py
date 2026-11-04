@@ -74,6 +74,12 @@ _48_HOURS_SECONDS = 48 * 3600
 _DANGEROUS_KEY_OPTIONS = ("command=", "no-pty")
 
 
+def _parent_id(entry: dict):
+    """The collector's parent-directory identity for a remediable finding."""
+    value = entry.get("parent_dir_id")
+    return tuple(value) if value else None
+
+
 def rule_cron_root_exec(artifacts: dict) -> List[Finding]:
     findings = []
     for entry in artifacts.get("cron_entries", []):
@@ -98,6 +104,7 @@ def rule_cron_root_exec(artifacts: dict) -> List[Finding]:
                 raw_value=command,
                 remediation_available=True,
                 remediation_description="Remove the offending cron entry and create a backup",
+                parent_dir_identity=_parent_id(entry),
             ))
     return findings
 
@@ -130,6 +137,7 @@ def rule_cron_tmp_path(artifacts: dict) -> List[Finding]:
                     f"Review {source} and remove or fix the offending line by hand."
                     if is_script else None
                 ),
+                parent_dir_identity=_parent_id(entry),
             ))
     return findings
 
@@ -173,6 +181,7 @@ def rule_ld_preload_inject(artifacts: dict) -> List[Finding]:
             raw_value=defn.get("raw_line", value),
             remediation_available=True,
             remediation_description=remediation,
+            parent_dir_identity=_parent_id(defn),
         )
         if outside:
             apply_signal(finding, "outside_standard_libs", 20,
@@ -308,6 +317,7 @@ def rule_ssh_unauthorized_key(artifacts: dict) -> List[Finding]:
             raw_value=key_entry.get("raw_line") or key_repr,
             remediation_available=True,
             remediation_description=f"Remove this key line from {path}",
+            parent_dir_identity=_parent_id(key_entry),
         )
 
         options = key_entry.get("options", "")
@@ -436,6 +446,7 @@ def rule_sudoers_nopasswd(artifacts: dict) -> List[Finding]:
                 remediation_description=(
                     "Remove the NOPASSWD sudoers entry and create a backup" if auto else None
                 ),
+                parent_dir_identity=_parent_id(rule),
                 guided_remediation=(
                     None if auto else
                     f"Edit with `visudo -f {source}` and drop the NOPASSWD tag or "

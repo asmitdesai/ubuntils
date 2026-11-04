@@ -278,3 +278,205 @@ def test_F02_default_bundle_dir_must_not_be_a_symlink_or_foreign(tmp_path, monke
     monkeypatch.setattr(safe_io.os, "geteuid", lambda: real.stat().st_uid + 1)
     with pytest.raises(OSError, match="owned by uid"):
         cli._default_bundle_path()
+
+
+# ─── F-01 / F-04: path resolution in remediation and rollback ───────────────
+
+def _homes(tmp_path):
+    """alice (the attacker) and admin, each with one authorized key."""
+    alice, admin = tmp_path / "home" / "alice", tmp_path / "home" / "admin"
+    for home, key in ((alice, _ATTACKER_KEY), (admin, _ADMIN_KEY)):
+        (home / ".ssh").mkdir(parents=True)
+        (home / ".ssh" / "authorized_keys").write_text(f"ssh-ed25519 {key} k\n")
+    return alice, admin
+
+
+def _key_finding(path, key, identity=None):
+    from ubuntils.detectors.finding import Finding, Severity
+    return Finding(rule_id="SSH_UNAUTHORIZED_KEY", severity=Severity.MEDIUM, title="t",
+                   description="d", artifact_path=str(path),
+                   raw_value=f"ssh-ed25519 {key} k", remediation_available=True,
+                   parent_dir_identity=identity)
+
+
+class _PasswdOnly(LiveSource):
+    """The live filesystem, except for a fake /etc/passwd."""
+
+    def __init__(self, passwd):
+        super().__init__(root="/")
+        self.passwd = passwd
+
+    def read_text(self, path):
+        return self.passwd if path == "/etc/passwd" else super().read_text(path)
+
+
+def test_F04_symlinked_parent_dir_is_refused(tmp_path):
+    from ubuntils.remediators.ssh import SSHRemediator
+    alice, admin = _homes(tmp_path)
+    # alice swaps her .ssh for a link to the admin's, keeping a key line that
+    # matches what was reported for her.
+    (admin / ".ssh" / "authorized_keys").write_text(
+        f"ssh-ed25519 {_ATTACKER_KEY} k\nssh-ed25519 {_ADMIN_KEY} k\n")
+    before = (admin / ".ssh" / "authorized_keys").read_text()
+    (alice / ".ssh" / "authorized_keys").unlink()
+    (alice / ".ssh").rmdir()
+    os.symlink(admin / ".ssh", alice / ".ssh")
+
+    result = SSHRemediator(backup_base=str(tmp_path / "b")).remediate(
+        _key_finding(alice / ".ssh" / "authorized_keys", _ATTACKER_KEY), dry_run=False)
+
+    assert result.status == RemediationStatus.FAILED
+    assert "symlink" in result.message
+    assert (admin / ".ssh" / "authorized_keys").read_text() == before
+    assert not (tmp_path / "b").exists()
+
+
+def test_F04_parent_dir_swapped_after_detection_is_refused(tmp_path):
+    from ubuntils.collectors.ssh import SSHCollector
+    from ubuntils.detectors.rules import rule_ssh_unauthorized_key
+    from ubuntils.remediators.ssh import SSHRemediator
+    alice, _admin = _homes(tmp_path)
+    source = _PasswdOnly(f"alice:x:1001:1001::{alice}:/bin/bash\n")
+    [finding] = rule_ssh_unauthorized_key(SSHCollector(source=source).collect())
+    assert finding.parent_dir_identity is not None
+
+    # Between detection and remediation: a different directory (new inode)
+    # with matching content takes .ssh's place.
+    os.rename(alice / ".ssh", alice / ".ssh.orig")
+    (alice / ".ssh").mkdir()
+    (alice / ".ssh" / "authorized_keys").write_text(f"ssh-ed25519 {_ATTACKER_KEY} k\n")
+
+    result = SSHRemediator(backup_base=str(tmp_path / "b")).remediate(finding, dry_run=False)
+    assert result.status == RemediationStatus.FAILED
+    assert "not the directory the finding was made on" in result.message
+    assert (alice / ".ssh" / "authorized_keys").read_text() != ""
+
+
+def test_F04_collectors_record_parent_dir_identity(tmp_path):
+    from ubuntils.collectors.cron import CronCollector
+    from ubuntils.collectors.environment import EnvironmentCollector
+    from ubuntils.collectors.sudoers import SudoersCollector
+    root = _tree(tmp_path, {
+        "/etc/passwd": "alice:x:1001:1001::/home/alice:/bin/bash\n",
+        "/etc/crontab": "* * * * * root /tmp/x.sh\n",
+        "/etc/environment": "LD_PRELOAD=/tmp/evil.so\n",
+        "/etc/sudoers": "alice ALL=(ALL) NOPASSWD: ALL\n",
+    })
+    source = LiveSource(root=root, offline=True)
+    etc = os.lstat(os.path.join(root, "etc"))
+    expected = [etc.st_dev, etc.st_ino, etc.st_uid]
+    assert CronCollector(source=source).collect()["cron_entries"][0]["parent_dir_id"] == expected
+    env = EnvironmentCollector(source=source).collect()["env_definitions"]
+    assert env[0]["parent_dir_id"] == expected
+    rules_ = SudoersCollector(source=source).collect()["sudoers_rules"]
+    assert rules_[0]["parent_dir_id"] == expected
+
+
+def _remediated(tmp_path, mode=0o640):
+    """A finished remediation: (artifact, backup_path, result)."""
+    from ubuntils.remediators.cron import CronRemediator
+    from ubuntils.detectors.finding import Finding, Severity
+    cron = tmp_path / "etc" / "cron.d" / "job"
+    cron.parent.mkdir(parents=True)
+    cron.write_text("* * * * * root /tmp/a.sh\n0 0 * * * root /usr/bin/ok\n")
+    os.chmod(cron, mode)
+    finding = Finding(rule_id="CRON_TMP_PATH", severity=Severity.HIGH, title="t",
+                      description="d", artifact_path=str(cron),
+                      raw_value="* * * * * root /tmp/a.sh", remediation_available=True)
+    result = CronRemediator(backup_base=str(tmp_path / "b")).remediate(finding, dry_run=False)
+    assert result.status == RemediationStatus.SUCCESS, result.message
+    return cron, result.backup_path, result
+
+
+def test_F01_rollback_command_is_ubuntils_rollback_never_cp(tmp_path):
+    import shlex
+    _cron, backup, result = _remediated(tmp_path)
+    assert shlex.split(result.rollback_command) == ["ubuntils", "rollback", backup]
+    sidecar = json.loads(open(backup + ".json").read())
+    assert sidecar["original_path"] == str(_cron)
+    assert {"uid", "gid", "mode", "parent_dev", "parent_ino", "post_sha256"} <= set(sidecar)
+    assert sidecar["post_sha256"] == hashlib.sha256(_cron.read_bytes()).hexdigest()
+
+
+def test_F01_rollback_restores_content_mode_and_owner(tmp_path):
+    from ubuntils.remediators.rollback import rollback
+    cron, backup, _ = _remediated(tmp_path, mode=0o640)
+    os.chmod(cron, 0o600)  # mode drifts; content is what remediation left
+    rollback(backup)
+    st = cron.stat()
+    assert cron.read_text() == "* * * * * root /tmp/a.sh\n0 0 * * * root /usr/bin/ok\n"
+    assert st.st_mode & 0o777 == 0o640
+    sidecar = json.loads(open(backup + ".json").read())
+    assert (st.st_uid, st.st_gid) == (sidecar["uid"], sidecar["gid"])
+
+
+def test_F01_rollback_refuses_when_target_became_a_symlink(tmp_path):
+    import pytest
+    from ubuntils.remediators.rollback import rollback
+    cron, backup, _ = _remediated(tmp_path)
+    victim = tmp_path / "shadow"
+    victim.write_text("root:$6$hash:::\n")
+    cron.unlink()
+    os.symlink(victim, cron)
+    for force in (False, True):
+        with pytest.raises(OSError, match="symlink|regular file"):
+            rollback(backup, force=force)
+    assert victim.read_text() == "root:$6$hash:::\n"
+    assert os.path.islink(cron)
+
+
+def test_F01_rollback_refuses_when_parent_dir_became_a_symlink(tmp_path):
+    import pytest
+    from ubuntils.remediators.rollback import rollback
+    cron, backup, _ = _remediated(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "job").write_text(cron.read_text())
+    os.rename(cron.parent, tmp_path / "etc" / "cron.d.moved")
+    os.symlink(elsewhere, cron.parent)
+    for force in (False, True):
+        with pytest.raises(OSError, match="symlink"):
+            rollback(backup, force=force)
+    assert (elsewhere / "job").read_text() == "0 0 * * * root /usr/bin/ok\n"
+
+
+def test_F01_rollback_refuses_a_changed_file_or_dir_unless_forced(tmp_path):
+    import pytest
+    from ubuntils.remediators.rollback import RollbackError, rollback
+    cron, backup, _ = _remediated(tmp_path)
+    cron.write_text("edited by the admin since\n")
+    with pytest.raises(RollbackError, match="changed since"):
+        rollback(backup)
+    assert cron.read_text() == "edited by the admin since\n"
+    assert "forced past" in rollback(backup, force=True)
+    assert cron.read_text().startswith("* * * * * root /tmp/a.sh")
+
+    # A different directory (new inode) in the old one's place.
+    cron2, backup2, _ = _remediated(tmp_path / "second")
+    content = cron2.read_text()
+    os.rename(cron2.parent, cron2.parent.with_name("old"))
+    cron2.parent.mkdir()
+    cron2.write_text(content)
+    with pytest.raises(RollbackError, match="different inode"):
+        rollback(backup2)
+
+
+def test_F01_rollback_refuses_a_backup_it_did_not_write(tmp_path, monkeypatch):
+    import pytest
+    from ubuntils.remediators import rollback as rb
+    _cron, backup, _ = _remediated(tmp_path)
+    monkeypatch.setattr(rb.os, "geteuid", lambda: os.stat(backup).st_uid + 1)
+    with pytest.raises(rb.RollbackError, match="owned by uid"):
+        rb.rollback(backup)
+
+
+def test_F01_cli_rollback(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+    from ubuntils.cli import main
+    monkeypatch.setattr("ubuntils.cli._ensure_root", lambda: None)
+    cron, backup, _ = _remediated(tmp_path)
+    ok = CliRunner().invoke(main, ["rollback", backup])
+    assert ok.exit_code == 0, ok.output
+    assert "Restored" in ok.output
+    refused = CliRunner().invoke(main, ["rollback", backup])  # content changed now
+    assert refused.exit_code != 0 and "Rollback refused" in refused.output

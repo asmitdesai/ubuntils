@@ -103,7 +103,7 @@ class SSHCollector(BaseCollector):
                 seen_files.add(path)
                 entries.extend(self._read_keys_file(path, username, home))
 
-        return {"authorized_keys": entries}
+        return {"authorized_keys": self.tag_parent_dirs(entries, "path")}
 
     def _authorized_keys_patterns(self) -> list:
         """Every AuthorizedKeysFile pattern sshd could use, plus the defaults.

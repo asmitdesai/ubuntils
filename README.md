@@ -161,6 +161,9 @@ ubuntils analyze (BUNDLE | --root PATH) [OPTIONS]
   --since TIME        Limit the timeline to events since TIME (e.g. '24h', '7d', '2026-05-20')
   --verbose           Verbose structlog output
 
+ubuntils rollback BACKUP_PATH [--force]
+  Restore a remediated file from its backup (see Remediation > Rollback)
+
 ubuntils version
   Print version string and exit
 ```
@@ -429,7 +432,7 @@ Press `Y` to confirm. The remediator runs in a background thread. When it comple
 ```
 ✓ Remediated
 Backup:    /var/backups/ubuntils/20260115_142201/etc_cron.d_cleanup
-Rollback:  cp /var/backups/ubuntils/20260115_142201/etc_cron.d_cleanup /etc/cron.d/cleanup
+Rollback:  ubuntils rollback /var/backups/ubuntils/20260115_142201/etc_cron.d_cleanup
 ```
 
 On failure, the row is marked `[remediation failed]` and the detail pane shows the error. The backup is always created before any change is attempted. A finding that was fixed can't be remediated a second time.
@@ -781,14 +784,25 @@ ubuntils scan --remediate --confirm --min-confidence 75  # only HIGH-confidence 
 
 Every remediation follows the same pattern regardless of how it is triggered:
 
-1. Detect if the artifact path is a symlink — refuse if so (prevents root writing through attacker-controlled symlinks)
-2. Create a timestamped backup at `/var/backups/ubuntils/YYYYMMDD_HHMMSS/` with mode `0700`
+1. Reach the artifact's directory by walking from `/` one component at a time without following symlinks, and refuse if any component is a symlink, if the file itself is one, or if the directory isn't the one the finding was made on (its device, inode and owner are recorded at detection time). An attacker who swaps `~/.ssh` for a link to another user's `.ssh` between detection and remediation gets a refusal, not a root write into the other directory. Every later read, write, `fchmod`/`fchown` and `rename` happens relative to that directory handle
+2. Create a timestamped backup at `/var/backups/ubuntils/YYYYMMDD_HHMMSS/` (directory mode `0700`, file mode `0600`)
 3. Validate current state (the exact line must still be present)
 4. Apply the minimum possible change — cron entries and keys removed line by line; LD_PRELOAD lines in shell init files commented out; entries in `/etc/ld.so.preload` removed (the loader has no comment syntax there, so a commented entry would still load). For sudoers, the edited content is checked with `visudo -cf` on a temporary copy *before* the real file is touched
-5. Write atomically — new content goes to a temp file beside the original (same mode and owner), is fsync'd, then renamed over it, so a crash mid-write can't leave a truncated `/etc/sudoers`
-6. Verify the exact line is gone
+5. Write atomically — new content goes to a randomly named temp file beside the original (same mode and owner), is fsync'd, then renamed over it, so a crash mid-write can't leave a truncated `/etc/sudoers`
+6. Record a rollback sidecar, `<backup>.json`, holding the original path, owner, group and mode, the parent directory's device and inode, and the SHA-256 of the content remediation left behind
+7. Verify the exact line is gone
 
-If any step fails, remediation stops immediately, the system is left unchanged, and the full error is reported with the backup path and rollback command. Sudo access is protected two ways: `%group` NOPASSWD rules (like `%sudo`) are flag-only and never auto-removed, and the sudoers remediator refuses to remove the last rule from the main sudoers file.
+If any step fails, remediation stops immediately, the system is left unchanged, and the full error is reported with the backup path. Sudo access is protected two ways: `%group` NOPASSWD rules (like `%sudo`) are flag-only and never auto-removed, and the sudoers remediator refuses to remove the last rule from the main sudoers file.
+
+### Rollback
+
+```bash
+ubuntils rollback /var/backups/ubuntils/20260115_142201/etc_cron.d_cleanup
+```
+
+Every successful remediation prints this command. It reads the backup's sidecar and restores the file through the same safe path as remediation: no symlinks in any component, an atomic rename, and the original owner and mode. It refuses when the file has changed since it was remediated, when its directory is no longer the same one (a different inode), or when the backup or sidecar isn't root-owned. `--force` restores anyway after you've checked. Even with `--force`, a symlink in the path, a symlinked target or a non-regular file is always refused.
+
+Don't roll back with `cp backup original`. Run as root, `cp` follows a symlink at the destination, so an attacker who replaced the remediated file with a link to `/etc/shadow` would get root to overwrite it with the backup's content, which they wrote in the first place.
 
 ---
 

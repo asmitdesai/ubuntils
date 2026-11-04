@@ -1,11 +1,24 @@
+import json
 import os
 import shlex
 import stat
-import tempfile
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ubuntils.detectors.finding import Finding, RemediationResult, RemediationStatus
+from ubuntils.utils.safe_io import ensure_private_dir
+from ubuntils.utils.safe_path import (
+    UnsafePathError, create_exclusive_at, dir_identity, open_dir_nofollow, open_parent,
+    read_file_at, replace_at, sha256_hex, stat_at,
+)
+
+# Lines are bytes on disk; surrogateescape round-trips anything that isn't
+# UTF-8 unchanged, so removing one line never re-encodes the others.
+_ENCODING, _ERRORS = "utf-8", "surrogateescape"
+
+
+def rollback_command_for(backup_path: str) -> str:
+    return f"ubuntils rollback {shlex.quote(backup_path)}"
 
 
 class BaseRemediator(ABC):
@@ -14,65 +27,66 @@ class BaseRemediator(ABC):
     def __init__(self, backup_base: str = BACKUP_BASE):
         self._backup_base = backup_base
         self._dry_run = False
+        # The artifact being remediated, and the identity (st_dev, st_ino,
+        # st_uid) its parent directory had when the finding was made.
+        self._artifact = None
+        self._expected_parent = None
+        self._backup_meta: dict = {}
 
     # ------------------------------------------------------------------
     # Symlink-safe file I/O.
     #
     # On a compromised host the attacker may still be active and can swap an
-    # artifact for a symlink between any check and any use (TOCTOU). Every read
-    # and write below opens with O_NOFOLLOW, so the final path component is
-    # never traversed through a symlink — an open of a symlink fails outright
-    # rather than letting root read or truncate the link target. This is the
-    # actual security guarantee; the lstat fast-path in remediate() only exists
-    # to return a friendlier message for the common, non-racing case.
+    # artifact — or any directory above it — for a symlink between detection
+    # and any use (TOCTOU). O_NOFOLLOW only covers the last component, so
+    # every operation here goes through open_parent(): the parent directory
+    # is reached by walking from "/" with O_NOFOLLOW on each component, and
+    # the file, its backup, the temp file, fchmod/fchown and rename all
+    # happen relative to that directory fd. A symlink anywhere in the path is
+    # refused, and if the parent directory isn't the one the finding was
+    # made on (another inode: /home/alice/.ssh swapped for a copy or a
+    # bind of someone else's), remediation stops.
     # ------------------------------------------------------------------
 
-    def _read_lines(self, path: str) -> list:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(fd, "r") as f:
-            return f.readlines()
+    def _open_parent(self, path: str):
+        dir_fd, name = open_parent(path)
+        if path == self._artifact and self._expected_parent is not None:
+            actual = dir_identity(dir_fd)
+            if tuple(actual) != tuple(self._expected_parent):
+                os.close(dir_fd)
+                raise UnsafePathError(
+                    f"{os.path.dirname(path)} is not the directory the finding was made "
+                    f"on (dev/inode/owner {tuple(self._expected_parent)} then, "
+                    f"{actual} now) — refusing to remediate")
+        return dir_fd, name
+
+    def _read_bytes(self, path: str) -> tuple:
+        dir_fd, name = self._open_parent(path)
+        try:
+            return read_file_at(dir_fd, name)
+        finally:
+            os.close(dir_fd)
 
     def _read_text(self, path: str) -> str:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(fd, "r") as f:
-            return f.read()
+        return self._read_bytes(path)[0].decode(_ENCODING, _ERRORS)
+
+    def _read_lines(self, path: str) -> list:
+        return self._read_text(path).splitlines(keepends=True)
 
     def _write_lines(self, path: str, lines: list) -> None:
-        """Atomically replace ``path`` with ``lines``.
-
-        The new content goes to a sibling temp file (mkstemp opens it
-        O_CREAT|O_EXCL|O_NOFOLLOW) that inherits the original's mode and
-        ownership, is fsync'd, and is then rename()d over the original. A crash
-        mid-write leaves the original intact instead of a truncated
-        /etc/sudoers, and rename() replaces the directory entry itself — it
-        never follows a symlink swapped in at ``path``. The original is still
-        opened O_NOFOLLOW first, so a symlink there is refused outright.
-        """
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        """Atomically replace ``path`` with ``lines``, keeping its mode and
+        owner (see safe_path.replace_at). The original must still be a
+        regular file — a symlink swapped in at ``path`` is refused, and
+        rename() would replace the link itself rather than follow it."""
+        dir_fd, name = self._open_parent(path)
         try:
-            st = os.fstat(fd)
+            st = stat_at(dir_fd, name)
+            if not stat.S_ISREG(st.st_mode):
+                raise ValueError(f"Refusing to write non-regular file: {path}")
+            replace_at(dir_fd, name, "".join(lines).encode(_ENCODING, _ERRORS),
+                       st.st_mode, st.st_uid, st.st_gid)
         finally:
-            os.close(fd)
-        if not stat.S_ISREG(st.st_mode):
-            raise ValueError(f"Refusing to write non-regular file: {path}")
-
-        directory = os.path.dirname(os.path.abspath(path))
-        tmp_fd, tmp_path = tempfile.mkstemp(prefix=".ubuntils-", dir=directory)
-        try:
-            with os.fdopen(tmp_fd, "w") as f:
-                f.writelines(lines)
-                f.flush()
-                os.fchmod(f.fileno(), stat.S_IMODE(st.st_mode))
-                if (st.st_uid, st.st_gid) != (os.geteuid(), os.getegid()):
-                    os.fchown(f.fileno(), st.st_uid, st.st_gid)
-                os.fsync(f.fileno())
-            os.rename(tmp_path, path)
-        except BaseException:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+            os.close(dir_fd)
 
     @staticmethod
     def _same_line(line: str, raw_value: str) -> bool:
@@ -99,34 +113,74 @@ class BaseRemediator(ABC):
             )
 
     def _create_backup(self, finding: Finding) -> str:
-        """Copy the artifact to a timestamped, 0700 backup dir without ever
-        following a symlink on either source or destination."""
+        """Copy the artifact into a timestamped, 0700 backup dir, never
+        following a symlink on either side, and remember what the sidecar
+        needs to restore it safely later."""
         artifact = finding.artifact_path
-        if not os.path.exists(artifact):
-            raise FileNotFoundError(f"Artifact not found: {artifact}")
+        dir_fd, name = self._open_parent(artifact)
+        try:
+            data, st = read_file_at(dir_fd, name)
+            parent = os.fstat(dir_fd)
+        finally:
+            os.close(dir_fd)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ensure_private_dir(self._backup_base)
         dest_dir = os.path.join(self._backup_base, ts)
-        os.makedirs(dest_dir, mode=0o700, exist_ok=True)
+        ensure_private_dir(dest_dir)
         safe_name = artifact.lstrip("/").replace("/", "_")
 
-        src_fd = os.open(artifact, os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(src_fd, "rb") as src:
-            data = src.read()
-        # O_EXCL: never overwrite or follow an existing/pre-staged destination.
-        # 0o600: backups of shadow/sudoers must not become world-readable.
-        # Two fixes to one file within a second (two bad lines in one crontab)
-        # get .1, .2… instead of failing on the second.
-        for attempt in range(100):
-            dest = os.path.join(dest_dir, safe_name if attempt == 0 else f"{safe_name}.{attempt}")
-            try:
-                dst_fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                                 0o600)
-            except FileExistsError:
-                continue
-            with os.fdopen(dst_fd, "wb") as dst:
-                dst.write(data)
-            return dest
-        raise FileExistsError(f"too many backups of {artifact} in {dest_dir}")
+        dest_fd = open_dir_nofollow(dest_dir)
+        try:
+            # O_EXCL: never overwrite or follow an existing/pre-staged
+            # destination. 0o600: backups of shadow/sudoers must not become
+            # world-readable. Two fixes to one file within a second (two bad
+            # lines in one crontab) get .1, .2… instead of failing on the
+            # second; a name is only used if its sidecar name is free too.
+            for attempt in range(100):
+                candidate = safe_name if attempt == 0 else f"{safe_name}.{attempt}"
+                try:
+                    stat_at(dest_fd, candidate + ".json")
+                    continue
+                except FileNotFoundError:
+                    pass
+                try:
+                    create_exclusive_at(dest_fd, candidate, data)
+                except FileExistsError:
+                    continue
+                break
+            else:
+                raise FileExistsError(f"too many backups of {artifact} in {dest_dir}")
+        finally:
+            os.close(dest_fd)
+        backup_path = os.path.join(dest_dir, candidate)
+        self._backup_meta = {
+            "backup_path": backup_path,
+            "original_path": artifact,
+            "uid": st.st_uid,
+            "gid": st.st_gid,
+            "mode": stat.S_IMODE(st.st_mode),
+            "parent_dev": parent.st_dev,
+            "parent_ino": parent.st_ino,
+            "parent_uid": parent.st_uid,
+            "backup_sha256": sha256_hex(data),
+            "rule_id": finding.rule_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return backup_path
+
+    def _write_sidecar(self, backup_path: str, artifact: str) -> None:
+        """<backup>.json: what `ubuntils rollback` checks before restoring —
+        the file's original owner/mode, its parent directory's identity, and
+        the content remediation left behind (so a rollback never clobbers a
+        file that has changed since)."""
+        meta = dict(self._backup_meta)
+        meta["post_sha256"] = sha256_hex(self._read_bytes(artifact)[0])
+        dest_fd = open_dir_nofollow(os.path.dirname(backup_path))
+        try:
+            create_exclusive_at(dest_fd, os.path.basename(backup_path) + ".json",
+                                json.dumps(meta, indent=2, sort_keys=True).encode())
+        finally:
+            os.close(dest_fd)
 
     def backup(self, finding: Finding) -> str:
         """Create a timestamped backup. Returns the backup path."""
@@ -145,6 +199,14 @@ class BaseRemediator(ABC):
         """Verify the change was applied. Raises ValueError if verification fails."""
 
     def remediate(self, finding: Finding, dry_run: bool = True) -> RemediationResult:
+        self._artifact = finding.artifact_path
+        self._expected_parent = getattr(finding, "parent_dir_identity", None)
+
+        def failed(message, backup_path=None):
+            return RemediationResult(finding_rule_id=finding.rule_id,
+                                     status=RemediationStatus.FAILED,
+                                     message=message, backup_path=backup_path)
+
         if dry_run:
             # A preview must not touch the disk — no backup of /etc/sudoers
             # into /var/backups, and no rollback command for a change that
@@ -153,68 +215,55 @@ class BaseRemediator(ABC):
                 self.validate(finding)
                 message = self.apply(finding, dry_run=True)
             except Exception as e:
-                return RemediationResult(
-                    finding_rule_id=finding.rule_id,
-                    status=RemediationStatus.FAILED,
-                    message=str(e),
-                )
+                return failed(str(e))
             return RemediationResult(
                 finding_rule_id=finding.rule_id,
                 status=RemediationStatus.SUCCESS,
                 message=message,
             )
 
+        # Friendly fast path for the common case; the real guarantee is that
+        # backup() and every later read/write go through _open_parent(), which
+        # also reports an unsafe or swapped parent directory.
         try:
-            st = os.lstat(finding.artifact_path)
-            if stat.S_ISLNK(st.st_mode):
-                return RemediationResult(
-                    finding_rule_id=finding.rule_id,
-                    status=RemediationStatus.FAILED,
-                    message=f"Refusing to remediate symlink: {finding.artifact_path}",
-                )
+            dir_fd, name = self._open_parent(finding.artifact_path)
+            try:
+                if stat.S_ISLNK(stat_at(dir_fd, name).st_mode):
+                    return failed(f"Refusing to remediate symlink: {finding.artifact_path}")
+            finally:
+                os.close(dir_fd)
         except OSError:
-            pass  # file-not-found will be caught in backup()
+            pass
 
         try:
             backup_path = self.backup(finding)
         except Exception as e:
-            return RemediationResult(
-                finding_rule_id=finding.rule_id,
-                status=RemediationStatus.FAILED,
-                message=str(e),
-            )
-
-        rollback_command = f"cp {shlex.quote(backup_path)} {shlex.quote(finding.artifact_path)}"
+            return failed(str(e))
 
         try:
             self.validate(finding)
         except Exception as e:
-            return RemediationResult(
-                finding_rule_id=finding.rule_id,
-                status=RemediationStatus.FAILED,
-                message=str(e),
-                backup_path=backup_path,
-            )
+            return failed(str(e), backup_path)
 
         try:
             message = self.apply(finding, dry_run)
         except Exception as e:
-            return RemediationResult(
-                finding_rule_id=finding.rule_id,
-                status=RemediationStatus.FAILED,
-                message=str(e),
-                backup_path=backup_path,
-            )
+            return failed(str(e), backup_path)
+
+        rollback_command = None
+        if self._backup_meta.get("backup_path") == backup_path:
+            try:
+                self._write_sidecar(backup_path, finding.artifact_path)
+            except Exception as e:
+                return failed(f"changed {finding.artifact_path}, but could not record "
+                              f"rollback data: {e} — restore from {backup_path} by hand",
+                              backup_path)
+            rollback_command = rollback_command_for(backup_path)
 
         try:
             self.verify(finding)
         except Exception as e:
-            return RemediationResult(
-                finding_rule_id=finding.rule_id,
-                status=RemediationStatus.FAILED,
-                message=str(e),
-                backup_path=backup_path,
-            )
+            return failed(str(e), backup_path)
 
         return RemediationResult(
             finding_rule_id=finding.rule_id,

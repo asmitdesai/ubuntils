@@ -386,6 +386,21 @@ def analyze(bundle, root_path, output_json, output_path, config_path, baseline_p
 
 
 @main.command()
+@click.argument("backup_path", type=click.Path(dir_okay=False))
+@click.option("--force", is_flag=True,
+              help="Restore even if the file or its directory changed since remediation "
+                   "(symlinks and non-regular files are still refused)")
+def rollback(backup_path, force):
+    """Undo a remediation by restoring BACKUP_PATH to the file it was taken from."""
+    _ensure_root()
+    from ubuntils.remediators.rollback import RollbackError, rollback as do_rollback
+    try:
+        click.echo(do_rollback(backup_path, force=force))
+    except (RollbackError, OSError, ValueError, KeyError) as exc:
+        raise click.ClickException(f"Rollback refused: {exc}")
+
+
+@main.command()
 def version():
     """Print version and exit."""
     click.echo(__version__)

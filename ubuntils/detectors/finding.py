@@ -34,6 +34,10 @@ class Finding:
     # high the confidence climbs (e.g. which of several keys was added is
     # unknowable). Manual remediation in the TUI stays possible, with a warning.
     auto_remediation_blocked: Optional[str] = None
+    # (st_dev, st_ino, st_uid) of the artifact's parent directory when it was
+    # collected. Remediation refuses if the directory there now is another
+    # one — e.g. ~/.ssh swapped for a symlink or a different directory.
+    parent_dir_identity: Optional[tuple] = None
 
 
 @dataclass

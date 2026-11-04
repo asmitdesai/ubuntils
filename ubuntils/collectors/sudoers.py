@@ -55,7 +55,7 @@ class SudoersCollector(BaseCollector):
                 if principal == "*" or principal in parsed["principals"]
             )
             rules.append(parsed)
-        return {"sudoers_rules": rules}
+        return {"sudoers_rules": self.tag_parent_dirs(rules, "source")}
 
     def _read_logical_lines(self, path: str, seen: set, depth: int) -> list:
         """[(path, line, continued)] for a file and everything it includes.

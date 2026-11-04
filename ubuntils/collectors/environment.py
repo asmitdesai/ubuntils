@@ -35,7 +35,8 @@ class EnvironmentCollector(BaseCollector):
                 self._add_shell_init(f"{home.rstrip('/')}/{filename}", username,
                                      definitions, shell_init_files, user_controlled=True)
 
-        return {"env_definitions": definitions, "shell_init_files": shell_init_files}
+        return {"env_definitions": self.tag_parent_dirs(definitions, "source"),
+                "shell_init_files": shell_init_files}
 
     def _add_shell_init(self, path: str, owner: str, definitions: list,
                         shell_init_files: list, user_controlled: bool) -> None:

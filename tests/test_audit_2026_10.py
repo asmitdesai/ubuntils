@@ -214,7 +214,9 @@ def test_M3_rollback_command_is_shell_quoted(tmp_path):
     cron.write_text("* * * * * root /tmp/a.sh\n")
     result = CronRemediator(backup_base=str(tmp_path / "b")).remediate(
         _cron_finding(cron, "* * * * * root /tmp/a.sh"), dry_run=False)
-    assert shlex.split(result.rollback_command) == ["cp", result.backup_path, str(cron)]
+    # A bare `cp backup artifact` run as root would write through a symlink
+    # planted at the artifact (F-01); rollback goes through ubuntils itself.
+    assert shlex.split(result.rollback_command) == ["ubuntils", "rollback", result.backup_path]
 
 
 # ─── S3: user-controlled files can't hang or poison the scan ─────────────────
