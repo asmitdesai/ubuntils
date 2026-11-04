@@ -927,3 +927,29 @@ async def test_F13_markup_in_remediation_description_is_shown_literally():
         await pilot.pause()
         desc = pilot.app.screen.query_one("#fix-desc", Static)
         assert str(desc.render()) == "Remove [/bold] and [red]this[/red] line"
+
+
+# ─── F-14: /usr/bin/false is not a login shell ──────────────────────────────
+
+def test_F14_usr_bin_false_is_not_a_login_shell(tmp_path):
+    from ubuntils.collectors.users import UserCollector
+    from ubuntils.detectors.rules import rule_user_empty_password
+    from ubuntils.utils.validators import is_login_shell
+    assert not is_login_shell("/usr/bin/false")
+    # Empty-password accounts: only the one with a real shell can log in.
+    root = _tree(tmp_path, {
+        "/etc/passwd": ("svc:x:998:998::/nonexistent:/usr/bin/false\n"
+                        "eve:x:1000:1000::/home/eve:/bin/bash\n"),
+        "/etc/shadow": "svc::19000:0:99999:7:::\neve::19000:0:99999:7:::\n",
+        "/etc/group": "svc:x:998:\neve:x:1000:\n",
+    })
+    artifacts = UserCollector(source=LiveSource(root=root, offline=True)).collect()
+    flagged = [f.raw_value for f in rule_user_empty_password(artifacts)]
+    assert flagged == ["eve::"]
+
+
+def test_F14_readme_lists_what_is_not_covered():
+    readme = open(os.path.join(_REPO, "README.md")).read()
+    section = readme.split("### Not covered", 1)[1].split("\n## ", 1)[0]
+    for item in ("AuthorizedKeysCommand", "~/.ssh/rc", "/etc/ssh/sshrc", "Include", "pam_exec.so"):
+        assert item in section, item

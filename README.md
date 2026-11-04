@@ -681,6 +681,17 @@ Raw value:     setuid
 Remediation:   not available
 ```
 
+### Not covered
+
+These persistence and access paths are known to be outside what ubuntils checks today. A clean report says nothing about them, so check them by hand:
+
+- **`AuthorizedKeysCommand`** in `sshd_config`: sshd runs this program to fetch extra keys for a login, so a planted command can grant access without touching any `authorized_keys` file.
+- **`~/.ssh/rc` and `/etc/ssh/sshrc`**: run by sshd at every SSH login, before the user's shell.
+- **sshd `Include` directives outside `/etc/ssh/sshd_config.d/`**: `AuthorizedKeysFile` settings in other included files aren't read.
+- **`pam_exec.so`** lines in `/etc/pam.d/*`: they run an arbitrary program during authentication or session setup. `PAM_BACKDOOR` only looks at `pam_permit.so` and NSS modules.
+
+TODO: flag-only rules for `AuthorizedKeysCommand` and `pam_exec.so`. Both are easy to detect, but stock cloud images set `AuthorizedKeysCommand` (EC2 Instance Connect, GCE OS Login). The rules need a known-good list validated on real hosts first, or they would report every such host.
+
 ---
 
 ## JSON output
