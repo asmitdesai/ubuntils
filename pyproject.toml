@@ -57,4 +57,4 @@ include = ["ubuntils*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "--cov=ubuntils --cov-fail-under=80 --cov-report=term-missing"
+addopts = "--cov=ubuntils --cov-fail-under=90 --cov-report=term-missing"

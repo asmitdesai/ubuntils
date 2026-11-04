@@ -9,21 +9,30 @@ issue with the structured log output attached.
 ## Installation & environment
 
 ### `ubuntils: command not found`
-The console script wasn't placed on your `PATH`.
+The console script isn't on your `PATH`, or isn't on the `PATH` sudo uses.
 
-- If you installed with `pip install --user`, ensure `~/.local/bin` is on your `PATH`:
-  ```bash
-  export PATH="$HOME/.local/bin:$PATH"
-  ```
-- In a virtual environment, confirm it's activated (`which ubuntils` should point
-  inside the venv).
-- As a fallback, invoke the module directly:
-  ```bash
-  python -m ubuntils scan
-  ```
+- The recommended root-owned installs (`sudo pipx install --global …`, or a root
+  venv under `/opt/ubuntils` linked into `/usr/local/bin`; see the README) put
+  `ubuntils` on sudo's `secure_path`, so both `ubuntils scan` and
+  `sudo ubuntils scan` work.
+- A per-user pipx install puts the command in `~/.local/bin`, which sudo's
+  `secure_path` doesn't include: `sudo ubuntils …` fails with `command not
+  found`. Run `ubuntils scan` as your user instead (it re-invokes itself with
+  sudo), and see "refuses to escalate" below.
+- Don't work around it with `sudo python -m …` from a source checkout or a
+  directory you don't control: Python puts the current directory on
+  `sys.path`, so a planted module there would run as root.
+
+### `ubuntils will not escalate to root`
+ubuntils checked where its code and interpreter live and found a path a non-root
+user can modify (a per-user pipx install, a venv in a home directory, an
+editable checkout). Anything running as that user could change the code root is
+about to run. Reinstall root-owned (README, "Installation"), or accept the risk
+on a lab VM with `ubuntils --allow-user-install scan`. The flag goes *before*
+the subcommand.
 
 ### `TypeError: unsupported operand type(s) for |` on import (Python 3.9)
-ubuntils supports Python 3.9+, but PEP 604 union syntax (`X | Y`) in type
+ubuntils 2.x supports Python 3.9+ (3.0 will need 3.10), but PEP 604 union syntax (`X | Y`) in type
 annotations is evaluated at import time on 3.9 and raises. If you see this after
 modifying the source, add `from __future__ import annotations` to the top of the
 offending module. On a clean install this should not occur — please report it.
@@ -44,18 +53,17 @@ pip install ubuntils
 ### Findings are empty or collectors report `✗`
 Most forensic artifacts require elevated access. `/etc/shadow`, other users'
 `~/.ssh/authorized_keys`, root-owned cron spools, and full process tables are only
-readable as root. Run with `sudo`:
-```bash
-sudo ubuntils scan
-```
+readable as root. Run `ubuntils scan`: as a normal user it re-invokes itself
+with `sudo` (or run it from a root shell).
 A collector marked `✗` in the scan checklist means it could not read its source —
 usually a permission error. Run with `--verbose` to see the exact failure per
 collector.
 
 ### `Permission denied` during remediation
 Remediation writes backups to `/var/backups/ubuntils/` and edits system files
-(`/etc/sudoers.d/*`, cron spools, shell init files). These all require root. Run the
-remediation step with `sudo`. ubuntils never escalates privileges on its own.
+(`/etc/sudoers.d/*`, cron spools, shell init files). These all require root.
+`ubuntils scan` re-invokes itself with `sudo` when run as a normal user; if that
+was refused, see "refuses to escalate" above.
 
 ---
 
@@ -118,8 +126,15 @@ stops immediately and makes no change. Common causes:
 
 ### How do I undo a remediation?
 Every applied change creates a timestamped backup under
-`/var/backups/ubuntils/YYYYMMDD_HHMMSS/` and prints an exact `rollback_command`
-(a `cp` of the backup back over the original). Re-run that command as root to revert.
+`/var/backups/ubuntils/YYYYMMDD_HHMMSS/` and prints the command that undoes it:
+```bash
+ubuntils rollback /var/backups/ubuntils/20260115_142201/etc_cron.d_cleanup
+```
+It restores through the same symlink-safe path as remediation, with the
+original owner and mode, and refuses if the file changed since (`--force` after
+you've checked). **Don't** roll back with `cp backup original`: as root, `cp`
+follows a symlink planted at the destination and would overwrite whatever it
+points to (`/etc/shadow`, say) with the backup's content.
 
 ---
 
@@ -147,5 +162,6 @@ Run the failing command with `--verbose` and include:
 - ubuntils version (`ubuntils version`)
 - The structured log output (redact any sensitive paths/values first)
 
-Note that ubuntils makes **no network calls** — no data leaves your system, so
-nothing is transmitted automatically. All diagnostics must be attached manually.
+Note that ubuntils makes **no network calls** and sends no diagnostics anywhere,
+so attach them yourself. (The one way findings leave a host is a local Wazuh
+agent shipping `/var/log/ubuntils/wazuh-alerts.json`; `--no-wazuh` turns that off.)

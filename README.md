@@ -4,13 +4,11 @@ Forensic triage for live Ubuntu systems — automated artifact collection, persi
 
 [![CI](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml/badge.svg)](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
-![Tests](https://img.shields.io/badge/tests-546%20passing-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-94.69%25-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Arch](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-lightgrey)
-![Ubuntu](https://img.shields.io/badge/ubuntu-20.04%20%7C%2022.04%20%7C%2024.04%20%7C%2026.04-orange)
+![Ubuntu](https://img.shields.io/badge/ubuntu-22.04%20%7C%2024.04%20%7C%2026.04-orange)
 ![Offline analysis](https://img.shields.io/badge/offline%20analysis-collect%20%2B%20analyze-blueviolet)
-![Detection rules](https://img.shields.io/badge/detection%20rules-16-informational)
+![Detection rules](https://img.shields.io/badge/detection%20rules-17-informational)
 ![SIEM](https://img.shields.io/badge/SIEM-Wazuh-yellow)
 
 ---
@@ -29,9 +27,9 @@ The gap is a tool that runs on the live system right now, covers the most common
 
 ubuntils runs in four sequential stages:
 
-1. **Collection** — Eleven collectors gather forensic artifacts concurrently from `/proc`, cron tables, systemd units, SSH keys, sudoers files, environment definitions, package integrity (`dpkg --verify`), PAM/NSS config, and loaded kernel modules. Most collectors finish in a second or two; `dpkg --verify`, which re-checks every installed package file, dominates — a full scan took 29–68 seconds on an Ubuntu 26.04 arm64 desktop VM.
+1. **Collection** — Eleven collectors, run one after another, gather forensic artifacts from `/proc`, cron tables, systemd units, SSH keys, sudoers files, environment definitions, package integrity (`dpkg --verify`), PAM/NSS config, and loaded kernel modules. Most collectors finish in a second or two; `dpkg --verify`, which re-checks every installed package file, dominates — a full scan took 29–68 seconds on an Ubuntu 26.04 arm64 desktop VM.
 2. **Detection** — A detection engine runs all seventeen built-in rules — plus any custom rules loaded with `--rules` — over the collected artifacts, producing a ranked, confidence-scored findings list in about one second.
-3. **Timeline** — A timeline builder reads syslog, journald, and auditd in parallel and correlates events chronologically, adding roughly 0.3 seconds. Each finding is then auto-correlated against the timeline, so it carries the nearby events that relate to it.
+3. **Timeline** — A timeline builder reads syslog, journald, and auditd and correlates events chronologically, adding roughly 0.3 seconds. Each finding is then auto-correlated against the timeline, so it carries the nearby events that relate to it.
 4. **Output** — Results appear either in an interactive four-tab TUI (default) or as structured JSON on stdout (`--json`).
 
 ubuntils itself makes no network calls, and every feature — custom rules and correlation included — runs against locally collected artifacts. The one way findings can leave the host is the [Wazuh integration](#wazuh-integration): if a Wazuh agent is installed, a live `scan` writes its findings to a local file that *the agent* then ships to its manager. Pass `--no-wazuh` to turn that off for a run.
@@ -375,14 +373,17 @@ While collectors run, ubuntils shows a live checklist — one row per collector.
 ```
 Scanning system…
 
-  ✓  Process
-  ✓  Network
-  ✓  Users
-  ⠹  Cron
-     Systemd
-     SSH
-     Sudoers
-     Environment
+  ✓  ProcessCollector
+  ✓  NetworkCollector
+  ✓  UserCollector
+  ⠹  CronCollector
+     SystemdCollector
+     SSHCollector
+     SudoersCollector
+     EnvironmentCollector
+     PackageCollector
+     PamCollector
+     KernelCollector
 ```
 
 `✓` marks success, `✗` marks failure, the spinner marks the active collector, and blank rows are pending. Once all collectors finish and detection + timeline complete, the TUI switches automatically to the results screen.
@@ -405,7 +406,7 @@ Press `q` or `Ctrl+C` to exit.
 Shows scan metadata and the top findings on a single screen:
 
 ```
-Collectors:  8 run · 0 failed
+Collectors:  11 run · 0 failed
 Findings:    2 HIGH · 1 MEDIUM · 0 LOW
 Timeline:    47 events
 Duration:    2.8s
@@ -985,10 +986,12 @@ The remediable findings make a good in-TUI remediation demo: press **R** on the 
 
 | | Supported |
 |---|---|
-| **Ubuntu** | 20.04, 22.04, 24.04 |
+| **Ubuntu** | 22.04, 24.04, 26.04 |
 | **Architecture** | amd64, arm64 |
-| **Python** | 3.9+ |
+| **Python** | 3.9+ (3.10+ for the hash-verified install; ubuntils 3.0 will require 3.10) |
 | **Privileges** | Root required for full artifact access |
+
+Ubuntu 20.04 is no longer listed: its system Python is 3.8, below the 3.9 minimum, and its standard support has ended. CI runs on 22.04 and 24.04 (amd64 and arm64); 26.04 was validated by hand on arm64 for 2.2.0.
 
 Running without root produces a partial scan with warnings. Critical paths like `/etc/shadow`, protected crontab directories, and some `/proc` entries will be skipped.
 
@@ -1057,9 +1060,11 @@ VirusTotal hash lookups and MISP IOC export were dropped from this release. Viru
 - [x] `tools/lab/seed-lab.sh` demo lab that trips 14 of 16 rules with inert artifacts
 - [x] 509 tests at 94.65% coverage
 
-**v3.0.0 / v4.0.0 (exploratory)**
-- Web dashboard for multi-host triage
-- macOS support
+**v3.0.0 (planned)** — see the [PRD](docs/plans/v3.0.0-prd.md) and [engineering plan](docs/plans/v3.0.0-plan.md)
+- A signed single-file build that runs offline with the system `python3`
+- Likely-persistence vs hygiene grouping, ATT&CK IDs, a Markdown report
+- Preserve-then-fix remediation, an independent PANIX coverage benchmark
+- Not planned: a web dashboard, macOS, a continuous agent
 
 ---
 

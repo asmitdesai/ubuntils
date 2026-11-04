@@ -192,3 +192,33 @@ def test_N10_release_workflow_grants_nothing_by_default_and_publishes_sums():
         assert "permissions" in job, f"job {name} has no explicit permissions"
     text = open(os.path.join(_REPO, ".github", "workflows", "release.yml")).read()
     assert "sha256sum" in text and "SHA256SUMS" in text
+
+
+# ── N-03 / N-06: docs that drifted from the code ─────────────────────────────
+
+def _doc(path):
+    return open(os.path.join(_REPO, path)).read()
+
+
+def test_N06_rule_count_badge_matches_the_engine():
+    from ubuntils.detectors.engine import ALL_RULES
+    assert f"detection%20rules-{len(ALL_RULES)}-" in _doc("README.md")
+
+
+def test_N06_no_static_test_or_coverage_badges():
+    readme = _doc("README.md")
+    assert "badge/tests-" not in readme and "badge/coverage-" not in readme
+
+
+def test_N06_docs_never_suggest_cp_for_rollback():
+    for path in ("docs/debugging-common-issues.md", "CONTRIBUTING.md"):
+        text = _doc(path)
+        assert "ubuntils rollback" in text, path
+        assert "(a `cp` of the backup" not in text, path
+
+
+def test_N03_ubuntu_20_04_is_not_claimed():
+    readme = _doc("README.md")
+    compat = readme.split("## Compatibility", 1)[1].split("\n---", 1)[0]
+    assert "| **Ubuntu** | 22.04, 24.04, 26.04 |" in compat
+    assert "20.04%20%7C" not in readme

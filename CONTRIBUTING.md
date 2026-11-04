@@ -9,12 +9,13 @@ detection rules, additional collectors, and real-world validation results.
 git clone https://github.com/asmitdesai/ubuntils.git
 cd ubuntils
 python -m venv .venv && source .venv/bin/activate
-pip install -e '.[dev]'
+pip install --require-hashes -r requirements-dev.lock   # Python 3.10+; or: pip install -e '.[dev]'
+pip install --no-deps --no-build-isolation -e .
 pytest
 ```
 
 Tests run on any platform (collectors are tested against mocked artifacts), so
-you do not need an Ubuntu host to develop. The suite enforces an 80% coverage
+you do not need an Ubuntu host to develop. The suite enforces a 90% coverage
 floor via `pyproject.toml`.
 
 ## Adding a detection rule
@@ -35,12 +36,21 @@ floor via `pyproject.toml`.
 ## Adding a remediator
 
 Remediators follow the backup → validate → apply → verify pattern in
-`ubuntils/remediators/base.py`. They must:
+`ubuntils/remediators/base.py`. They run as root on a host the attacker may
+control, so they must:
 
-- Refuse to act on a symlinked artifact path.
-- Create a timestamped backup before any change and set `rollback_command`.
+- Do every read and write through `BaseRemediator`'s helpers
+  (`_read_lines`, `_write_lines`, `_create_backup`), which reach the file
+  relative to a directory opened from `/` without following any symlink, and
+  check the directory is the one the finding was made on. Never `open()` a
+  path directly.
+- Let the base class create the backup and its sidecar; it sets
+  `rollback_command` to `ubuntils rollback <backup>`. Never suggest
+  `cp backup original` anywhere.
 - Make the minimum change (remove/comment a specific entry, never truncate a
   file), and never remove all sudo access.
+- Set `auto_remediation_blocked` on any finding a human has to judge, so
+  `--remediate --confirm` can't act on it whatever its confidence.
 
 ## Pull requests
 
