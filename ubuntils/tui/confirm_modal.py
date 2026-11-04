@@ -55,17 +55,20 @@ class ConfirmModal(ModalScreen):
     def compose(self) -> ComposeResult:
         with Center():
             with Vertical(id="dialog"):
-                yield Static(f"Remediate {self._finding.rule_id}?", id="rule-id")
+                # Text, never a markup string: descriptions carry paths and
+                # lines from the host, and "[/bold]" in one would raise
+                # MarkupError (or restyle the dialog) when this opened.
+                yield Static(Text(f"Remediate {self._finding.rule_id}?"), id="rule-id")
                 desc = self._finding.remediation_description or "Remove the offending entry."
-                yield Static(desc, id="fix-desc")
+                yield Static(Text(desc), id="fix-desc")
                 if self._finding.auto_remediation_blocked:
                     yield Static(Text(
                         "Warning: `--remediate --confirm` never applies this fix — "
                         f"{self._finding.auto_remediation_blocked}. "
                         "Confirm only if you have checked it yourself."
                     ), id="blocked-warning")
-                yield Static("Backup will be created at /var/backups/ubuntils/…")
-                yield Static("Y: confirm    Esc: cancel", id="hint")
+                yield Static(Text("Backup will be created at /var/backups/ubuntils/…"))
+                yield Static(Text("Y: confirm    Esc: cancel"), id="hint")
 
     def action_confirm(self) -> None:
         self.dismiss(True)

