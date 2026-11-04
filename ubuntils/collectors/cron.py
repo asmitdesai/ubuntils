@@ -50,7 +50,7 @@ class CronCollector(BaseCollector):
             for path in self.source.glob(f"{directory}/*"):
                 entries.extend(self._parse_script(path, schedule))
 
-        return {"cron_entries": entries}
+        return {"cron_entries": self.tag_parent_dirs(entries, "source")}
 
     def _parse_crontab(self, path: str, owner: str, has_user_field: bool) -> list:
         entries = []

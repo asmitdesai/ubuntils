@@ -11,7 +11,9 @@ STANDARD_BIN_PATHS = [
     "/snap",
 ]
 WRITABLE_TMP_PATHS = ["/tmp", "/var/tmp", "/dev/shm"]
-NOLOGIN_SHELLS = ["/sbin/nologin", "/bin/false", "/usr/sbin/nologin"]
+# /usr/bin/false is where merged-/usr systems (every Ubuntu since 20.04) and
+# some useradd defaults put it; /bin/false is the same file via a symlink.
+NOLOGIN_SHELLS = ["/sbin/nologin", "/bin/false", "/usr/sbin/nologin", "/usr/bin/false"]
 
 KNOWN_SETUID_BINARIES = frozenset({
     "/usr/bin/sudo", "/usr/bin/su", "/bin/su",

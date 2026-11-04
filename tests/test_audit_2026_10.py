@@ -49,11 +49,13 @@ def test_S1_ensure_root_reexecs_through_the_bootstrap(monkeypatch):
     monkeypatch.setattr(cli.os, "execv", lambda path, args: captured.update(path=path, args=args))
     monkeypatch.setattr(cli, "resolve_command", lambda name: "/usr/bin/sudo")
     monkeypatch.setattr(cli.sys, "argv", ["ubuntils", "scan", "--json"])
+    monkeypatch.setattr(cli, "install_trust_problems", lambda: [])  # see F-07
     cli._ensure_root()
     args = captured["args"]
     assert "-m" not in args
-    assert args[:4] == ["sudo", sys.executable, "-c", cli.REEXEC_BOOTSTRAP]
-    assert args[4:] == ["scan", "--json"]
+    # -I: isolated mode, so not even PYTHON* variables or the cwd apply.
+    assert args[:5] == ["sudo", sys.executable, "-I", "-c", cli.REEXEC_BOOTSTRAP]
+    assert args[5:] == ["scan", "--json"]
 
 
 # ─── S2: a hostile bundle must not read the analyst's own files ──────────────
@@ -214,7 +216,9 @@ def test_M3_rollback_command_is_shell_quoted(tmp_path):
     cron.write_text("* * * * * root /tmp/a.sh\n")
     result = CronRemediator(backup_base=str(tmp_path / "b")).remediate(
         _cron_finding(cron, "* * * * * root /tmp/a.sh"), dry_run=False)
-    assert shlex.split(result.rollback_command) == ["cp", result.backup_path, str(cron)]
+    # A bare `cp backup artifact` run as root would write through a symlink
+    # planted at the artifact (F-01); rollback goes through ubuntils itself.
+    assert shlex.split(result.rollback_command) == ["ubuntils", "rollback", result.backup_path]
 
 
 # ─── S3: user-controlled files can't hang or poison the scan ─────────────────
@@ -238,15 +242,20 @@ def test_S3_fifo_bashrc_is_skipped_not_waited_on(tmp_path):
     assert any(".bashrc" in r and "not a regular file" in r for r in collector.degraded)
 
 
-def test_S3_huge_sparse_bashrc_is_skipped(tmp_path):
+def test_S3_huge_sparse_bashrc_is_bounded(tmp_path):
+    # An 8 GiB sparse file must neither exhaust memory nor hang the scan.
+    # Since the 2026-11 review (F-05) it is read up to the hard ceiling and
+    # reported as oversized rather than skipped, since bash still sources it.
     from ubuntils.collectors.environment import EnvironmentCollector
+    from ubuntils.collectors.source import USER_FILE_HARD_MAX_BYTES
 
     def sparse(p):
         with open(p, "wb") as f:
             f.truncate(8 * 1024 ** 3)     # 8 GiB, no disk used
     collector = EnvironmentCollector(source=_home_with(tmp_path, ".bashrc", sparse))
-    assert collector.collect()["shell_init_files"] == []
-    assert any("larger than" in r for r in collector.degraded)
+    [entry] = collector.collect()["shell_init_files"]
+    assert len(entry["content"]) <= USER_FILE_HARD_MAX_BYTES
+    assert entry["oversized"] and entry["truncated"]
 
 
 def test_S3_symlink_to_device_is_refused(tmp_path):

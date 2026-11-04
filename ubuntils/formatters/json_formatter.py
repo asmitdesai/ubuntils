@@ -60,6 +60,8 @@ class JSONFormatter:
             d["related_events"] = [self._event(e) for e in f.related_events]
         if f.guided_remediation is not None:
             d["guided_remediation"] = f.guided_remediation
+        if f.auto_remediation_blocked is not None:
+            d["auto_remediation_blocked"] = f.auto_remediation_blocked
         return d
 
     def _event(self, e: TimelineEvent) -> dict:

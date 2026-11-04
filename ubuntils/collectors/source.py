@@ -5,17 +5,39 @@ import os
 import shutil
 import stat
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 from ubuntils.utils.shell import run_command
 
-# Ceiling for files in user-controlled locations (shell init files,
-# authorized_keys, per-user units). Real ones are a few KB.
+# Files in user-controlled locations (shell init files, authorized_keys,
+# per-user units) are a few KB. Above USER_FILE_MAX_BYTES one is reported as
+# oversized: sshd and bash still honour every line, so padding a file is a
+# way to hide a key or backdoor from tools that skip big files. Reading
+# stops at USER_FILE_HARD_MAX_BYTES so a 100 GB sparse file can't exhaust
+# memory; the oversized marker says the rest went unread.
 USER_FILE_MAX_BYTES = 1024 * 1024
+USER_FILE_HARD_MAX_BYTES = 64 * 1024 * 1024
+# Ceiling for any single file or command output read back from a bundle
+# (bundle/reader.py refuses to extract larger members in the first place).
+BUNDLE_READ_MAX_BYTES = 512 * 1024 * 1024
 
 
 class UnsafeFileError(OSError):
     """A user-controlled file that isn't safe to read as root: not a regular
-    file (FIFO, device, socket) or larger than USER_FILE_MAX_BYTES."""
+    file (FIFO, device, socket)."""
+
+
+@dataclass
+class UserFile:
+    """A user-controlled file as read: ``text`` holds at most
+    USER_FILE_HARD_MAX_BYTES; ``truncated`` means there was more."""
+    text: str
+    size: int
+    truncated: bool = False
+
+    @property
+    def oversized(self) -> bool:
+        return self.size > USER_FILE_MAX_BYTES
 
 
 class ArtifactSource(ABC):
@@ -55,19 +77,22 @@ class ArtifactSource(ABC):
     def run(self, name: str, argv: list[str], timeout: int = 30) -> tuple[str, str, int]:
         ...
 
-    def read_user_text(self, path: str, max_bytes: int = USER_FILE_MAX_BYTES) -> str:
+    def read_user_file(self, path: str) -> UserFile:
         """Read a file a non-root user controls (anything under a home dir).
 
         Any user can point ~/.bashrc at /dev/zero, make it a FIFO, or a 100 GB
         sparse file — read as root by a plain read_text(), that hangs or
         exhausts memory and blinds the scan. Symlinks are still followed
         (dotfile managers symlink ~/.bashrc), but the target must be a regular
-        file of at most ``max_bytes``. Raises UnsafeFileError otherwise.
+        file (UnsafeFileError otherwise), and at most
+        USER_FILE_HARD_MAX_BYTES of it is read.
         """
-        text = self.read_text(path)
-        if len(text) > max_bytes:
-            raise UnsafeFileError(f"{path}: larger than {max_bytes} bytes — not read")
-        return text
+        data = self.read_bytes(path)
+        return UserFile(text=data[:USER_FILE_HARD_MAX_BYTES].decode("utf-8", errors="replace"),
+                        size=len(data), truncated=len(data) > USER_FILE_HARD_MAX_BYTES)
+
+    def read_user_text(self, path: str) -> str:
+        return self.read_user_file(path).text
 
 
 class SourceContainmentError(Exception):
@@ -112,27 +137,35 @@ class LiveSource(ArtifactSource):
         with open(self._resolve(path), "rb") as f:
             return f.read()
 
-    def read_user_text(self, path: str, max_bytes: int = USER_FILE_MAX_BYTES) -> str:
+    def read_user_file(self, path: str) -> UserFile:
         # O_NONBLOCK: opening a FIFO would otherwise block forever. The type
-        # and size checks run on the opened fd, so a swap after the check
-        # can't redirect the read.
+        # check runs on the opened fd, so a swap after the check can't
+        # redirect the read. Lines are streamed up to the hard ceiling.
         fd = os.open(self._resolve(path), os.O_RDONLY | os.O_NONBLOCK)
         try:
             st = os.fstat(fd)
             if not stat.S_ISREG(st.st_mode):
                 raise UnsafeFileError(f"{path}: not a regular file — not read")
-            if st.st_size > max_bytes:
-                raise UnsafeFileError(f"{path}: larger than {max_bytes} bytes — not read")
             os.set_blocking(fd, True)
             with os.fdopen(fd, "rb") as f:
                 fd = -1  # now owned by f
-                data = f.read(max_bytes + 1)
+                chunks, total = [], 0
+                # readline(limit): a sparse file of zeros is one endless line.
+                while total < USER_FILE_HARD_MAX_BYTES:
+                    line = f.readline(USER_FILE_HARD_MAX_BYTES - total)
+                    if not line:
+                        break
+                    chunks.append(line)
+                    total += len(line)
+                truncated = total >= USER_FILE_HARD_MAX_BYTES and bool(f.read(1))
         finally:
             if fd != -1:
                 os.close(fd)
-        if len(data) > max_bytes:  # grew after the fstat
-            raise UnsafeFileError(f"{path}: larger than {max_bytes} bytes — not read")
-        return data.decode("utf-8", errors="replace")
+        data = b"".join(chunks)
+        # A file that grew after the fstat is as big as what we read.
+        size = max(st.st_size, len(data) + (1 if truncated else 0))
+        return UserFile(text=data.decode("utf-8", errors="replace"), size=size,
+                        truncated=truncated)
 
     def exists(self, path: str) -> bool:
         try:
@@ -178,6 +211,17 @@ def _with_times(st: os.stat_result, mtime: float, ctime: float) -> os.stat_resul
     return os.stat_result(seq, extra)
 
 
+def _read_capped(path: str) -> bytes:
+    """Read a file from an extracted bundle, refusing one over
+    BUNDLE_READ_MAX_BYTES."""
+    limit = BUNDLE_READ_MAX_BYTES
+    with open(path, "rb") as f:
+        data = f.read(limit + 1)
+    if len(data) > limit:
+        raise UnsafeFileError(f"{path}: larger than {limit} bytes — not read")
+    return data
+
+
 class BundleSource(ArtifactSource):
     """Reads files captured into a bundle and replays captured command output.
     Never touches the live host or runs a command — pure offline replay."""
@@ -214,12 +258,10 @@ class BundleSource(ArtifactSource):
         return resolved
 
     def read_text(self, path: str) -> str:
-        with open(self._resolve(path), encoding="utf-8", errors="replace") as f:
-            return f.read()
+        return self.read_bytes(path).decode("utf-8", errors="replace")
 
     def read_bytes(self, path: str) -> bytes:
-        with open(self._resolve(path), "rb") as f:
-            return f.read()
+        return _read_capped(self._resolve(path))
 
     def exists(self, path: str) -> bool:
         try:
@@ -255,7 +297,6 @@ class BundleSource(ArtifactSource):
         exit_code = 0
         if isinstance(captured, (tuple, list)):
             captured, exit_code = captured
-        with open(captured, encoding="utf-8", errors="replace") as f:
-            # Replay the recorded exit code: a command that timed out during
-            # `collect` (-1) must not replay as a successful empty result.
-            return f.read(), "", exit_code
+        # Replay the recorded exit code: a command that timed out during
+        # `collect` (-1) must not replay as a successful empty result.
+        return _read_capped(captured).decode("utf-8", errors="replace"), "", exit_code

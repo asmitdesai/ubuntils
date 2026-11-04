@@ -1,4 +1,4 @@
-.PHONY: install scan scan-json test clean
+.PHONY: install scan scan-json test lock clean
 
 install:
 	pip install -e '.[dev]'
@@ -13,6 +13,14 @@ scan-json:
 
 test:
 	pytest
+
+# Regenerate requirements.lock (hash-pinned runtime + build deps). Run with
+# Python 3.10, the oldest Python on a supported Ubuntu (22.04), so the pins
+# install on every later one; then `pip-audit --require-hashes --disable-pip
+# -r requirements.lock`.
+lock:
+	pip-compile --generate-hashes --allow-unsafe --no-strip-extras --build-deps-for wheel \
+		--output-file requirements.lock pyproject.toml
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; \

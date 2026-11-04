@@ -83,7 +83,17 @@ def remediate_findings(findings: List[Finding], confirm: bool,
         remediator_cls = REMEDIATOR_REGISTRY.get(finding.rule_id)
         if remediator_cls is None or not finding.remediation_available:
             continue
-        if finding.confidence < min_confidence:
+        if finding.auto_remediation_blocked:
+            # A hard block, not a score: no amount of corroboration lifts it.
+            result = RemediationResult(
+                finding_rule_id=finding.rule_id,
+                status=RemediationStatus.SKIPPED,
+                message=(
+                    f"auto-remediation blocked: {finding.auto_remediation_blocked} — "
+                    "review and remediate manually"
+                ),
+            )
+        elif finding.confidence < min_confidence:
             result = RemediationResult(
                 finding_rule_id=finding.rule_id,
                 status=RemediationStatus.SKIPPED,
@@ -212,7 +222,7 @@ def run_scan(
     # Only a genuinely live scan describes the host the local Wazuh agent is
     # watching; offline analysis must never forward findings here.
     if forward_wazuh and live and is_wazuh_agent_present():
-        write_wazuh_alerts(findings, report_hostname)
+        write_wazuh_alerts(findings, report_hostname, collectors_degraded=collectors_degraded)
 
     bundle_integrity = (bundle_info or {}).get("bundle_integrity", "live")
     rules_failed = list(engine.rules_failed) if engine else ["DetectionEngine"]

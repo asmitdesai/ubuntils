@@ -24,7 +24,8 @@ _REQUIRED_FIELDS = ("id", "severity", "title", "description", "source", "match",
 # Regex rules run against attacker-controlled text (cmdlines, cron commands),
 # and Python's `re` has no timeout. Two guards against catastrophic
 # backtracking: reject the classic nested-quantifier shapes at load time, and
-# cap how much text any rule scans.
+# cap how much text a regex scans. Substring matching is linear, so it gets
+# the full text: a cap there would let an attacker pad a line past it.
 _MAX_MATCH_TEXT = 4096
 _NESTED_QUANTIFIER_RE = re.compile(r"\((?:[^()\\]|\\.)*[+*}](?:[^()\\]|\\.)*\)\s*[+*{]")
 
@@ -43,9 +44,10 @@ class CustomRule:
     def matches(self, path: str, text: str) -> bool:
         if self.match == "glob":
             return fnmatch.fnmatch(path or "", self.pattern)
-        text = (text or "")[:_MAX_MATCH_TEXT]
+        text = text or ""
         if self.match == "substring":
             return self.pattern in text
+        text = text[:_MAX_MATCH_TEXT]
         regex = self.compiled if self.compiled is not None else re.compile(self.pattern)
         return regex.search(text) is not None
 

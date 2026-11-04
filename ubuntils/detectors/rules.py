@@ -74,6 +74,12 @@ _48_HOURS_SECONDS = 48 * 3600
 _DANGEROUS_KEY_OPTIONS = ("command=", "no-pty")
 
 
+def _parent_id(entry: dict):
+    """The collector's parent-directory identity for a remediable finding."""
+    value = entry.get("parent_dir_id")
+    return tuple(value) if value else None
+
+
 def rule_cron_root_exec(artifacts: dict) -> List[Finding]:
     findings = []
     for entry in artifacts.get("cron_entries", []):
@@ -98,6 +104,7 @@ def rule_cron_root_exec(artifacts: dict) -> List[Finding]:
                 raw_value=command,
                 remediation_available=True,
                 remediation_description="Remove the offending cron entry and create a backup",
+                parent_dir_identity=_parent_id(entry),
             ))
     return findings
 
@@ -130,6 +137,7 @@ def rule_cron_tmp_path(artifacts: dict) -> List[Finding]:
                     f"Review {source} and remove or fix the offending line by hand."
                     if is_script else None
                 ),
+                parent_dir_identity=_parent_id(entry),
             ))
     return findings
 
@@ -173,6 +181,7 @@ def rule_ld_preload_inject(artifacts: dict) -> List[Finding]:
             raw_value=defn.get("raw_line", value),
             remediation_available=True,
             remediation_description=remediation,
+            parent_dir_identity=_parent_id(defn),
         )
         if outside:
             apply_signal(finding, "outside_standard_libs", 20,
@@ -308,6 +317,7 @@ def rule_ssh_unauthorized_key(artifacts: dict) -> List[Finding]:
             raw_value=key_entry.get("raw_line") or key_repr,
             remediation_available=True,
             remediation_description=f"Remove this key line from {path}",
+            parent_dir_identity=_parent_id(key_entry),
         )
 
         options = key_entry.get("options", "")
@@ -325,10 +335,13 @@ def rule_ssh_unauthorized_key(artifacts: dict) -> List[Finding]:
         if n_keys > 1 and not (has_dangerous_option or legacy_file):
             # File timestamps say *that* the file changed, not which key was
             # added — every key in it would otherwise be auto-removed, the
-            # admin's own included. Keep these below the remediation gate.
-            apply_signal(finding, "ambiguous_key", -40,
-                         f"{path} holds {n_keys} keys; its timestamps can't tell "
-                         "which one was added")
+            # admin's own included. The signal ranks it; the block is what
+            # keeps it out of --remediate --confirm, since other signals
+            # (a login line any user can forge) could lift the score back up.
+            reason = (f"{path} holds {n_keys} keys; its timestamps can't tell "
+                      "which one was added")
+            apply_signal(finding, "ambiguous_key", -40, reason)
+            finding.auto_remediation_blocked = reason
         findings.append(finding)
     return findings
 
@@ -433,6 +446,7 @@ def rule_sudoers_nopasswd(artifacts: dict) -> List[Finding]:
                 remediation_description=(
                     "Remove the NOPASSWD sudoers entry and create a backup" if auto else None
                 ),
+                parent_dir_identity=_parent_id(rule),
                 guided_remediation=(
                     None if auto else
                     f"Edit with `visudo -f {source}` and drop the NOPASSWD tag or "
@@ -1128,4 +1142,45 @@ def rule_kernel_module_suspicious(artifacts: dict) -> List[Finding]:
             apply_signal(finding, "module_taint", 15,
                          f"kernel taint flags '{taint}': {', '.join(reasons)}")
         findings.append(finding)
+    return findings
+
+
+def rule_user_file_oversized(artifacts: dict) -> List[Finding]:
+    """authorized_keys, shell init files and per-user units over 1 MiB.
+
+    Real ones are a few KB. sshd and bash honour every line however large the
+    file is, so megabytes of padding is a way to push a key or a backdoor past
+    tools (and eyes) that skip or truncate big files. ubuntils reads them
+    anyway, up to its 64 MiB ceiling; this reports the padding itself.
+    """
+    candidates = list(artifacts.get("oversized_authorized_keys", []))
+    candidates += list(artifacts.get("oversized_user_units", []))
+    candidates += [
+        {"path": f.get("source", ""), "size": f.get("size", 0),
+         "truncated": f.get("truncated", False), "kind": "shell init file"}
+        for f in artifacts.get("shell_init_files", [])
+        if f.get("oversized") and f.get("owner") != "system"
+    ]
+    findings = []
+    for entry in candidates:
+        path, size = entry.get("path", ""), entry.get("size", 0)
+        unread = (" ubuntils stopped reading at 64 MiB, so anything past that was not "
+                  "checked." if entry.get("truncated") else "")
+        findings.append(Finding(
+            rule_id="USER_FILE_OVERSIZED",
+            severity=Severity.MEDIUM,
+            title=f"Oversized {entry.get('kind', 'user file')}",
+            description=(
+                f"{path} is {size:,} bytes; files like it are normally a few KB. It is "
+                f"still honoured in full, so padding may be hiding an entry.{unread}"
+            ),
+            artifact_path=path,
+            raw_value=f"{size} bytes",
+            remediation_available=False,
+            remediation_description=None,
+            guided_remediation=(
+                f"Look past the padding: `grep -nv '^\\s*\\(#\\|$\\)' {path} | head`, "
+                "then restore the file from a known-good copy."
+            ),
+        ))
     return findings

@@ -35,7 +35,8 @@ class EnvironmentCollector(BaseCollector):
                 self._add_shell_init(f"{home.rstrip('/')}/{filename}", username,
                                      definitions, shell_init_files, user_controlled=True)
 
-        return {"env_definitions": definitions, "shell_init_files": shell_init_files}
+        return {"env_definitions": self.tag_parent_dirs(definitions, "source"),
+                "shell_init_files": shell_init_files}
 
     def _add_shell_init(self, path: str, owner: str, definitions: list,
                         shell_init_files: list, user_controlled: bool) -> None:
@@ -45,8 +46,8 @@ class EnvironmentCollector(BaseCollector):
             st = self.source.lstat(path)
             # A user's own files can be a FIFO, /dev/zero, or a huge sparse
             # file planted to hang the scan; read those defensively.
-            content = (self.source.read_user_text(path) if user_controlled
-                       else self.source.read_text(path))
+            user_file = self.source.read_user_file(path) if user_controlled else None
+            content = user_file.text if user_file else self.source.read_text(path)
         except Exception as exc:
             self.degraded.append(f"skipped {path}: {exc}")
             return
@@ -57,6 +58,10 @@ class EnvironmentCollector(BaseCollector):
             "mtime": float(st.st_mtime),
             "ctime": float(st.st_ctime),
             "content": content,
+            "size": user_file.size if user_file else len(content),
+            # bash sources every byte, so padding can't hide a line from it.
+            "oversized": bool(user_file and user_file.oversized),
+            "truncated": bool(user_file and user_file.truncated),
         })
 
     def _get_login_users(self):

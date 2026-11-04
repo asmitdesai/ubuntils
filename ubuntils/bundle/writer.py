@@ -49,7 +49,17 @@ def write_bundle(
     metadata: dict,
 ) -> str:
     start = datetime.now(timezone.utc).isoformat()
+    # Create the archive first, with owner-only permissions — the default
+    # umask-derived mode (typically 0644) would otherwise make a bundle
+    # containing /etc/shadow world-readable the instant it's created.
+    # open_private_for_write also refuses a symlink pre-planted at out_path
+    # (we run as root), and fchmods the fd rather than the path. exclusive:
+    # a file someone else pre-created would still be theirs (and readable by
+    # them) after we wrote /etc/shadow into it. Opening it before collecting
+    # means a taken path fails in a second, not after minutes of dpkg --verify.
+    out = os.fdopen(open_private_for_write(out_path, 0o600, exclusive=True), "wb")
     work = tempfile.mkdtemp(prefix="ubuntils_collect_")
+    completed = False
     try:
         files_dir = os.path.join(work, "files")
         cmds_dir = os.path.join(work, "commands")
@@ -107,18 +117,19 @@ def write_bundle(
         with open(os.path.join(work, "manifest.json"), "w", encoding="utf-8") as f:
             json.dump(manifest_dict, f, indent=2, sort_keys=True)
 
-        # Create the archive with owner-only permissions up front — the default
-        # umask-derived mode (typically 0644) would otherwise make a bundle
-        # containing /etc/shadow world-readable the instant it's created.
-        # open_private_for_write also refuses a symlink pre-planted at
-        # out_path (we run as root), and fchmods the fd rather than the path.
-        fd = open_private_for_write(out_path, 0o600)
-        with os.fdopen(fd, "wb") as fh:
+        with out as fh:
             with tarfile.open(fileobj=fh, mode="w:gz") as tf:
                 tf.add(work, arcname="bundle", filter=_restrict_tarinfo_permissions)
-
+        completed = True
         return out_path
     finally:
+        if not completed:
+            # Don't leave a truncated bundle that looks like a real one.
+            out.close()
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
         # Always clean up the staging directory to prevent sensitive data
         # from persisting unencrypted in /tmp after collection.
         shutil.rmtree(work, ignore_errors=True)

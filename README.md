@@ -30,7 +30,7 @@ The gap is a tool that runs on the live system right now, covers the most common
 ubuntils runs in four sequential stages:
 
 1. **Collection** — Eleven collectors gather forensic artifacts concurrently from `/proc`, cron tables, systemd units, SSH keys, sudoers files, environment definitions, package integrity (`dpkg --verify`), PAM/NSS config, and loaded kernel modules. Most collectors finish in a second or two; `dpkg --verify`, which re-checks every installed package file, dominates — a full scan took 29–68 seconds on an Ubuntu 26.04 arm64 desktop VM.
-2. **Detection** — A detection engine runs all sixteen built-in rules — plus any custom rules loaded with `--rules` — over the collected artifacts, producing a ranked, confidence-scored findings list in about one second.
+2. **Detection** — A detection engine runs all seventeen built-in rules — plus any custom rules loaded with `--rules` — over the collected artifacts, producing a ranked, confidence-scored findings list in about one second.
 3. **Timeline** — A timeline builder reads syslog, journald, and auditd in parallel and correlates events chronologically, adding roughly 0.3 seconds. Each finding is then auto-correlated against the timeline, so it carries the nearby events that relate to it.
 4. **Output** — Results appear either in an interactive four-tab TUI (default) or as structured JSON on stdout (`--json`).
 
@@ -42,37 +42,59 @@ ubuntils itself makes no network calls, and every feature — custom rules and c
 
 ## Installation
 
-**Ubuntu 22.04+ and any system with PEP 668 (recommended):**
+ubuntils runs as root on a host that may be compromised, so install it where only root can change it. If the code lives somewhere your user can write (pipx's default `~/.local`, a venv in your home directory, an editable checkout), then anything running as your user, possibly the attacker, can modify ubuntils and get root the next time you run it. Before escalating, `scan`, `collect` and `rollback` check that the interpreter, `sys.prefix` and the ubuntils package, plus every directory above them, are root-owned and not writable by group or others. If any of them fails the check, ubuntils refuses to escalate unless you pass `--allow-user-install` (see below).
 
-Ubuntu 22.04+ blocks system-wide `pip install`. Use `pipx` — it handles the environment transparently so you never think about it:
+Install a release, not `main`. Replace `vX.Y.Z` below with the latest tag from the [Releases](https://github.com/asmitdesai/ubuntils/releases) page.
+
+**Recommended: root-owned install with pipx 1.5+ (`--global`)**
+
+```bash
+sudo pipx install --global "git+https://github.com/asmitdesai/ubuntils.git@vX.Y.Z"
+ubuntils scan              # run as your user; it re-invokes itself with sudo
+```
+
+From PyPI, pin the same release: `sudo pipx install --global "ubuntils==X.Y.Z"`.
+
+**Root-owned virtual environment** (any Ubuntu; the `pipx` in Ubuntu 24.04's apt is older than 1.5):
+
+```bash
+sudo python3 -m venv /opt/ubuntils
+sudo /opt/ubuntils/bin/pip install "git+https://github.com/asmitdesai/ubuntils.git@vX.Y.Z"
+sudo ln -s /opt/ubuntils/bin/ubuntils /usr/local/bin/ubuntils
+ubuntils scan
+```
+
+Both put the command on sudo's `secure_path` (`/usr/local/bin`), so `sudo ubuntils …` from a root shell works too. To pin every dependency by hash as well, see [Verified dependencies](#verified-dependencies).
+
+**Per-user install (development, or a lab VM you don't mind trusting):**
 
 ```bash
 sudo apt install pipx -y
 pipx ensurepath            # then open a new shell
 git clone https://github.com/asmitdesai/ubuntils.git
 cd ubuntils
+git checkout vX.Y.Z
 pipx install -e .
-ubuntils scan              # not `sudo ubuntils scan` — see below
+ubuntils --allow-user-install scan
 ```
 
-Run it as your normal user: `scan` and `collect` re-invoke themselves under `sudo`. Typing `sudo ubuntils …` yourself fails with `command not found`, because sudo's `secure_path` doesn't include `~/.local/bin` where pipx puts the command. If you need to start it from a root shell, call the installed binary by path (`~youruser/.local/bin/ubuntils scan`), or install into a virtual environment instead:
+ubuntils will refuse to escalate from this install until you pass `--allow-user-install` (before the subcommand), and it lists the user-writable paths it found. Typing `sudo ubuntils …` yourself fails with `command not found`, because sudo's `secure_path` doesn't include `~/.local/bin` where pipx puts the command.
+
+ubuntils requires root for full artifact access. If you run `ubuntils scan` as a non-root user it will automatically re-invoke itself with `sudo` using the same Python interpreter (by absolute path, in isolated mode `-I`), so the correct environment is used without forwarding your `PATH`, `PYTHON*` variables or working directory into the root process. Every external command (`ss`, `dpkg`, `systemctl`, …) is resolved on a fixed, root-owned search path, never your `PATH`. Running without root will skip `/etc/shadow`, some `/proc` entries, and protected cron files, and will log warnings for each. A report that `scan --output FILE` creates after re-invoking itself through `sudo` is owned by you (still mode `0600`), so you can open it without `sudo`; an existing file is overwritten only if it belongs to you (or root) and isn't a hard link, and it keeps its owner. `collect` bundles stay root-only because they contain `/etc/shadow`, and are never written into a file that already exists.
+
+### Verified dependencies
+
+`requirements.lock` pins every runtime dependency, plus the build backend, to an exact version and SHA-256. With `--require-hashes`, pip refuses anything that doesn't match, including a compromised or substituted package on the index. Take the lock from the same release tag you install:
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -e .
-.venv/bin/ubuntils scan
+git clone --branch vX.Y.Z https://github.com/asmitdesai/ubuntils.git ubuntils-src
+sudo python3 -m venv /opt/ubuntils
+sudo /opt/ubuntils/bin/pip install --require-hashes -r ubuntils-src/requirements.lock
+sudo /opt/ubuntils/bin/pip install --no-deps --no-build-isolation ./ubuntils-src
+sudo ln -s /opt/ubuntils/bin/ubuntils /usr/local/bin/ubuntils
 ```
 
-**Older systems / manual install:**
-
-```bash
-git clone https://github.com/asmitdesai/ubuntils.git
-cd ubuntils
-pip install -r requirements.txt -e .
-ubuntils scan
-```
-
-ubuntils requires root for full artifact access. If you run `ubuntils scan` as a non-root user it will automatically re-invoke itself with `sudo` using the same Python interpreter (by absolute path), so the correct environment is used without forwarding your `PATH` into the root process. Every external command (`ss`, `dpkg`, `systemctl`, …) is resolved on a fixed, root-owned search path, never your `PATH`. Running without root will skip `/etc/shadow`, some `/proc` entries, and protected cron files, and will log warnings for each. A report that `scan --output FILE` creates after re-invoking itself through `sudo` is owned by you (still mode `0600`), so you can open it without `sudo`; an existing file keeps its owner, and `collect` bundles stay root-only because they contain `/etc/shadow`.
+`--no-deps --no-build-isolation` installs ubuntils itself using only the hash-checked packages from the first step. The lock targets Python 3.10+ (Ubuntu 22.04 and later). It's regenerated with `make lock` and audited by `pip-audit` in CI.
 
 ---
 
@@ -147,7 +169,8 @@ ubuntils scan [OPTIONS]
   --verbose           Verbose structlog output
 
 ubuntils collect [OPTIONS]
-  --output FILE       Bundle path to write (default ./ubuntils-bundle-<timestamp>.tar.gz)
+  --output FILE       Bundle path to write; must not exist yet
+                      (default /var/lib/ubuntils/bundles/ubuntils-bundle-<timestamp>-<random>.tar.gz)
   --verbose           Verbose structlog output
 
 ubuntils analyze (BUNDLE | --root PATH) [OPTIONS]
@@ -159,6 +182,9 @@ ubuntils analyze (BUNDLE | --root PATH) [OPTIONS]
   --rules FILE        YAML file of custom detection rules to add (same format as scan)
   --since TIME        Limit the timeline to events since TIME (e.g. '24h', '7d', '2026-05-20')
   --verbose           Verbose structlog output
+
+ubuntils rollback BACKUP_PATH [--force]
+  Restore a remediated file from its backup (see Remediation > Rollback)
 
 ubuntils version
   Print version string and exit
@@ -232,7 +258,7 @@ ubuntils scan --json --rules custom_rules.yaml
 | `process` | The process cmdline (path: the exe path) |
 | `network` | The connection description (path: `remote_addr:remote_port`) |
 
-`regex` and `substring` match the text column; `glob` matches the path column — so a `network` glob such as `203.0.113.*:*` targets the remote endpoint. Custom-rule findings are flag-only (never auto-remediated) and are still subject to `--config` suppression. A sample lives at [`examples/custom_rules.yaml`](examples/custom_rules.yaml).
+`regex` and `substring` match the text column; `glob` matches the path column — so a `network` glob such as `203.0.113.*:*` targets the remote endpoint. A `substring` rule searches the whole text. A `regex` rule searches only the first 4,096 characters, and patterns with nested quantifiers such as `(a+)+` are rejected at load time. Both guard against catastrophic backtracking on attacker-controlled text, since Python's `re` has no timeout. So prefer `substring` for anything an attacker could push past 4,096 characters with padding. Custom-rule findings are flag-only (never auto-remediated) and are still subject to `--config` suppression. A sample lives at [`examples/custom_rules.yaml`](examples/custom_rules.yaml).
 
 ### Report integrity
 
@@ -259,7 +285,7 @@ assert hashlib.sha256(json.dumps(doc, indent=2, sort_keys=True).encode()).hexdig
 ubuntils collect --output /path/to/bundle.tar.gz
 ```
 
-Requires root, like `scan`. Reads a fixed list of files (`/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/sudoers`, `/etc/ld.so.preload`, `/etc/environment`, `/etc/crontab`, `/etc/profile`, `/etc/nsswitch.conf`, OS release, hostname and timezone, dpkg's status file and `path-exclude` config, `/var/log/syslog`, `/var/log/messages`, `/var/log/audit/audit.log`) and runs a fixed list of commands (`ss -tunap`, `netstat -tunap`, `systemctl list-timers` in both JSON and text form, and `journalctl -o json` for the last 7 days), hashes each captured item, and writes everything plus a `manifest.json` into a `.tar.gz` bundle. The captured log files and journalctl output are what let `analyze BUNDLE` build a real timeline offline. If `--output` is omitted, the bundle is written to `./ubuntils-bundle-<UTC timestamp>.tar.gz` in the current directory.
+Requires root, like `scan`. Reads a fixed list of files (`/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/sudoers`, `/etc/ld.so.preload`, `/etc/environment`, `/etc/crontab`, `/etc/profile`, `/etc/nsswitch.conf`, OS release, hostname and timezone, dpkg's status file and `path-exclude` config, `/var/log/syslog`, `/var/log/messages`, `/var/log/audit/audit.log`) and runs a fixed list of commands (`ss -tunap`, `netstat -tunap`, `systemctl list-timers` in both JSON and text form, and `journalctl -o json` for the last 7 days), hashes each captured item, and writes everything plus a `manifest.json` into a `.tar.gz` bundle. The captured log files and journalctl output are what let `analyze BUNDLE` build a real timeline offline. If `--output` is omitted, the bundle is written to `/var/lib/ubuntils/bundles/ubuntils-bundle-<UTC timestamp>-<random>.tar.gz`. That directory is created `0700` root-only, and `collect` refuses to use it if it is a symlink or owned by anyone else. The working directory isn't used, since it may belong to the attacker. `collect` never writes into an existing file, so an `--output` path that already exists is an error.
 
 ### `ubuntils analyze`
 
@@ -316,9 +342,9 @@ bundle/
 `analyze`'s `scan_metadata.bundle_integrity` reports one of three values:
 
 - `"live"` — `scan` and `analyze --root` report this; there is no bundle to verify.
-- `"ok"` — `analyze BUNDLE` verified `bundle_sha256` against the manifest and every captured file's SHA-256 against its bundle content. That rules out corruption and naive edits. The digests are unkeyed, though: someone who rewrites a file *and* the manifest can make a forged bundle verify, so record `sha256sum bundle.tar.gz` out-of-band when you collect it.
-- `analyze` also refuses a bundle whose manifest names a path outside the bundle, and never follows a path from the bundle's own files (its `/etc/passwd` home directories, its sudoers includes) out of the extraction directory — analysing a hostile host's bundle can't read the analyst's files.
-- `"mismatch"` — the manifest digest, a captured file's hash, or a captured command output's hash didn't match. Something in the bundle was modified, truncated, or corrupted after collection, and nothing derived from it should be trusted as chain-of-custody-clean. `analyze` still produces its report, but prints a red warning to stderr, shows an integrity banner at the top of the TUI Summary tab, and **exits with status 3**, so scripts can't mistake a tampered bundle's results for authoritative ones.
+- `"ok"` — `analyze BUNDLE` verified `bundle_sha256` against the manifest, every captured file's SHA-256 against its bundle content, and that every file in `files/` and `commands/` is one the manifest lists as captured. That rules out corruption and naive edits. The digests are unkeyed, though: someone who rewrites a file *and* the manifest can make a forged bundle verify, so record `sha256sum bundle.tar.gz` out-of-band when you collect it.
+- `analyze` also refuses a bundle whose manifest names a path outside the bundle, or that has more than 10,000 members, a member over 512 MiB or more than 2 GiB in total (checked from the headers before anything is extracted), and never follows a path from the bundle's own files (its `/etc/passwd` home directories, its sudoers includes) out of the extraction directory — analysing a hostile host's bundle can't read the analyst's files.
+- `"mismatch"` — the manifest digest, a captured file's hash, or a captured command output's hash didn't match, or the bundle holds a file the manifest doesn't vouch for: one it doesn't list at all (an injected `files/etc/cron.d/x`), or one it recorded as absent on the host (an injected `files/etc/ld.so.preload`). Something in the bundle was modified, truncated, or corrupted after collection, and nothing derived from it should be trusted as chain-of-custody-clean. `analyze` still produces its report, but prints a red warning to stderr, shows an integrity banner at the top of the TUI Summary tab, and **exits with status 3**, so scripts can't mistake a tampered bundle's results for authoritative ones.
 
 ### ⚠️ Offline analysis has real detection gaps — read this before relying on it
 
@@ -428,7 +454,7 @@ Press `Y` to confirm. The remediator runs in a background thread. When it comple
 ```
 ✓ Remediated
 Backup:    /var/backups/ubuntils/20260115_142201/etc_cron.d_cleanup
-Rollback:  cp /var/backups/ubuntils/20260115_142201/etc_cron.d_cleanup /etc/cron.d/cleanup
+Rollback:  ubuntils rollback /var/backups/ubuntils/20260115_142201/etc_cron.d_cleanup
 ```
 
 On failure, the row is marked `[remediation failed]` and the detail pane shows the error. The backup is always created before any change is attempted. A finding that was fixed can't be remediated a second time.
@@ -465,6 +491,7 @@ A summary view of the scan: detected Ubuntu version, architecture, scan duration
 | PAM_BACKDOOR | HIGH | No | A `pam_permit.so` line in an /etc/pam.d/* auth/account stack that can grant access on its own (`sufficient`/`success=done`, or no `pam_deny`-style gate in that stack), or an NSS module in /etc/nsswitch.conf outside an allowlist (files/sss/ldap/winbind/...) |
 | KERNEL_MODULE_SUSPICIOUS | MEDIUM / LOW | No | Loaded kernel modules the kernel marks as out-of-tree, unsigned, proprietary or force-loaded (MEDIUM), unless allowlisted; modules shipped with the running kernel are not reported. Without taint data (offline, older bundles) any module outside an allowlist of common built-ins is reported LOW |
 | SETUID_INVENTORY | LOW | No | Unexpected setuid or setgid binaries outside a known baseline set (the two bits are checked and reported separately) |
+| USER_FILE_OVERSIZED | MEDIUM | No | An `authorized_keys` file, per-user shell init file or per-user systemd unit larger than 1 MiB (real ones are a few KB) |
 
 ### Why each rule exists
 
@@ -512,7 +539,7 @@ Raw value:     ExecStart=/tmp/.sys/update
 Remediation:   not available
 ```
 
-**SSH_UNAUTHORIZED_KEY** — A newly added SSH key grants persistent remote access independent of passwords. Keys are read from every file sshd would consult: `~/.ssh/authorized_keys`, the legacy `~/.ssh/authorized_keys2` (still honoured by default, and a classic hiding place — any key there is reported whatever its age), and every `AuthorizedKeysFile` in `sshd_config` and `sshd_config.d`, with `%h`/`%u` expanded. The 7-day window checks both mtime and ctime: `touch -d` can backdate mtime but not ctime, so a key whose mtime was pushed back is still reported. A recent ctime behind an old mtime adds only a weak `mtime_predates_ctime` signal (+10), since `useradd -m`, `cp -p`, `tar` and `rsync -a` produce the same pattern legitimately. File timestamps can't say *which* key in a file was added, so when a file holds several keys and none has a dangerous option, each is scored below the auto-remediation gate (`ambiguous_key`) — `--remediate --confirm` won't strip the admin's keys along with the attacker's. Remediation removes the exact line, options included.
+**SSH_UNAUTHORIZED_KEY** — A newly added SSH key grants persistent remote access independent of passwords. Keys are read from every file sshd would consult: `~/.ssh/authorized_keys`, the legacy `~/.ssh/authorized_keys2` (still honoured by default, and a classic hiding place — any key there is reported whatever its age), and every `AuthorizedKeysFile` in `sshd_config` and `sshd_config.d`, with `%h`/`%u` expanded. The 7-day window checks both mtime and ctime: `touch -d` can backdate mtime but not ctime, so a key whose mtime was pushed back is still reported. A recent ctime behind an old mtime adds only a weak `mtime_predates_ctime` signal (+10), since `useradd -m`, `cp -p`, `tar` and `rsync -a` produce the same pattern legitimately. File timestamps can't say *which* key in a file was added, so when a file holds several keys and none has a dangerous option, each is marked `auto_remediation_blocked` (and scored down by `ambiguous_key`, −40): `--remediate --confirm` skips it whatever its confidence, so it can't strip the admin's keys along with the attacker's. You can still remove such a key yourself with `R` in the TUI, which shows the reason as a warning first. Timeline corroboration for a key needs a login line naming that key's fingerprint (`SHA256:…`, as sshd logs it); a line naming only the user, such as `Accepted publickey for alice`, is shown as a related event but doesn't raise the score, since any user can write one with `logger -t sshd`. Remediation removes the exact line, options included.
 
 *Example finding:*
 ```
@@ -566,6 +593,8 @@ Artifact:      /etc/shadow
 Raw value:     eve::
 Remediation:   not available
 ```
+
+**USER_FILE_OVERSIZED** — sshd honours a key on any line of `authorized_keys`, and bash runs every line of `~/.bashrc`, however big the file is. Megabytes of padding in front of one malicious line is a cheap way to slip past tools, and people, that skip or truncate large files. ubuntils reads these files anyway, up to a 64 MiB ceiling, so the key or backdoor past the padding is still reported by its own rule. This rule reports the padding itself. Flag-only: look past the padding (`grep -nv '^\s*\(#\|$\)' FILE`) and restore the file from a known-good copy. The example Wazuh rules raise it to level 10 (rule 100105).
 
 **PROCESS_SUSPICIOUS_CONNECTION** — Persistence is only half the picture; a foothold that never talks to anything is rarely the one you care about. This rule joins the process and network collectors by PID so a flagged process arrives with its current connections attached. An executable staged in `/tmp` holding an established outbound socket is HIGH; a legitimate binary reaching a non-standard remote port is MEDIUM and worth a look. Connections accepted on a local listening port are treated as inbound: their "remote port" is the client's ephemeral port, so they only count toward the executable-location check (a bind shell in `/tmp` is still HIGH, your own SSH session is not flagged). Loopback traffic, including IPv4-mapped `::ffff:127.0.0.1`, is ignored. This is a snapshot of current state, not continuous monitoring — a beacon that is sleeping when you scan will not appear. Flag-only.
 
@@ -651,6 +680,17 @@ Artifact:      /tmp/.hidden/backdoor
 Raw value:     setuid
 Remediation:   not available
 ```
+
+### Not covered
+
+These persistence and access paths are known to be outside what ubuntils checks today. A clean report says nothing about them, so check them by hand:
+
+- **`AuthorizedKeysCommand`** in `sshd_config`: sshd runs this program to fetch extra keys for a login, so a planted command can grant access without touching any `authorized_keys` file.
+- **`~/.ssh/rc` and `/etc/ssh/sshrc`**: run by sshd at every SSH login, before the user's shell.
+- **sshd `Include` directives outside `/etc/ssh/sshd_config.d/`**: `AuthorizedKeysFile` settings in other included files aren't read.
+- **`pam_exec.so`** lines in `/etc/pam.d/*`: they run an arbitrary program during authentication or session setup. `PAM_BACKDOOR` only looks at `pam_permit.so` and NSS modules.
+
+TODO: flag-only rules for `AuthorizedKeysCommand` and `pam_exec.so`. Both are easy to detect, but stock cloud images set `AuthorizedKeysCommand` (EC2 Instance Connect, GCE OS Login). The rules need a known-good list validated on real hosts first, or they would report every such host.
 
 ---
 
@@ -754,7 +794,7 @@ A `LOW`-band finding is not dismissed or hidden — it still appears in the find
 
 ## Remediation
 
-Five of the sixteen detection rules have automated remediation: `CRON_ROOT_EXEC`, `CRON_TMP_PATH`, `LD_PRELOAD_INJECT`, `SSH_UNAUTHORIZED_KEY`, and `SUDOERS_NOPASSWD`. The rest are flag-only and will never be auto-remediated, because acting on them safely needs a human to look first.
+Five of the seventeen detection rules have automated remediation: `CRON_ROOT_EXEC`, `CRON_TMP_PATH`, `LD_PRELOAD_INJECT`, `SSH_UNAUTHORIZED_KEY`, and `SUDOERS_NOPASSWD`. The rest are flag-only and will never be auto-remediated, because acting on them safely needs a human to look first.
 
 ### Guided remediation
 
@@ -780,14 +820,25 @@ ubuntils scan --remediate --confirm --min-confidence 75  # only HIGH-confidence 
 
 Every remediation follows the same pattern regardless of how it is triggered:
 
-1. Detect if the artifact path is a symlink — refuse if so (prevents root writing through attacker-controlled symlinks)
-2. Create a timestamped backup at `/var/backups/ubuntils/YYYYMMDD_HHMMSS/` with mode `0700`
+1. Reach the artifact's directory by walking from `/` one component at a time without following symlinks, and refuse if any component is a symlink, if the file itself is one, or if the directory isn't the one the finding was made on (its device, inode and owner are recorded at detection time). An attacker who swaps `~/.ssh` for a link to another user's `.ssh` between detection and remediation gets a refusal, not a root write into the other directory. Every later read, write, `fchmod`/`fchown` and `rename` happens relative to that directory handle
+2. Create a timestamped backup at `/var/backups/ubuntils/YYYYMMDD_HHMMSS/` (directory mode `0700`, file mode `0600`)
 3. Validate current state (the exact line must still be present)
 4. Apply the minimum possible change — cron entries and keys removed line by line; LD_PRELOAD lines in shell init files commented out; entries in `/etc/ld.so.preload` removed (the loader has no comment syntax there, so a commented entry would still load). For sudoers, the edited content is checked with `visudo -cf` on a temporary copy *before* the real file is touched
-5. Write atomically — new content goes to a temp file beside the original (same mode and owner), is fsync'd, then renamed over it, so a crash mid-write can't leave a truncated `/etc/sudoers`
-6. Verify the exact line is gone
+5. Write atomically — new content goes to a randomly named temp file beside the original (same mode and owner), is fsync'd, then renamed over it, so a crash mid-write can't leave a truncated `/etc/sudoers`
+6. Record a rollback sidecar, `<backup>.json`, holding the original path, owner, group and mode, the parent directory's device and inode, and the SHA-256 of the content remediation left behind
+7. Verify the exact line is gone
 
-If any step fails, remediation stops immediately, the system is left unchanged, and the full error is reported with the backup path and rollback command. Sudo access is protected two ways: `%group` NOPASSWD rules (like `%sudo`) are flag-only and never auto-removed, and the sudoers remediator refuses to remove the last rule from the main sudoers file.
+If any step fails, remediation stops immediately, the system is left unchanged, and the full error is reported with the backup path. Sudo access is protected two ways: `%group` NOPASSWD rules (like `%sudo`) are flag-only and never auto-removed, and the sudoers remediator refuses to remove the last rule from the main sudoers file.
+
+### Rollback
+
+```bash
+ubuntils rollback /var/backups/ubuntils/20260115_142201/etc_cron.d_cleanup
+```
+
+Every successful remediation prints this command. It reads the backup's sidecar and restores the file through the same safe path as remediation: no symlinks in any component, an atomic rename, and the original owner and mode. It refuses when the file has changed since it was remediated, when its directory is no longer the same one (a different inode), or when the backup or sidecar isn't root-owned. `--force` restores anyway after you've checked. Even with `--force`, a symlink in the path, a symlinked target or a non-regular file is always refused.
+
+Don't roll back with `cp backup original`. Run as root, `cp` follows a symlink at the destination, so an attacker who replaced the remediated file with a link to `/etc/shadow` would get root to overwrite it with the backup's content, which they wrote in the first place.
 
 ---
 
@@ -856,8 +907,13 @@ non-production environment before relying on them.
 | `raw_value` | string | The raw line/value that triggered the rule |
 | `remediation_available` | bool | Whether ubuntils has a remediator for this rule |
 | `confidence` | int (0–100) | Confidence score — see [Confidence scoring](#confidence-scoring) |
-| `confidence_band` | string | `HIGH` \| `MEDIUM` \| `LOW`; rule 100104 in the example escalates HIGH-severity findings with a HIGH band |
+| `confidence_band` | string | `HIGH` \| `MEDIUM` \| `LOW`; rule 100104 in the example escalates HIGH-severity findings with a HIGH band, and rule 100105 raises `USER_FILE_OVERSIZED` |
 | `related_events` | array (optional) | Correlated timeline events (`timestamp`, `source`, `program`, `description`), if any |
+| `truncated` | bool (optional) | `true` if anything in this line was cut to keep it bounded (see below) |
+
+Every string field can carry attacker text, such as a forged log line or a padded file's path, so each line is bounded. String fields are cut to 2,048 characters, related event descriptions to 1,024, and if the line is still over 32 KiB its `related_events` are dropped. The full finding is always in the JSON report.
+
+If any collector was degraded (a file it couldn't read, a command that failed), the scan also forwards one summary event with `rule_id` `UBUNTILS_SCAN_DEGRADED`, severity `MEDIUM`, the reasons in `description` and the collector names in `collectors_degraded`, so a partial scan doesn't look clean in the SIEM.
 
 ---
 
@@ -913,7 +969,7 @@ sudo tools/lab/seed-lab.sh clean      # removes everything it planted
 | `PACKAGE_TAMPERED` | one comment line appended to `base-files`' `/usr/share/base-files/dot.bashrc` (restored on `clean`) |
 | `KERNEL_MODULE_SUSPICIOUS` | the harmless `dummy` network module |
 
-Nothing it plants can run or let anyone in: cron entries never fire, units are never enabled, the lab accounts are locked, no private key exists, and URLs use the reserved `.invalid` domain. Every action is recorded in `/var/lib/ubuntils-lab/actions`, and `clean` undoes them in reverse. `PROCESS_SUSPICIOUS_CONNECTION` is left out because it needs a live outbound connection; `USER_EMPTY_PASSWORD` needs a genuinely passwordless login, so it's only planted with `plant --with-empty-password`.
+Nothing it plants can run or let anyone in: cron entries never fire, units are never enabled, the lab accounts are locked, no private key exists, and URLs use the reserved `.invalid` domain. Every action is recorded in `/var/lib/ubuntils-lab/actions`, and `clean` undoes them in reverse. `PROCESS_SUSPICIOUS_CONNECTION` is left out because it needs a live outbound connection; `USER_EMPTY_PASSWORD` needs a genuinely passwordless login, so it's only planted with `plant --with-empty-password`. `USER_FILE_OVERSIZED` isn't planted: it needs a multi-megabyte padded file in a user's home.
 
 The remediable findings make a good in-TUI remediation demo: press **R** on the cron, sudoers, SSH or `LD_PRELOAD` finding. Backups from those fixes stay in `/var/backups/ubuntils/` after `clean`.
 

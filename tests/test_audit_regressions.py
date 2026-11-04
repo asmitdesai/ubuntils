@@ -89,6 +89,7 @@ def test_C2_ensure_root_does_not_forward_caller_path(monkeypatch):
     monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(cli.os, "execv", lambda path, args: captured.update(path=path, args=args))
     monkeypatch.setattr(cli, "resolve_command", lambda name: "/usr/bin/sudo")
+    monkeypatch.setattr(cli, "install_trust_problems", lambda: [])  # see F-07
     cli._ensure_root()
     assert captured["path"] == "/usr/bin/sudo"
     assert not any(a.startswith("PATH=") for a in captured["args"])

@@ -1,4 +1,5 @@
 import os
+import secrets
 import socket
 import sys
 import tarfile
@@ -20,12 +21,17 @@ from ubuntils.utils.baseline import load_baseline
 from ubuntils.utils.config import load_allowlist
 from ubuntils.utils.host import get_ubuntu_version
 from ubuntils.utils.logging import configure_logging
-from ubuntils.utils.safe_io import write_private_text
+from ubuntils.utils.safe_io import ensure_private_dir, write_private_text
 from ubuntils.utils.shell import resolve_command
 from ubuntils.utils.since_parser import parse_since
 
 # Exit status for `analyze` when the bundle fails integrity verification.
 EXIT_BUNDLE_TAMPERED = 3
+
+# Where `collect` writes when no --output is given. A bundle holds
+# /etc/shadow; the working directory may belong to the attacker, and a name
+# predictable to the second lets them pre-create it.
+DEFAULT_BUNDLE_DIR = "/var/lib/ubuntils/bundles"
 
 logger = structlog.get_logger()
 
@@ -73,32 +79,103 @@ COLLECT_COMMANDS = [
     ("lsmod", ["lsmod"]),
 ]
 
-# What the root re-exec runs. `python -m ubuntils.cli` (and plain `-c`) put the
-# current directory first on sys.path, so running `ubuntils scan` from inside
-# /tmp or a compromised user's home would import a planted ubuntils/ (or
-# click.py, yaml.py, …) *as root*. The bootstrap drops that entry before
-# importing anything. sitecustomize is not a concern: site runs before the
-# cwd entry is added, and sudo's env_reset strips PYTHONPATH.
+# What the root re-exec runs: `python -I -c REEXEC_BOOTSTRAP`. `python -m
+# ubuntils.cli` (and plain `-c`) put the current directory first on sys.path,
+# so running `ubuntils scan` from inside /tmp or a compromised user's home
+# would import a planted ubuntils/ (or click.py, yaml.py, …) *as root*. -I
+# (isolated mode: no cwd or script dir on sys.path, no PYTHON* variables, no
+# user site-packages) closes that on every supported Python; a venv's own
+# site-packages still load, since they are found from pyvenv.cfg next to the
+# interpreter, not the environment (checked on 3.9 and 3.11). The bootstrap
+# also drops a leading "" entry, for anyone running it without -I — but only
+# that entry: under -I on 3.9/3.10, sys.path[0] is the stdlib zip.
 REEXEC_BOOTSTRAP = (
     "import sys; "
-    "getattr(sys.flags, 'safe_path', False) or sys.path.pop(0); "
+    "sys.path[:1] == [''] and sys.path.pop(0); "
     "sys.argv[0] = 'ubuntils'; "
     "from ubuntils.cli import main; main()"
 )
+
+
+def _untrusted(path: str) -> list:
+    """Why root shouldn't run code from ``path``: it, or a directory above
+    it, isn't root-owned or is writable by group/others (a sticky,
+    root-owned directory like /tmp is fine — only its owner can rename
+    entries in it)."""
+    problems = []
+    current = os.path.realpath(path)
+    while True:
+        try:
+            st = os.stat(current)
+        except OSError as exc:
+            problems.append(f"{current}: cannot stat ({exc.strerror})")
+            break
+        if st.st_uid != 0:
+            problems.append(f"{current} is owned by uid {st.st_uid}")
+        elif st.st_mode & 0o022 and not (os.path.isdir(current) and st.st_mode & 0o1000):
+            problems.append(f"{current} is writable by group or others")
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return problems
+
+
+def install_trust_problems(paths=None) -> list:
+    """Reasons the code `sudo` is about to run as root could be changed by
+    someone other than root: the interpreter, sys.prefix and the ubuntils
+    package directory, and every directory above them."""
+    if paths is None:
+        import ubuntils
+        paths = [sys.executable, sys.prefix, os.path.dirname(ubuntils.__file__)]
+    seen, problems = set(), []
+    for path in paths:
+        for problem in _untrusted(path):
+            if problem not in seen:
+                seen.add(problem)
+                problems.append(problem)
+    return problems
+
+
+def _allow_user_install() -> bool:
+    ctx = click.get_current_context(silent=True)
+    return bool(ctx and ctx.find_root().params.get("allow_user_install"))
 
 
 def _ensure_root() -> None:
     """Re-exec under sudo if not running as root.
 
     The re-exec names this interpreter by absolute path (sys.executable) and
-    runs REEXEC_BOOTSTRAP, so neither the caller's PATH nor their working
-    directory can influence what runs as root. PATH is deliberately *not*
-    forwarded: `sudo env PATH=<caller's PATH>` would defeat sudo's secure_path.
-    External commands are separately pinned to utils.shell.SECURE_PATH.
+    runs REEXEC_BOOTSTRAP in isolated mode, so neither the caller's PATH nor
+    their working directory can influence what runs as root. PATH is
+    deliberately *not* forwarded: `sudo env PATH=<caller's PATH>` would
+    defeat sudo's secure_path. External commands are separately pinned to
+    utils.shell.SECURE_PATH.
+
+    What it can't fix: if the interpreter or ubuntils itself is installed
+    somewhere the invoking user can write (pipx in ~/.local, a venv in a home
+    directory, an editable checkout), whoever controls that user controls
+    the code root runs. That needs --allow-user-install.
     """
     if os.geteuid() == 0:
         return
-    args = ["sudo", sys.executable, "-c", REEXEC_BOOTSTRAP] + sys.argv[1:]
+    problems = install_trust_problems()
+    if problems and not _allow_user_install():
+        print(
+            "ubuntils will not escalate to root: it would run code that a non-root user "
+            "can modify.\n  " + "\n  ".join(problems[:6]) + "\n"
+            "Anything running as that user (on a host you are investigating, possibly the "
+            "attacker) could change ubuntils or its interpreter and get root the next time "
+            "you run it. Install it root-owned instead (`sudo pipx install --global "
+            "ubuntils`, or a root-owned venv under /opt; see the README), or accept the "
+            "risk with `ubuntils --allow-user-install " + " ".join(sys.argv[1:]) + "`.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if problems:
+        print("warning: running a user-writable ubuntils install as root "
+              "(--allow-user-install)", file=sys.stderr)
+    args = ["sudo", sys.executable, "-I", "-c", REEXEC_BOOTSTRAP] + sys.argv[1:]
     print("ubuntils requires root — re-invoking with sudo…", file=sys.stderr)
     try:
         os.execv(resolve_command("sudo"), args)
@@ -171,11 +248,21 @@ def _sudo_invoker():
     return (uid, gid) if uid != 0 else None
 
 
+def _default_bundle_path() -> str:
+    """A fresh, unguessable path in root's own 0700 bundle directory."""
+    ensure_private_dir(os.path.dirname(DEFAULT_BUNDLE_DIR))
+    ensure_private_dir(DEFAULT_BUNDLE_DIR)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return os.path.join(DEFAULT_BUNDLE_DIR,
+                        f"ubuntils-bundle-{stamp}-{secrets.token_hex(4)}.tar.gz")
+
+
 def _emit_report(report: str, output_path) -> None:
     if output_path:
         try:
             # Owner-only either way; a report ubuntils creates belongs to the
-            # user who asked for it.
+            # user who asked for it. An existing file is reused only if it is
+            # already ours or theirs (and not a hard link to something else).
             write_private_text(output_path, report + "\n", new_owner=_sudo_invoker())
         except OSError as exc:
             raise click.ClickException(f"Cannot write report to {output_path}: {exc}")
@@ -185,7 +272,10 @@ def _emit_report(report: str, output_path) -> None:
 
 
 @click.group()
-def main():
+@click.option("--allow-user-install", is_flag=True,
+              help="Escalate to root even though ubuntils or its interpreter is installed "
+                   "where a non-root user can modify it")
+def main(allow_user_install):
     """ubuntils - Ubuntu incident response tool."""
     pass
 
@@ -252,7 +342,8 @@ def scan(output_json, remediate, confirm, config_path, baseline_path, output_pat
 
 @main.command()
 @click.option("--output", "output_path", type=click.Path(dir_okay=False),
-              help="Bundle path to write (default ./ubuntils-bundle-<timestamp>.tar.gz)")
+              help="Bundle path to write; must not exist yet (default "
+                   "/var/lib/ubuntils/bundles/ubuntils-bundle-<timestamp>-<random>.tar.gz)")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging")
 def collect(output_path, verbose):
     """Acquire a portable, tamper-evident artifact bundle from this host.
@@ -267,22 +358,22 @@ def collect(output_path, verbose):
     configure_logging(json_mode=False, verbose=verbose)
     from ubuntils.bundle.writer import write_bundle
 
-    if not output_path:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        output_path = f"ubuntils-bundle-{stamp}.tar.gz"
-
-    source = LiveSource(root="/")
-    written = write_bundle(
-        source=source,
-        files_to_capture=COLLECT_FILES,
-        commands_to_capture=COLLECT_COMMANDS,
-        out_path=output_path,
-        metadata={
-            "hostname": socket.gethostname(),
-            "ubuntu_version": get_ubuntu_version(),
-            "tool_version": __version__,
-        },
-    )
+    try:
+        if not output_path:
+            output_path = _default_bundle_path()
+        written = write_bundle(
+            source=LiveSource(root="/"),
+            files_to_capture=COLLECT_FILES,
+            commands_to_capture=COLLECT_COMMANDS,
+            out_path=output_path,
+            metadata={
+                "hostname": socket.gethostname(),
+                "ubuntu_version": get_ubuntu_version(),
+                "tool_version": __version__,
+            },
+        )
+    except OSError as exc:
+        raise click.ClickException(f"Cannot write bundle: {exc}")
     click.echo(f"Bundle written to {written}", err=True)
 
 
@@ -366,6 +457,21 @@ def analyze(bundle, root_path, output_json, output_path, config_path, baseline_p
 
     if tampered:
         sys.exit(EXIT_BUNDLE_TAMPERED)
+
+
+@main.command()
+@click.argument("backup_path", type=click.Path(dir_okay=False))
+@click.option("--force", is_flag=True,
+              help="Restore even if the file or its directory changed since remediation "
+                   "(symlinks and non-regular files are still refused)")
+def rollback(backup_path, force):
+    """Undo a remediation by restoring BACKUP_PATH to the file it was taken from."""
+    _ensure_root()
+    from ubuntils.remediators.rollback import RollbackError, rollback as do_rollback
+    try:
+        click.echo(do_rollback(backup_path, force=force))
+    except (RollbackError, OSError, ValueError, KeyError) as exc:
+        raise click.ClickException(f"Rollback refused: {exc}")
 
 
 @main.command()
