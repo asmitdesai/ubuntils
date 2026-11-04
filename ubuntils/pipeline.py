@@ -168,11 +168,17 @@ def run_scan(
     # discard findings (that would report a compromised host as clean).
     engine = None
     findings: List[Finding] = []
+    detection_error = None
     try:
         engine = DetectionEngine(allowlist=allowlist, custom_rules=custom_rules, baseline=baseline)
         findings = engine.run(artifacts)
     except Exception as exc:
-        logger.error("detection_failed", error=str(exc))
+        # Anything raised outside a single rule (a baseline or allowlist that
+        # blew up while filtering) leaves no findings to trust. It must be
+        # reported as a failed detection stage, never as an empty, clean scan.
+        findings = []
+        detection_error = f"{type(exc).__name__}: {exc}"
+        logger.error("detection_failed", error=detection_error)
 
     timeline: list = []
     timeline_error = None
@@ -225,7 +231,9 @@ def run_scan(
         write_wazuh_alerts(findings, report_hostname, collectors_degraded=collectors_degraded)
 
     bundle_integrity = (bundle_info or {}).get("bundle_integrity", "live")
-    rules_failed = list(engine.rules_failed) if engine else ["DetectionEngine"]
+    rules_failed = list(engine.rules_failed) if engine else []
+    if detection_error is not None and "DetectionEngine" not in rules_failed:
+        rules_failed.append("DetectionEngine")
     suppressed = engine.suppressed_by_baseline if engine else 0
     allowlisted = engine.suppressed_by_allowlist if engine else 0
 
@@ -246,6 +254,7 @@ def run_scan(
         "bundle_integrity": bundle_integrity,
         "collectors_degraded": collectors_degraded,
         "rules_failed": rules_failed,
+        "detection_error": detection_error,
         "timeline_error": timeline_error,
     }
 
@@ -259,6 +268,7 @@ def run_scan(
         "collector_failures": failures,
         "collectors_degraded": collectors_degraded,
         "rules_failed": rules_failed,
+        "detection_error": detection_error,
         "timeline_error": timeline_error,
         "bundle_integrity": bundle_integrity,
         "command_collectors_skipped": command_collectors_skipped,

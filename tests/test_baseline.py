@@ -12,8 +12,8 @@ def _finding(rule_id="SSH_UNAUTHORIZED_KEY", raw_value="ssh-ed25519 AAAA... ci@r
     )
 
 
-def test_baseline_matches_by_rule_id_and_fingerprint_substring():
-    b = Baseline(entries=[{"rule_id": "SSH_UNAUTHORIZED_KEY", "fingerprint": "ci@runner"}])
+def test_baseline_matches_by_rule_id_and_key_data():
+    b = Baseline(entries=[{"rule_id": "SSH_UNAUTHORIZED_KEY", "fingerprint": "AAAA..."}])
     assert b.matches(_finding()) is True
 
 
@@ -33,8 +33,8 @@ def test_baseline_does_not_match_different_rule_id():
 
 
 def test_baseline_filter_drops_matches_and_counts_them():
-    b = Baseline(entries=[{"rule_id": "SSH_UNAUTHORIZED_KEY", "fingerprint": "ci@runner"}])
-    kept, suppressed = b.filter([_finding(), _finding(raw_value="unrelated key")])
+    b = Baseline(entries=[{"rule_id": "SSH_UNAUTHORIZED_KEY", "fingerprint": "AAAA..."}])
+    kept, suppressed = b.filter([_finding(), _finding(raw_value="ssh-ed25519 BBBB other@host")])
     assert len(kept) == 1
     assert len(suppressed) == 1
     assert suppressed[0].rule_id == "SSH_UNAUTHORIZED_KEY"

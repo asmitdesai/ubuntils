@@ -22,6 +22,8 @@ def _health_lines(stats: dict) -> list:
     rules_failed = stats.get("rules_failed") or []
     if rules_failed:
         lines.append(f"!! Detection rules failed: {', '.join(rules_failed)}")
+    if stats.get("detection_error"):
+        lines.append(f"!! Detection failed, no finding can be trusted: {stats['detection_error']}")
     if stats.get("timeline_error"):
         lines.append(f"!! Timeline unavailable: {stats['timeline_error']}")
     return lines
