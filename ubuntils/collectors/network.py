@@ -1,4 +1,13 @@
+import re
+
 from ubuntils.collectors.base import BaseCollector
+
+# ss prints each socket owner as ("<name>",pid=<n>,fd=<n>). The name is the
+# process's comm, which any user sets with prctl(PR_SET_NAME) — up to 15
+# bytes, enough for `x",pid=1,` — so a naive "pid=" search can be pointed at
+# any PID. Anchor on the closing quote AND the trailing fd=: text injected
+# into a name always comes before its process's real pid=…,fd=…).
+_SS_OWNER_RE = re.compile(r'",pid=(\d+),fd=\d+\)')
 
 
 class NetworkCollector(BaseCollector):
@@ -37,7 +46,7 @@ class NetworkCollector(BaseCollector):
             local_addr, local_port = self._split_addr(local)
             remote_addr, remote_port = self._split_addr(remote)
 
-            pid = self._extract_pid(line)
+            pid = self._extract_pid(line) if tool == "ss" else self._netstat_pid(parts)
 
             connections.append({
                 "proto": proto,
@@ -58,12 +67,33 @@ class NetworkCollector(BaseCollector):
         return addr or addr_port, port or "*"
 
     def _extract_pid(self, line: str) -> str:
-        if "pid=" in line:
-            start = line.index("pid=") + 4
-            end = line.find(",", start)
-            return line[start:end] if end != -1 else line[start:].rstrip(")")
-        parts = line.split()
+        """PID owning an ss socket line, or "" if it can't be trusted.
+
+        Takes the last pid=…,fd=…) group (always a real one), then checks the
+        name ss printed before it against /proc/<pid>/comm. A mismatch means
+        the line was shaped by a process name, so the PID is dropped rather
+        than pinned on an innocent process. Without /proc (bundles, --root)
+        the anchored parse stands on its own.
+        """
+        users = line[line.find("users:(("):] if "users:((" in line else ""
+        matches = list(_SS_OWNER_RE.finditer(users))
+        if not matches:
+            return ""
+        last = matches[-1]
+        pid = last.group(1)
+        try:
+            comm = self.source.read_text(f"/proc/{pid}/comm").rstrip("\n")
+        except Exception:
+            return pid
+        if not users[:last.start()].endswith('("' + comm):
+            self.degraded.append(f"dropped pid {pid}: ss process name doesn't match its "
+                                 f"/proc comm {comm!r}")
+            return ""
+        return pid
+
+    @staticmethod
+    def _netstat_pid(parts: list) -> str:
+        # PID/Program: the PID comes before the (attacker-named) program.
         last = parts[-1] if parts else ""
-        if "/" in last:
-            return last.split("/")[0]
-        return ""
+        pid = last.split("/", 1)[0] if "/" in last else ""
+        return pid if pid.isdigit() else ""

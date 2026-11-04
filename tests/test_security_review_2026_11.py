@@ -735,3 +735,51 @@ def test_F08_unlisted_file_is_a_mismatch(tmp_path):
                                                     {rel: "* * * * * root /tmp/x\n"}))
         source.cleanup()
         assert info["bundle_integrity"] == "mismatch", rel
+
+
+# ─── F-06: process names can't steer PID attribution ────────────────────────
+
+_SS_HEADER = "Netid State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n"
+
+
+def _ss_line(owners: str) -> str:
+    return f"tcp ESTAB 0 0 10.0.0.2:40000 203.0.113.9:4444 users:(({owners}))\n"
+
+
+def _connections(tmp_path, ss_text, comm=None):
+    from ubuntils.collectors.network import NetworkCollector
+    files = {"/etc/hostname": "h\n"}
+    files.update({f"/proc/{pid}/comm": name + "\n" for pid, name in (comm or {}).items()})
+    collector = NetworkCollector(source=_FakeHost(_tree(tmp_path, files),
+                                                  {"ss": (_SS_HEADER + ss_text, "", 0)}))
+    return collector.collect()["connections"], collector
+
+
+def test_F06_injected_pid_in_a_process_name_is_ignored(tmp_path):
+    conns, _ = _connections(tmp_path, _ss_line('"x",pid=1,",pid=4242,fd=3)'))
+    assert conns[0]["pid"] == "4242"
+
+
+def test_F06_name_shaped_like_a_whole_owner_group_still_loses(tmp_path):
+    conns, _ = _connections(tmp_path, _ss_line('"a",pid=1,fd=2)",pid=4242,fd=3)'),
+                            comm={"4242": 'a",pid=1,fd=2)'})
+    assert conns[0]["pid"] == "4242"
+
+
+def test_F06_pid_whose_comm_does_not_match_is_dropped(tmp_path):
+    conns, collector = _connections(tmp_path, _ss_line('"sshd",pid=4242,fd=3)'),
+                                    comm={"4242": "bash"})
+    assert conns[0]["pid"] == ""
+    assert any("4242" in reason for reason in collector.degraded)
+
+
+def test_F06_matching_comm_keeps_the_pid(tmp_path):
+    conns, _ = _connections(tmp_path, _ss_line('"sshd",pid=4242,fd=3)'),
+                            comm={"4242": "sshd"})
+    assert conns[0]["pid"] == "4242"
+
+
+def test_F06_netstat_program_name_cannot_inject_a_pid():
+    from ubuntils.collectors.network import NetworkCollector
+    assert NetworkCollector._netstat_pid(["tcp", "0", "0", "a:1", "b:2", "ESTABLISHED",
+                                          "4242/pid=1,fd=3)"]) == "4242"
