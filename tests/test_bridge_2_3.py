@@ -180,3 +180,15 @@ def test_N05_dev_lock_uses_exactly_the_runtime_pins():
     assert runtime
     for name, version in runtime.items():
         assert dev.get(name) == version, f"{name}: runtime {version}, dev {dev.get(name)}"
+
+
+# ── N-10: release workflow permissions and checksums ─────────────────────────
+
+def test_N10_release_workflow_grants_nothing_by_default_and_publishes_sums():
+    import yaml
+    wf = yaml.safe_load(open(os.path.join(_REPO, ".github", "workflows", "release.yml")))
+    assert wf["permissions"] == {}
+    for name, job in wf["jobs"].items():
+        assert "permissions" in job, f"job {name} has no explicit permissions"
+    text = open(os.path.join(_REPO, ".github", "workflows", "release.yml")).read()
+    assert "sha256sum" in text and "SHA256SUMS" in text
