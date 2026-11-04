@@ -49,11 +49,13 @@ def test_S1_ensure_root_reexecs_through_the_bootstrap(monkeypatch):
     monkeypatch.setattr(cli.os, "execv", lambda path, args: captured.update(path=path, args=args))
     monkeypatch.setattr(cli, "resolve_command", lambda name: "/usr/bin/sudo")
     monkeypatch.setattr(cli.sys, "argv", ["ubuntils", "scan", "--json"])
+    monkeypatch.setattr(cli, "install_trust_problems", lambda: [])  # see F-07
     cli._ensure_root()
     args = captured["args"]
     assert "-m" not in args
-    assert args[:4] == ["sudo", sys.executable, "-c", cli.REEXEC_BOOTSTRAP]
-    assert args[4:] == ["scan", "--json"]
+    # -I: isolated mode, so not even PYTHON* variables or the cwd apply.
+    assert args[:5] == ["sudo", sys.executable, "-I", "-c", cli.REEXEC_BOOTSTRAP]
+    assert args[5:] == ["scan", "--json"]
 
 
 # ─── S2: a hostile bundle must not read the analyst's own files ──────────────

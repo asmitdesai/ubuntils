@@ -38,11 +38,18 @@ that may already be compromised:
 ubuntils runs as root on a machine an attacker may still control, so it treats
 what it reads there as hostile input:
 
-- **No code from the caller's environment runs as root.** The `sudo` re-exec
-  names the interpreter by absolute path and drops the working directory from
-  `sys.path` before importing anything — running `ubuntils scan` from inside an
-  attacker's directory can't import a planted module. External commands resolve
-  on a fixed, root-owned `PATH`, never the caller's.
+- **The caller's environment doesn't choose what runs as root, but the
+  install location does.** The `sudo` re-exec names the interpreter by
+  absolute path and runs it in isolated mode (`python -I`), so the working
+  directory, `PYTHON*` variables and user site-packages are ignored. Running
+  `ubuntils scan` from inside an attacker's directory can't import a planted
+  module. External commands resolve on a fixed, root-owned `PATH`, never the
+  caller's. What root *does* run is ubuntils' own code and its interpreter.
+  If those are installed where a non-root user can write (pipx's default
+  `~/.local`, a venv in a home directory, an editable checkout), that user
+  can change them and get root. ubuntils checks for this before escalating
+  and refuses unless you pass `--allow-user-install`. Install it root-owned
+  instead (see the README).
 - **Files users control are read defensively.** Shell init files, SSH key files
   and per-user systemd units are opened non-blocking and must be regular files
   — a FIFO or `/dev/zero` symlink is skipped and reported as a degraded

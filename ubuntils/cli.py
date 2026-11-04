@@ -79,32 +79,103 @@ COLLECT_COMMANDS = [
     ("lsmod", ["lsmod"]),
 ]
 
-# What the root re-exec runs. `python -m ubuntils.cli` (and plain `-c`) put the
-# current directory first on sys.path, so running `ubuntils scan` from inside
-# /tmp or a compromised user's home would import a planted ubuntils/ (or
-# click.py, yaml.py, …) *as root*. The bootstrap drops that entry before
-# importing anything. sitecustomize is not a concern: site runs before the
-# cwd entry is added, and sudo's env_reset strips PYTHONPATH.
+# What the root re-exec runs: `python -I -c REEXEC_BOOTSTRAP`. `python -m
+# ubuntils.cli` (and plain `-c`) put the current directory first on sys.path,
+# so running `ubuntils scan` from inside /tmp or a compromised user's home
+# would import a planted ubuntils/ (or click.py, yaml.py, …) *as root*. -I
+# (isolated mode: no cwd or script dir on sys.path, no PYTHON* variables, no
+# user site-packages) closes that on every supported Python; a venv's own
+# site-packages still load, since they are found from pyvenv.cfg next to the
+# interpreter, not the environment (checked on 3.9 and 3.11). The bootstrap
+# also drops a leading "" entry, for anyone running it without -I — but only
+# that entry: under -I on 3.9/3.10, sys.path[0] is the stdlib zip.
 REEXEC_BOOTSTRAP = (
     "import sys; "
-    "getattr(sys.flags, 'safe_path', False) or sys.path.pop(0); "
+    "sys.path[:1] == [''] and sys.path.pop(0); "
     "sys.argv[0] = 'ubuntils'; "
     "from ubuntils.cli import main; main()"
 )
+
+
+def _untrusted(path: str) -> list:
+    """Why root shouldn't run code from ``path``: it, or a directory above
+    it, isn't root-owned or is writable by group/others (a sticky,
+    root-owned directory like /tmp is fine — only its owner can rename
+    entries in it)."""
+    problems = []
+    current = os.path.realpath(path)
+    while True:
+        try:
+            st = os.stat(current)
+        except OSError as exc:
+            problems.append(f"{current}: cannot stat ({exc.strerror})")
+            break
+        if st.st_uid != 0:
+            problems.append(f"{current} is owned by uid {st.st_uid}")
+        elif st.st_mode & 0o022 and not (os.path.isdir(current) and st.st_mode & 0o1000):
+            problems.append(f"{current} is writable by group or others")
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return problems
+
+
+def install_trust_problems(paths=None) -> list:
+    """Reasons the code `sudo` is about to run as root could be changed by
+    someone other than root: the interpreter, sys.prefix and the ubuntils
+    package directory, and every directory above them."""
+    if paths is None:
+        import ubuntils
+        paths = [sys.executable, sys.prefix, os.path.dirname(ubuntils.__file__)]
+    seen, problems = set(), []
+    for path in paths:
+        for problem in _untrusted(path):
+            if problem not in seen:
+                seen.add(problem)
+                problems.append(problem)
+    return problems
+
+
+def _allow_user_install() -> bool:
+    ctx = click.get_current_context(silent=True)
+    return bool(ctx and ctx.find_root().params.get("allow_user_install"))
 
 
 def _ensure_root() -> None:
     """Re-exec under sudo if not running as root.
 
     The re-exec names this interpreter by absolute path (sys.executable) and
-    runs REEXEC_BOOTSTRAP, so neither the caller's PATH nor their working
-    directory can influence what runs as root. PATH is deliberately *not*
-    forwarded: `sudo env PATH=<caller's PATH>` would defeat sudo's secure_path.
-    External commands are separately pinned to utils.shell.SECURE_PATH.
+    runs REEXEC_BOOTSTRAP in isolated mode, so neither the caller's PATH nor
+    their working directory can influence what runs as root. PATH is
+    deliberately *not* forwarded: `sudo env PATH=<caller's PATH>` would
+    defeat sudo's secure_path. External commands are separately pinned to
+    utils.shell.SECURE_PATH.
+
+    What it can't fix: if the interpreter or ubuntils itself is installed
+    somewhere the invoking user can write (pipx in ~/.local, a venv in a home
+    directory, an editable checkout), whoever controls that user controls
+    the code root runs. That needs --allow-user-install.
     """
     if os.geteuid() == 0:
         return
-    args = ["sudo", sys.executable, "-c", REEXEC_BOOTSTRAP] + sys.argv[1:]
+    problems = install_trust_problems()
+    if problems and not _allow_user_install():
+        print(
+            "ubuntils will not escalate to root: it would run code that a non-root user "
+            "can modify.\n  " + "\n  ".join(problems[:6]) + "\n"
+            "Anything running as that user (on a host you are investigating, possibly the "
+            "attacker) could change ubuntils or its interpreter and get root the next time "
+            "you run it. Install it root-owned instead (`sudo pipx install --global "
+            "ubuntils`, or a root-owned venv under /opt; see the README), or accept the "
+            "risk with `ubuntils --allow-user-install " + " ".join(sys.argv[1:]) + "`.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if problems:
+        print("warning: running a user-writable ubuntils install as root "
+              "(--allow-user-install)", file=sys.stderr)
+    args = ["sudo", sys.executable, "-I", "-c", REEXEC_BOOTSTRAP] + sys.argv[1:]
     print("ubuntils requires root — re-invoking with sudo…", file=sys.stderr)
     try:
         os.execv(resolve_command("sudo"), args)
@@ -201,7 +272,10 @@ def _emit_report(report: str, output_path) -> None:
 
 
 @click.group()
-def main():
+@click.option("--allow-user-install", is_flag=True,
+              help="Escalate to root even though ubuntils or its interpreter is installed "
+                   "where a non-root user can modify it")
+def main(allow_user_install):
     """ubuntils - Ubuntu incident response tool."""
     pass
 

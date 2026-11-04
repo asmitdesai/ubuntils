@@ -783,3 +783,68 @@ def test_F06_netstat_program_name_cannot_inject_a_pid():
     from ubuntils.collectors.network import NetworkCollector
     assert NetworkCollector._netstat_pid(["tcp", "0", "0", "a:1", "b:2", "ESTABLISHED",
                                           "4242/pid=1,fd=3)"]) == "4242"
+
+
+# ─── F-07: re-exec trust check ──────────────────────────────────────────────
+
+def test_F07_user_owned_install_dir_is_reported(tmp_path):
+    import pytest
+    from ubuntils.cli import install_trust_problems
+    if os.geteuid() == 0:
+        pytest.skip("needs a directory not owned by root")
+    install = tmp_path / "venv" / "lib" / "ubuntils"
+    install.mkdir(parents=True)
+    problems = install_trust_problems([str(install)])
+    assert any(f"{os.path.realpath(install)} is owned by uid {os.geteuid()}" in p
+               for p in problems)
+
+
+def test_F07_root_owned_system_dirs_pass():
+    from ubuntils.cli import install_trust_problems
+    if os.stat("/usr").st_uid != 0:  # pragma: no cover - odd test host
+        return
+    assert install_trust_problems(["/usr"]) == []
+
+
+def _reexec_attempt(monkeypatch, argv):
+    from click.testing import CliRunner
+    from ubuntils import cli
+    calls = []
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(cli.os, "execv", lambda path, args: calls.append(args))
+    monkeypatch.setattr(cli, "resolve_command", lambda name: "/usr/bin/sudo")
+    monkeypatch.setattr(cli, "install_trust_problems",
+                        lambda: ["/home/eve/.local/pipx/venvs/ubuntils is owned by uid 1000"])
+    monkeypatch.setattr(cli.sys, "argv", ["ubuntils", *argv])
+    result = CliRunner().invoke(cli.main, argv)
+    return result, calls
+
+
+def test_F07_untrusted_install_refuses_to_escalate_without_the_flag(monkeypatch):
+    result, calls = _reexec_attempt(monkeypatch, ["rollback", "/nonexistent"])
+    assert result.exit_code == 1
+    assert calls == []
+    assert "--allow-user-install" in result.output
+    assert "owned by uid 1000" in result.output
+
+
+def test_F07_allow_user_install_escalates_in_isolated_mode(monkeypatch):
+    from ubuntils.cli import REEXEC_BOOTSTRAP
+    _result, calls = _reexec_attempt(
+        monkeypatch, ["--allow-user-install", "rollback", "/nonexistent"])
+    assert calls and calls[0][2:5] == ["-I", "-c", REEXEC_BOOTSTRAP]
+    assert calls[0][5:] == ["--allow-user-install", "rollback", "/nonexistent"]
+
+
+def test_F07_isolated_bootstrap_still_imports_ubuntils_and_ignores_cwd(tmp_path):
+    import subprocess
+    import sys
+    from ubuntils import __version__
+    from ubuntils.cli import REEXEC_BOOTSTRAP
+    planted = tmp_path / "click"
+    planted.mkdir()
+    (planted / "__init__.py").write_text("print('HIJACKED')\n")
+    out = subprocess.run([sys.executable, "-I", "-c", REEXEC_BOOTSTRAP, "version"],
+                         cwd=tmp_path, capture_output=True, text=True, timeout=60)
+    assert "HIJACKED" not in out.stdout + out.stderr
+    assert out.stdout.strip() == __version__

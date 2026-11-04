@@ -42,37 +42,43 @@ ubuntils itself makes no network calls, and every feature — custom rules and c
 
 ## Installation
 
-**Ubuntu 22.04+ and any system with PEP 668 (recommended):**
+ubuntils runs as root on a host that may be compromised, so install it where only root can change it. If the code lives somewhere your user can write (pipx's default `~/.local`, a venv in your home directory, an editable checkout), then anything running as your user, possibly the attacker, can modify ubuntils and get root the next time you run it. Before escalating, `scan`, `collect` and `rollback` check that the interpreter, `sys.prefix` and the ubuntils package, plus every directory above them, are root-owned and not writable by group or others. If any of them fails the check, ubuntils refuses to escalate unless you pass `--allow-user-install` (see below).
 
-Ubuntu 22.04+ blocks system-wide `pip install`. Use `pipx` — it handles the environment transparently so you never think about it:
+Install a release, not `main`. Replace `vX.Y.Z` below with the latest tag from the [Releases](https://github.com/asmitdesai/ubuntils/releases) page.
+
+**Recommended: root-owned install with pipx 1.5+ (`--global`)**
+
+```bash
+sudo pipx install --global "git+https://github.com/asmitdesai/ubuntils.git@vX.Y.Z"
+ubuntils scan              # run as your user; it re-invokes itself with sudo
+```
+
+**Root-owned virtual environment** (any Ubuntu; the `pipx` in Ubuntu 24.04's apt is older than 1.5):
+
+```bash
+sudo python3 -m venv /opt/ubuntils
+sudo /opt/ubuntils/bin/pip install "git+https://github.com/asmitdesai/ubuntils.git@vX.Y.Z"
+sudo ln -s /opt/ubuntils/bin/ubuntils /usr/local/bin/ubuntils
+ubuntils scan
+```
+
+Both put the command on sudo's `secure_path` (`/usr/local/bin`), so `sudo ubuntils …` from a root shell works too.
+
+**Per-user install (development, or a lab VM you don't mind trusting):**
 
 ```bash
 sudo apt install pipx -y
 pipx ensurepath            # then open a new shell
 git clone https://github.com/asmitdesai/ubuntils.git
 cd ubuntils
+git checkout vX.Y.Z
 pipx install -e .
-ubuntils scan              # not `sudo ubuntils scan` — see below
+ubuntils --allow-user-install scan
 ```
 
-Run it as your normal user: `scan` and `collect` re-invoke themselves under `sudo`. Typing `sudo ubuntils …` yourself fails with `command not found`, because sudo's `secure_path` doesn't include `~/.local/bin` where pipx puts the command. If you need to start it from a root shell, call the installed binary by path (`~youruser/.local/bin/ubuntils scan`), or install into a virtual environment instead:
+ubuntils will refuse to escalate from this install until you pass `--allow-user-install` (before the subcommand), and it lists the user-writable paths it found. Typing `sudo ubuntils …` yourself fails with `command not found`, because sudo's `secure_path` doesn't include `~/.local/bin` where pipx puts the command.
 
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -e .
-.venv/bin/ubuntils scan
-```
-
-**Older systems / manual install:**
-
-```bash
-git clone https://github.com/asmitdesai/ubuntils.git
-cd ubuntils
-pip install -r requirements.txt -e .
-ubuntils scan
-```
-
-ubuntils requires root for full artifact access. If you run `ubuntils scan` as a non-root user it will automatically re-invoke itself with `sudo` using the same Python interpreter (by absolute path), so the correct environment is used without forwarding your `PATH` into the root process. Every external command (`ss`, `dpkg`, `systemctl`, …) is resolved on a fixed, root-owned search path, never your `PATH`. Running without root will skip `/etc/shadow`, some `/proc` entries, and protected cron files, and will log warnings for each. A report that `scan --output FILE` creates after re-invoking itself through `sudo` is owned by you (still mode `0600`), so you can open it without `sudo`; an existing file is overwritten only if it belongs to you (or root) and isn't a hard link, and it keeps its owner. `collect` bundles stay root-only because they contain `/etc/shadow`, and are never written into a file that already exists.
+ubuntils requires root for full artifact access. If you run `ubuntils scan` as a non-root user it will automatically re-invoke itself with `sudo` using the same Python interpreter (by absolute path, in isolated mode `-I`), so the correct environment is used without forwarding your `PATH`, `PYTHON*` variables or working directory into the root process. Every external command (`ss`, `dpkg`, `systemctl`, …) is resolved on a fixed, root-owned search path, never your `PATH`. Running without root will skip `/etc/shadow`, some `/proc` entries, and protected cron files, and will log warnings for each. A report that `scan --output FILE` creates after re-invoking itself through `sudo` is owned by you (still mode `0600`), so you can open it without `sudo`; an existing file is overwritten only if it belongs to you (or root) and isn't a hard link, and it keeps its owner. `collect` bundles stay root-only because they contain `/etc/shadow`, and are never written into a file that already exists.
 
 ---
 
