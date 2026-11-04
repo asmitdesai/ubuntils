@@ -707,7 +707,7 @@ TODO: flag-only rules for `AuthorizedKeysCommand` and `pam_exec.so`. Both are ea
 ```json
 {
   "scan_metadata": {
-    "tool_version": "2.2.0",
+    "tool_version": "2.3.0",
     "hostname": "web-01",
     "generated_at": "2026-06-10T08:22:03.114523+00:00",
     "ubuntu_version": "Ubuntu 22.04.3 LTS",

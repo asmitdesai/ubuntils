@@ -2,7 +2,13 @@
 
 Notable changes per release. Earlier releases (1.0.0 through 2.1.0) are summarised in the README's [Roadmap](README.md#roadmap).
 
-## Unreleased
+## 2.3.0 — not yet released
+
+The bridge to 3.0: it ships every fix from the 2026-11 external review, two more security fixes, and a warning for everything 3.0 will change. The plan is in [`docs/plans/`](docs/plans/v3.0.0-plan.md).
+
+### Security — found while planning 3.0
+- **N-01** A failure in the detection stage outside an individual rule (an allowlist or baseline that raised while filtering) produced an empty findings list with nothing in `rules_failed`, which read as a clean host. It's now recorded as `rules_failed: ["DetectionEngine"]` with the error in `scan_metadata.detection_error`, the TUI says detection failed, and `scan`/`analyze` exit 1.
+- **N-14** A `--baseline` entry suppressed any finding whose raw value contained the fingerprint as a word, and for SSH keys that includes the key's comment, which whoever adds the key chooses: the README's own `fingerprint: ci@ci-runner` example hid a planted key labelled `ci@ci-runner`. SSH key entries now match the key only (its `SHA256:` fingerprint or its base64 data), and a path entry no longer hides a finding with a content signal, such as a download-and-execute line added to a baselined `.bashrc`. **If you baselined keys by comment, they show up again**: replace those entries with the key's fingerprint (`ssh-keygen -lf key.pub`).
 
 ### Security — external review 2026-11
 - **F-01** The rollback command ubuntils printed, `cp <backup> <artifact>`, followed a symlink at the destination when run as root: an attacker who replaced a remediated file with a link to `/etc/shadow` got it overwritten with the backup's content. The new `ubuntils rollback BACKUP` restores through the same safe path as remediation, and refuses if the file changed since remediation or its directory was replaced (unless `--force`), or if a symlink or non-regular file is in the way (always). It's the only rollback ubuntils prints now. Each backup gets a `<backup>.json` sidecar with the original owner, mode, parent directory identity and post-remediation hash.
@@ -34,6 +40,21 @@ Notable changes per release. Earlier releases (1.0.0 through 2.1.0) are summaris
 - `--since` further back than 7 days still queried only 7 days of journald.
 - `scan --output FILE` run as a normal user (the documented way) wrote a root-owned `0600` report its author couldn't read. A report ubuntils creates is now owned by the user who invoked `sudo`.
 - `analyze BUNDLE` reported every captured shell init file (`/etc/profile`) as modified in the last 48 hours: file times came from the extracted copy instead of the times the manifest recorded on the collected host.
+- The demo lab aborted halfway in an unprivileged container: a refused `chattr +a` stopped `plant` under `set -e`, so the package-tamper and kernel-module artifacts were never planted, and a missing `PACKAGE_TAMPERED` looked like a detection miss. Steps the host can't take are now skipped with a reason, and `plant` and `status` list them.
+- The debugging guide told users to undo a remediation with "a `cp` of the backup back over the original", the trap F-01 fixed. It now gives `ubuntils rollback`.
+
+### Changed
+- CI runs the tests against `requirements-dev.lock`: the runtime pins from `requirements.lock` plus the test tools, all hash-checked, so CI tests what users install. `pip-audit` checks both locks.
+- Releases attach `SHA256SUMS`, and the release workflow grants each job only the permissions it needs.
+- The coverage floor is 90%.
+- Docs: 17 rules (not 16); collectors and timeline sources run one after another (the README said concurrently); Ubuntu 20.04 is no longer listed (its Python 3.8 never met the 3.9 minimum) and 26.04 is; CONTRIBUTING describes the current remediation contract.
+
+### Deprecated — changing in 3.0
+- Python 3.9: 3.0 requires 3.10. Each command says so on 3.9. 2.3.x gets security fixes until six months after 3.0.0.
+- The interactive TUI becomes the optional `ubuntils[tui]` extra.
+- Baselines without a `version` (text matching) print a warning; 3.0 replaces them with hash-keyed entries from `ubuntils baseline create`.
+- `--remediate --confirm` will first keep a hashed copy of every file it changes; it says so now.
+- `auto_remediation_blocked` (a string) will be joined by `blocked_reasons` (a list of codes); both stay through 3.x.
 
 ## 2.2.0 — 2026-10-16
 
