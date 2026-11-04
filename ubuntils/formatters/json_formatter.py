@@ -5,6 +5,11 @@ from datetime import timezone
 from ubuntils.detectors.finding import Finding, RemediationResult
 from ubuntils.timeline.builder import TimelineEvent
 
+# The report's layout, independent of the tool version. Minor bumps only add
+# fields; a major bump may remove or rename them (docs/plans/v3.0.0-plan.md
+# §2.2.9). Reports from 2.x have no schema_version.
+REPORT_SCHEMA_VERSION = "3.0"
+
 
 class JSONFormatter:
     def format(
@@ -16,6 +21,7 @@ class JSONFormatter:
         remediation_results: list[RemediationResult],
     ) -> str:
         output: dict = {
+            "schema_version": REPORT_SCHEMA_VERSION,
             "scan_metadata": scan_metadata,
             "artifact_counts": artifact_counts,
             "findings": [self._finding(f) for f in findings],

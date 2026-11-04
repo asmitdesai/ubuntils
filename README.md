@@ -338,6 +338,7 @@ bundle/
 | `tool_version` | string | ubuntils version that produced the bundle |
 | `files[]` | array | One entry per captured file: `source_path`, `bundle_path`, `sha256`, `size`, `mtime`, `ctime` (a file absent/unreadable on the source host is recorded with `sha256: ""`, `size: -1` rather than aborting the collection) |
 | `commands[]` | array | One entry per captured command: `name`, `argv`, `bundle_path`, `sha256`, `exit_code` |
+| `format_version` | int | Bundle layout version (`1`). Absent in bundles from ubuntils 2.x, which are format 1; `analyze` refuses a newer format than it knows |
 | `bundle_sha256` | string | SHA-256 over the rest of the manifest (everything above, canonically serialized) — the tamper-evidence anchor for the whole bundle |
 
 ### Bundle integrity in JSON output
@@ -706,6 +707,7 @@ TODO: flag-only rules for `AuthorizedKeysCommand` and `pam_exec.so`. Both are ea
 
 ```json
 {
+  "schema_version": "3.0",
   "scan_metadata": {
     "tool_version": "2.3.0",
     "hostname": "web-01",
@@ -716,6 +718,7 @@ TODO: flag-only rules for `AuthorizedKeysCommand` and `pam_exec.so`. Both are ea
     "collector_failures": 0,
     "bundle_integrity": "live",
     "command_collectors_skipped": [],
+    "collector_durations_s": {"ProcessCollector": 0.21, "PackageCollector": 27.4},
     "collectors_degraded": {},
     "rules_failed": [],
     "detection_error": null,
@@ -782,7 +785,7 @@ TODO: flag-only rules for `AuthorizedKeysCommand` and `pam_exec.so`. Both are ea
 }
 ```
 
-`remediation_results` appears as an additional top-level key only when `--remediate` is passed. `report_sha256` is always present and is computed over the rest of the document. `scan_metadata.bundle_integrity` is `"live"` for `scan` and `analyze --root`, `"ok"` for a verified bundle passed to `analyze`, and `"mismatch"` if a bundle's content doesn't match its manifest — see [Bundle integrity in JSON output](#bundle-integrity-in-json-output). `scan_metadata.command_collectors_skipped` names any command-based collectors (`NetworkCollector`, `SystemdCollector`, `PackageCollector`, `KernelCollector`) skipped for a `--root` run — always empty for `scan` and `analyze BUNDLE`. `scan_metadata.suppressed_by_baseline` is the count of findings a `--baseline` file removed from this report — see [Known-good baselining](#known-good-baselining---baseline) — and `suppressed_by_allowlist` the count a `--config` allowlist removed, so a report always shows that findings were hidden. `scan_metadata.collectors_degraded` maps a collector name to the reasons its data is incomplete (a command that failed or timed out, an unreadable file, a skipped malformed line), `rules_failed` lists any detection rule that crashed (`DetectionEngine` if the whole detection stage failed, with the error in `detection_error` and exit status 1), and `timeline_error` is set if the timeline couldn't be built. All of them are empty on a healthy run. Check them before reading an empty findings list as "clean".
+`schema_version` is the report layout, independent of `tool_version`: minor versions only add fields. `remediation_results` appears as an additional top-level key only when `--remediate` is passed. `report_sha256` is always present and is computed over the rest of the document. `scan_metadata.bundle_integrity` is `"live"` for `scan` and `analyze --root`, `"ok"` for a verified bundle passed to `analyze`, and `"mismatch"` if a bundle's content doesn't match its manifest — see [Bundle integrity in JSON output](#bundle-integrity-in-json-output). `scan_metadata.command_collectors_skipped` names any command-based collectors (`NetworkCollector`, `SystemdCollector`, `PackageCollector`, `KernelCollector`) skipped for a `--root` run — always empty for `scan` and `analyze BUNDLE`. `scan_metadata.suppressed_by_baseline` is the count of findings a `--baseline` file removed from this report — see [Known-good baselining](#known-good-baselining---baseline) — and `suppressed_by_allowlist` the count a `--config` allowlist removed, so a report always shows that findings were hidden. `scan_metadata.collectors_degraded` maps a collector name to the reasons its data is incomplete (a command that failed or timed out, an unreadable file, a skipped malformed line), `rules_failed` lists any detection rule that crashed (`DetectionEngine` if the whole detection stage failed, with the error in `detection_error` and exit status 1), and `timeline_error` is set if the timeline couldn't be built. All of them are empty on a healthy run. Check them before reading an empty findings list as "clean".
 
 `related_events` and `guided_remediation` appear on a finding only when they have content. `related_events` holds up to five timeline events matched to the finding, most recent first — a surfacing aid, not a causal claim. Matching is on whole words against each event's program and message: identifying tokens from the finding (a path basename, a `/home/<user>` name, a package, module or account name) and a few per-rule activity keywords (`sshd`, `cron`, `dpkg`, …). Events that name the artifact *and* show that activity come first. Findings with no identifying token (the `PROCESS_*` rules, whose artifact is `/proc/<pid>/exe`) get keyword matches only, as context. Every timeline event carries a `program` field (the syslog tag or journald `SYSLOG_IDENTIFIER`, empty for auditd). `guided_remediation` is a reviewed command sequence for you to run by hand; ubuntils never executes it.
 
@@ -916,6 +919,7 @@ non-production environment before relying on them.
 | `confidence` | int (0–100) | Confidence score — see [Confidence scoring](#confidence-scoring) |
 | `confidence_band` | string | `HIGH` \| `MEDIUM` \| `LOW`; rule 100104 in the example escalates HIGH-severity findings with a HIGH band, and rule 100105 raises `USER_FILE_OVERSIZED` |
 | `related_events` | array (optional) | Correlated timeline events (`timestamp`, `source`, `program`, `description`), if any |
+| `schema_version` | string | Layout of the line (`"3"`) |
 | `truncated` | bool (optional) | `true` if anything in this line was cut to keep it bounded (see below) |
 
 Every string field can carry attacker text, such as a forged log line or a padded file's path, so each line is bounded. String fields are cut to 2,048 characters, related event descriptions to 1,024, and if the line is still over 32 KiB its `related_events` are dropped. The full finding is always in the JSON report.

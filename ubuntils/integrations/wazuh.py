@@ -25,6 +25,8 @@ MAX_LINE_BYTES = 32 * 1024
 _FALLBACK_FIELD_CHARS = 256
 
 DEGRADED_RULE_ID = "UBUNTILS_SCAN_DEGRADED"
+# Layout of each forwarded line; Wazuh rules can match on data.schema_version.
+WAZUH_SCHEMA_VERSION = "3"
 
 
 def is_wazuh_agent_present(markers: list = None) -> bool:
@@ -92,6 +94,7 @@ def _finding_to_dict(finding: Finding, hostname: str, cut: list = None) -> dict:
         "confidence_band": finding.confidence_band,
     }
     d = {k: _cut(v, MAX_FIELD_CHARS, cut) for k, v in d.items()}
+    d["schema_version"] = WAZUH_SCHEMA_VERSION
     if finding.related_events:
         d["related_events"] = [_event_to_dict(e, cut) for e in finding.related_events]
     if cut:
@@ -120,6 +123,7 @@ def degraded_line(collectors_degraded: dict, hostname: str) -> str:
         "description": _cut(reasons, MAX_FIELD_CHARS, cut),
         "collectors_degraded": sorted(collectors_degraded),
         "remediation_available": False,
+        "schema_version": WAZUH_SCHEMA_VERSION,
     }
     return _bounded_line(d, cut)
 

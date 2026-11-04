@@ -7,7 +7,7 @@ import shutil
 import tarfile
 import tempfile
 
-from ubuntils.bundle.manifest import Manifest, FileEntry, CommandEntry
+from ubuntils.bundle.manifest import SUPPORTED_BUNDLE_FORMATS, CommandEntry, FileEntry, Manifest
 from ubuntils.bundle import BundleError
 from ubuntils.collectors.source import BUNDLE_READ_MAX_BYTES, BundleSource
 
@@ -123,6 +123,11 @@ def _read_extracted(path: str, work: str) -> tuple:
         stored = json.load(f)
 
     expected_digest = stored.pop("bundle_sha256", None)
+    format_version = stored.get("format_version")
+    if format_version is not None and format_version not in SUPPORTED_BUNDLE_FORMATS:
+        raise BundleError(f"bundle format {format_version!r} is newer than this ubuntils "
+                          f"understands ({', '.join(map(str, SUPPORTED_BUNDLE_FORMATS))}); "
+                          "analyze it with the version that collected it")
     manifest = Manifest(
         run_id=stored["run_id"], host_id=stored["host_id"], hostname=stored["hostname"],
         ubuntu_version=stored["ubuntu_version"],
@@ -131,6 +136,7 @@ def _read_extracted(path: str, work: str) -> tuple:
         tool_version=stored["tool_version"],
         files=[FileEntry(**e) for e in stored["files"]],
         commands=[CommandEntry(**c) for c in stored["commands"]],
+        format_version=format_version,
     )
     for entry in [*manifest.files, *manifest.commands]:
         _inside(base, entry.bundle_path)

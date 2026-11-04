@@ -139,6 +139,9 @@ def run_scan(
     artifact_counts: dict = {}
     failures = 0
     collectors_degraded: dict = {}
+    # Per-collector wall time: the measurement behind any decision to run
+    # collectors in parallel (docs/plans/v3.0.0-plan.md §2.2.10).
+    collector_durations: dict = {}
     collectors = [C(source=source) for C in ALL_COLLECTORS]
 
     # Only a genuine --root (offline LiveSource over a mounted/extracted
@@ -151,6 +154,7 @@ def run_scan(
     for i, collector in enumerate(collectors):
         name = type(collector).__name__
         success = True
+        collector_start = time.monotonic()
         try:
             result = collector.collect()
             artifacts.update(result)
@@ -160,6 +164,7 @@ def run_scan(
             failures += 1
             success = False
             collectors_degraded[name] = [f"collector raised: {exc}"]
+        collector_durations[name] = round(time.monotonic() - collector_start, 3)
         reasons = list(getattr(collector, "degraded", []) or [])
         if reasons and name not in command_collectors_skipped:
             collectors_degraded.setdefault(name, []).extend(reasons)
@@ -274,6 +279,7 @@ def run_scan(
         "timeline_error": timeline_error,
         "bundle_integrity": bundle_integrity,
         "command_collectors_skipped": command_collectors_skipped,
+        "collector_durations_s": collector_durations,
         "suppressed_by_baseline": suppressed,
         "suppressed_by_allowlist": allowlisted,
         "baseline_suppressed": (

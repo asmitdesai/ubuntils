@@ -9,7 +9,7 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 
-from ubuntils.bundle.manifest import Manifest, FileEntry, CommandEntry
+from ubuntils.bundle.manifest import BUNDLE_FORMAT_VERSION, CommandEntry, FileEntry, Manifest
 from ubuntils.collectors.packages import (
     DPKG_OWNERS_TIMEOUT, DPKG_VERIFY_TIMEOUT, FIND_SETUID_TIMEOUT,
 )
@@ -110,6 +110,7 @@ def write_bundle(
             tool_version=metadata.get("tool_version", ""),
             files=file_entries,
             commands=command_entries,
+            format_version=BUNDLE_FORMAT_VERSION,
         )
         manifest_dict = manifest.to_dict()
         manifest_dict["bundle_sha256"] = manifest.manifest_sha256()
