@@ -686,3 +686,52 @@ def test_F10_bundle_source_reads_are_capped(tmp_path, monkeypatch):
         src.read_text("/etc/big")
     with pytest.raises(UnsafeFileError):
         src.run("ss", ["ss"])
+
+
+# ─── F-08: integrity covers unlisted and absent files ───────────────────────
+
+def _repacked_bundle(tmp_path, inject: dict):
+    """A genuine bundle (manifest untouched) with extra files slipped in."""
+    import tarfile
+    from ubuntils.bundle import write_bundle
+    host = _tree(tmp_path / "host", {"/etc/passwd": "root:x:0:0::/root:/bin/bash\n"})
+    out = tmp_path / "bundle.tar.gz"
+    write_bundle(source=LiveSource(root=host), out_path=str(out),
+                 files_to_capture=["/etc/passwd", "/etc/ld.so.preload"],
+                 commands_to_capture=[],
+                 metadata={"hostname": "h", "ubuntu_version": "U", "tool_version": "t"})
+    extract = tmp_path / "x"
+    with tarfile.open(out, "r:gz") as tf:
+        tf.extractall(extract)
+    for rel, content in inject.items():
+        dest = extract / "bundle" / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(content)
+    out.unlink()
+    with tarfile.open(out, "w:gz") as tf:
+        tf.add(str(extract / "bundle"), arcname="bundle")
+    return str(out)
+
+
+def test_F08_untouched_bundle_still_verifies(tmp_path):
+    from ubuntils.bundle import read_bundle
+    source, info = read_bundle(_repacked_bundle(tmp_path, {}))
+    source.cleanup()
+    assert info["bundle_integrity"] == "ok"
+
+
+def test_F08_file_recorded_absent_but_present_is_a_mismatch(tmp_path):
+    from ubuntils.bundle import read_bundle
+    source, info = read_bundle(_repacked_bundle(
+        tmp_path, {"files/etc/ld.so.preload": "/tmp/evil.so\n"}))
+    source.cleanup()
+    assert info["bundle_integrity"] == "mismatch"
+
+
+def test_F08_unlisted_file_is_a_mismatch(tmp_path):
+    from ubuntils.bundle import read_bundle
+    for rel in ("files/etc/cron.d/x", "commands/extra.txt"):
+        source, info = read_bundle(_repacked_bundle(tmp_path / rel.replace("/", "_"),
+                                                    {rel: "* * * * * root /tmp/x\n"}))
+        source.cleanup()
+        assert info["bundle_integrity"] == "mismatch", rel

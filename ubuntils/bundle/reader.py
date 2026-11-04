@@ -80,6 +80,25 @@ def _inside(base: str, bundle_path: str) -> str:
     return resolved
 
 
+def _unaccounted_files(base: str, manifest: Manifest) -> list:
+    """Files on disk the manifest doesn't vouch for: not listed at all (an
+    injected files/etc/cron.d/x), or listed as absent at collection time
+    (sha256 "") yet present (an injected files/etc/ld.so.preload). Hashes
+    only cover what's listed, so either would otherwise be analyzed as if it
+    came from the host."""
+    vouched = {os.path.normpath(e.bundle_path)
+               for e in [*manifest.files, *manifest.commands]
+               if getattr(e, "sha256", "") != "" or isinstance(e, CommandEntry)}
+    extra = []
+    for top in ("files", "commands"):
+        for dirpath, _dirs, names in os.walk(os.path.join(base, top)):
+            for name in names:
+                rel = os.path.normpath(os.path.relpath(os.path.join(dirpath, name), base))
+                if rel not in vouched:
+                    extra.append(rel)
+    return extra
+
+
 def read_bundle(path: str) -> tuple:
     """Extract and verify a bundle. The returned BundleSource owns the
     extraction directory — callers must call ``source.cleanup()`` when done."""
@@ -129,6 +148,8 @@ def _read_extracted(path: str, work: str) -> tuple:
             if not os.path.exists(disk) or _sha256_file(disk) != digest:
                 integrity = "mismatch"
                 break
+        if integrity == "ok" and _unaccounted_files(base, manifest):
+            integrity = "mismatch"
 
     command_index = {
         c.name: (os.path.join(base, c.bundle_path), c.exit_code)
