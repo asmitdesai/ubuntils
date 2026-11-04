@@ -9,6 +9,20 @@ class Severity(Enum):
     LOW = "LOW"
 
 
+# Why `--remediate --confirm` must never apply a fix on its own. These are hard
+# blocks, checked before any confidence gate: no signal, forged or real, can
+# score its way past one. Manual remediation in the TUI stays possible.
+AMBIGUOUS_KEY = "AMBIGUOUS_KEY"        # several keys in the file; which one is new is unknowable
+RECENCY_ONLY = "RECENCY_ONLY"          # the only evidence is a recent timestamp
+SOLE_SUDO_ACCESS = "SOLE_SUDO_ACCESS"  # removing the rule leaves that account no sudo at all
+
+
+@dataclass(frozen=True)
+class BlockedReason:
+    code: str
+    detail: str
+
+
 class RemediationStatus(Enum):
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"
@@ -34,10 +48,22 @@ class Finding:
     # high the confidence climbs (e.g. which of several keys was added is
     # unknowable). Manual remediation in the TUI stays possible, with a warning.
     auto_remediation_blocked: Optional[str] = None
+    # Every hard block, as {code, detail}; auto_remediation_blocked is kept as
+    # the first one's detail for 2.x report consumers.
+    blocked_reasons: List[BlockedReason] = field(default_factory=list)
     # (st_dev, st_ino, st_uid) of the artifact's parent directory when it was
     # collected. Remediation refuses if the directory there now is another
     # one — e.g. ~/.ssh swapped for a symlink or a different directory.
     parent_dir_identity: Optional[tuple] = None
+
+
+def block_auto_remediation(finding: "Finding", code: str, detail: str) -> None:
+    """Keep `finding` out of `--remediate --confirm`, whatever its confidence."""
+    if any(r.code == code for r in finding.blocked_reasons):
+        return
+    finding.blocked_reasons.append(BlockedReason(code=code, detail=detail))
+    if finding.auto_remediation_blocked is None:
+        finding.auto_remediation_blocked = detail
 
 
 @dataclass

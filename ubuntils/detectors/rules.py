@@ -4,6 +4,9 @@ import re
 import time
 from typing import List, Optional
 
+from ubuntils.detectors.finding import (
+    AMBIGUOUS_KEY, RECENCY_ONLY, SOLE_SUDO_ACCESS, block_auto_remediation,
+)
 from ubuntils.detectors.finding import Finding, Severity
 from ubuntils.detectors.scoring import apply_signal
 from ubuntils.utils.validators import (
@@ -341,7 +344,15 @@ def rule_ssh_unauthorized_key(artifacts: dict) -> List[Finding]:
             reason = (f"{path} holds {n_keys} keys; its timestamps can't tell "
                       "which one was added")
             apply_signal(finding, "ambiguous_key", -40, reason)
-            finding.auto_remediation_blocked = reason
+            block_auto_remediation(finding, AMBIGUOUS_KEY, reason)
+        if not (has_dangerous_option or legacy_file):
+            # Recency is all there is, and a freshly provisioned host looks
+            # exactly like this: its admin's only key, added this week. Removing
+            # it on a score alone locked the admin out of a new cloud server.
+            block_auto_remediation(
+                finding, RECENCY_ONLY,
+                f"the only evidence against this key is that {path} changed in the "
+                "last 7 days, which is also what provisioning looks like")
         findings.append(finding)
     return findings
 
@@ -435,7 +446,7 @@ def rule_sudoers_nopasswd(artifacts: dict) -> List[Finding]:
             # user, sits on one physical line, and NOPASSWD is the problem (with
             # only !authenticate, deleting the rule would revoke sudo outright).
             auto = (nopasswd and len(principals) == 1 and not rule.get("continued", False))
-            findings.append(Finding(
+            finding = Finding(
                 rule_id="SUDOERS_NOPASSWD",
                 severity=Severity.MEDIUM,
                 title=f"{how} sudoers entry for non-system user",
@@ -452,7 +463,21 @@ def rule_sudoers_nopasswd(artifacts: dict) -> List[Finding]:
                     f"Edit with `visudo -f {source}` and drop the NOPASSWD tag or "
                     f"!authenticate default for '{username}'."
                 ),
-            ))
+            )
+            account = users_by_name[username]
+            if auto and account.get("password_locked") is not False:
+                # No usable password (locked, as for Ubuntu's cloud-image
+                # default user, or unknown): NOPASSWD is how this account uses
+                # sudo at all, so removing the rule revokes it outright. That is
+                # the fix for a backdoor account and a lockout for an admin, and
+                # nothing here tells the two apart.
+                state = ("its password can't be read" if account.get("password_locked") is None
+                         else "its password is locked")
+                block_auto_remediation(
+                    finding, SOLE_SUDO_ACCESS,
+                    f"'{username}' has no usable password ({state}), so removing this rule "
+                    "leaves it no sudo access at all; if it is an admin, that locks them out")
+            findings.append(finding)
     return findings
 
 

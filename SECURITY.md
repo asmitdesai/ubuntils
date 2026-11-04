@@ -32,10 +32,20 @@ that may already be compromised:
   `/var/backups/ubuntils/` on the same system. If you need a forensically pure
   image, capture it *before* running any remediation. Every report carries a
   `report_sha256` so a collected artifact can be verified later.
-- **`--remediate --confirm` won't act on what it can't attribute.** A key in an
-  `authorized_keys` file holding several keys is `auto_remediation_blocked`:
-  timestamps can't say which key was added, and no score (a forgeable
-  `Accepted publickey` log line included) lifts the block. Timeline evidence
+- **`--remediate --confirm` won't act on what it can't attribute, or on what
+  would lock an admin out.** These are hard blocks (`blocked_reasons`), checked
+  before the confidence gate, and no score lifts them (a forgeable
+  `Accepted publickey` log line included):
+  - `AMBIGUOUS_KEY`: a key in an `authorized_keys` file holding several keys;
+    timestamps can't say which key was added.
+  - `RECENCY_ONLY`: a key whose only evidence is that its file changed in the
+    last 7 days. A freshly provisioned host looks exactly like that: its
+    admin's only key, added this week.
+  - `SOLE_SUDO_ACCESS`: a NOPASSWD rule for an account with no usable password
+    (locked, like Ubuntu's cloud-image default user, or unreadable). Removing
+    it leaves that account no sudo at all.
+
+  Each stays fixable by hand in the TUI, behind a warning. Timeline evidence
   counts for a key only when the log line names that key's fingerprint.
 
 ## How ubuntils protects itself on a hostile host

@@ -815,7 +815,7 @@ Select any finding with a remediation in the Findings tab, then press `R`. A con
 
 `--remediate` without `--confirm` is a safe dry run: validation runs and each result says what would change, but nothing is written — no change and no backup. Pass both flags to actually make changes. The pipeline runs before the TUI launches in this mode, and the Summary tab lists every remediation outcome with its backup path and rollback command.
 
-`--remediate --confirm` only acts on findings with a confidence score of at least 40 (the MEDIUM band) — a low-confidence, mtime-only `SSH_UNAUTHORIZED_KEY` is reported as `SKIPPED` rather than having its key deleted. Adjust the gate with `--min-confidence N`.
+`--remediate --confirm` never applies a fix that has a hard block in `blocked_reasons`, whatever its confidence: `AMBIGUOUS_KEY` (one of several keys in a file), `RECENCY_ONLY` (a key whose only evidence is a recent timestamp, which is also what a freshly provisioned host's admin key looks like), and `SOLE_SUDO_ACCESS` (a NOPASSWD rule for an account with no usable password, such as the cloud-image default user, whose removal would leave it no sudo at all). Those are reported as `SKIPPED` with the reason and stay fixable by hand in the TUI. Of the rest, it only acts on findings with a confidence score of at least 40 (the MEDIUM band). Adjust that gate with `--min-confidence N`; it never lifts a hard block.
 
 ```bash
 ubuntils scan --remediate          # dry run
@@ -835,7 +835,7 @@ Every remediation follows the same pattern regardless of how it is triggered:
 6. Record a rollback sidecar, `<backup>.json`, holding the original path, owner, group and mode, the parent directory's device and inode, and the SHA-256 of the content remediation left behind
 7. Verify the exact line is gone
 
-If any step fails, remediation stops immediately, the system is left unchanged, and the full error is reported with the backup path. Sudo access is protected two ways: `%group` NOPASSWD rules (like `%sudo`) are flag-only and never auto-removed, and the sudoers remediator refuses to remove the last rule from the main sudoers file.
+If any step fails, remediation stops immediately, the system is left unchanged, and the full error is reported with the backup path. Sudo access is protected three ways: `%group` NOPASSWD rules (like `%sudo`) are flag-only and never auto-removed, a rule for an account with no usable password is blocked from automatic removal (`SOLE_SUDO_ACCESS`), and the sudoers remediator refuses to remove the last rule from the main sudoers file.
 
 ### Rollback
 

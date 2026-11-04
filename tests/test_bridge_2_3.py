@@ -247,3 +247,84 @@ def test_R05_notice_is_printed_once_on_stderr(monkeypatch):
 
 def test_R05_help_mentions_the_tui_extra():
     assert "ubuntils[tui]" in CliRunner().invoke(cli.main, ["--help"]).output
+
+
+# ── N-15: --remediate --confirm must not lock out a new host's admin ─────────
+# On a stock Ubuntu cloud image in its first week, the default user's only
+# SSH key scored 70 on recency alone and its cloud-init NOPASSWD rule 50, so
+# `scan --remediate --confirm` removed both; that user's password is locked,
+# which left nobody able to log in or use sudo.
+
+import time as _time  # noqa: E402
+
+from ubuntils.detectors.finding import RECENCY_ONLY, SOLE_SUDO_ACCESS  # noqa: E402
+from ubuntils.detectors.rules import (  # noqa: E402
+    rule_ssh_unauthorized_key, rule_sudoers_nopasswd,
+)
+from ubuntils.formatters.json_formatter import JSONFormatter  # noqa: E402
+from ubuntils.pipeline import remediate_findings  # noqa: E402
+from ubuntils.detectors.finding import RemediationStatus  # noqa: E402
+
+
+def _admin_key(options=""):
+    now = _time.time() - 2 * 86400
+    line = " ".join(filter(None, [options, "ssh-ed25519", _ADMIN_KEY, "admin@laptop"]))
+    return {"username": "ubuntu", "home": "/home/ubuntu",
+            "path": "/home/ubuntu/.ssh/authorized_keys", "key_type": "ssh-ed25519",
+            "key_data": _ADMIN_KEY, "comment": "admin@laptop", "options": options,
+            "raw_line": line, "file_mtime": now, "file_ctime": now}
+
+
+def _cloud_user(password_locked=True):
+    return {"username": "ubuntu", "uid": 1000, "gid": 1000, "home": "/home/ubuntu",
+            "shell": "/bin/bash", "is_login_shell": True, "groups": ["sudo"],
+            "password_locked": password_locked, "password_empty": False}
+
+
+def _cloud_init_rule():
+    return {"source": "/etc/sudoers.d/90-cloud-init-users", "user": "ubuntu",
+            "principals": ["ubuntu"], "options": "NOPASSWD:", "commands": "ALL",
+            "raw_line": "ubuntu ALL=(ALL) NOPASSWD:ALL"}
+
+
+def test_N15_new_hosts_only_key_is_never_auto_removed():
+    [f] = rule_ssh_unauthorized_key({"authorized_keys": [_admin_key()]})
+    assert f.confidence >= 40  # above the gate: the score alone would remove it
+    assert [r.code for r in f.blocked_reasons] == [RECENCY_ONLY]
+    [result] = remediate_findings([f], confirm=True, min_confidence=0)
+    assert result.status == RemediationStatus.SKIPPED
+    assert "RECENCY_ONLY" in result.message
+
+
+def test_N15_key_with_content_evidence_stays_eligible():
+    [f] = rule_ssh_unauthorized_key({"authorized_keys": [_admin_key('command="/tmp/.x"')]})
+    assert f.blocked_reasons == []
+
+
+def test_N15_cloud_init_sudo_rule_for_a_locked_user_is_never_auto_removed():
+    [f] = rule_sudoers_nopasswd({"users": [_cloud_user()],
+                                 "sudoers_rules": [_cloud_init_rule()]})
+    assert f.remediation_available  # still fixable by hand, after review
+    assert [r.code for r in f.blocked_reasons] == [SOLE_SUDO_ACCESS]
+    [result] = remediate_findings([f], confirm=True, min_confidence=0)
+    assert result.status == RemediationStatus.SKIPPED
+
+
+def test_N15_unknown_password_state_also_blocks():
+    [f] = rule_sudoers_nopasswd({"users": [_cloud_user(password_locked=None)],
+                                 "sudoers_rules": [_cloud_init_rule()]})
+    assert [r.code for r in f.blocked_reasons] == [SOLE_SUDO_ACCESS]
+
+
+def test_N15_user_with_a_password_stays_eligible():
+    [f] = rule_sudoers_nopasswd({"users": [_cloud_user(password_locked=False)],
+                                 "sudoers_rules": [_cloud_init_rule()]})
+    assert f.blocked_reasons == []
+
+
+def test_N15_report_lists_every_block_reason():
+    [f] = rule_sudoers_nopasswd({"users": [_cloud_user()],
+                                 "sudoers_rules": [_cloud_init_rule()]})
+    d = JSONFormatter()._finding(f)
+    assert d["blocked_reasons"][0]["code"] == SOLE_SUDO_ACCESS
+    assert d["auto_remediation_blocked"] == d["blocked_reasons"][0]["detail"]

@@ -83,13 +83,15 @@ def remediate_findings(findings: List[Finding], confirm: bool,
         remediator_cls = REMEDIATOR_REGISTRY.get(finding.rule_id)
         if remediator_cls is None or not finding.remediation_available:
             continue
-        if finding.auto_remediation_blocked:
+        if finding.blocked_reasons or finding.auto_remediation_blocked:
             # A hard block, not a score: no amount of corroboration lifts it.
+            reasons = [f"{r.code}: {r.detail}" for r in finding.blocked_reasons] \
+                or [finding.auto_remediation_blocked]
             result = RemediationResult(
                 finding_rule_id=finding.rule_id,
                 status=RemediationStatus.SKIPPED,
                 message=(
-                    f"auto-remediation blocked: {finding.auto_remediation_blocked} — "
+                    f"auto-remediation blocked: {'; '.join(reasons)} — "
                     "review and remediate manually"
                 ),
             )
