@@ -4,9 +4,11 @@ import re
 
 LAB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                    "tools", "lab", "seed-lab.sh")
-# Deliberately not planted: one needs live outbound traffic, the other is a
-# real passwordless login and is opt-in (--with-empty-password).
-NOT_PLANTED_BY_DEFAULT = {"PROCESS_SUSPICIOUS_CONNECTION", "USER_EMPTY_PASSWORD"}
+# Deliberately not planted: one needs live outbound traffic, one is a real
+# passwordless login and is opt-in (--with-empty-password), and
+# USER_FILE_OVERSIZED needs a multi-megabyte padded file in a user's home.
+NOT_PLANTED_BY_DEFAULT = {"PROCESS_SUSPICIOUS_CONNECTION", "USER_EMPTY_PASSWORD",
+                          "USER_FILE_OVERSIZED"}
 
 
 def _built_in_rule_ids():

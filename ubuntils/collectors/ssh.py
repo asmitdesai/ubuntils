@@ -86,6 +86,7 @@ class SSHCollector(BaseCollector):
 
         patterns = self._authorized_keys_patterns()
         seen_files: set = set()
+        self.oversized: list = []
         for line in passwd_lines:
             line = line.strip()
             if not line or line.startswith("#"):
@@ -103,7 +104,8 @@ class SSHCollector(BaseCollector):
                 seen_files.add(path)
                 entries.extend(self._read_keys_file(path, username, home))
 
-        return {"authorized_keys": self.tag_parent_dirs(entries, "path")}
+        return {"authorized_keys": self.tag_parent_dirs(entries, "path"),
+                "oversized_authorized_keys": self.oversized}
 
     def _authorized_keys_patterns(self) -> list:
         """Every AuthorizedKeysFile pattern sshd could use, plus the defaults.
@@ -138,10 +140,17 @@ class SSHCollector(BaseCollector):
             return []
         try:
             st = self.source.lstat(path)
-            content = self.source.read_user_text(path)
+            user_file = self.source.read_user_file(path)
         except Exception as exc:
             self.degraded.append(f"skipped {path}: {exc}")
             return []
+        content = user_file.text
+        if user_file.oversized:
+            # sshd honours a key on any line; padding a file is a way to
+            # push one past tools that skip big files.
+            self.oversized.append({"path": path, "username": username, "size": user_file.size,
+                                   "truncated": user_file.truncated,
+                                   "kind": "authorized_keys"})
         entries = []
         for key_line in content.splitlines():
             stripped = key_line.strip()
@@ -165,5 +174,6 @@ class SSHCollector(BaseCollector):
                 "raw_line": key_line,
                 "file_mtime": float(st.st_mtime),
                 "file_ctime": float(st.st_ctime),
+                "oversized": user_file.oversized,
             })
         return entries

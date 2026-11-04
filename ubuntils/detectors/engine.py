@@ -21,6 +21,7 @@ from ubuntils.detectors.rules import (
     rule_setuid_inventory,
     rule_pam_backdoor,
     rule_kernel_module_suspicious,
+    rule_user_file_oversized,
 )
 from ubuntils.utils.baseline import Baseline
 from ubuntils.utils.config import Allowlist
@@ -42,6 +43,7 @@ ALL_RULES = [
     rule_setuid_inventory,
     rule_pam_backdoor,
     rule_kernel_module_suspicious,
+    rule_user_file_oversized,
 ]
 
 logger = structlog.get_logger()

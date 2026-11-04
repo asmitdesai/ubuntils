@@ -9,7 +9,7 @@
   `data.rule_id`, which is unique to ubuntils' JSONL schema on this
   localfile path.
 
-  Rule IDs 100100-100104 are chosen from Wazuh's user-reserved custom rule
+  Rule IDs 100100-100105 are chosen from Wazuh's user-reserved custom rule
   ID range (100000+); adjust if they collide with other custom rules on
   your manager.
 -->
@@ -44,5 +44,14 @@
     <if_sid>100101</if_sid>
     <field name="data.confidence_band">HIGH</field>
     <description>ubuntils HIGH severity, HIGH confidence finding: $(data.title)</description>
+  </rule>
+
+  <!-- A multi-megabyte authorized_keys, shell init file or user unit: padding
+       meant to hide an entry from tools that skip big files. MEDIUM in
+       ubuntils, but worth more than a routine MEDIUM finding. -->
+  <rule id="100105" level="10">
+    <if_sid>100102</if_sid>
+    <field name="data.rule_id">^USER_FILE_OVERSIZED$</field>
+    <description>ubuntils: oversized user file may hide an entry: $(data.artifact_path)</description>
   </rule>
 </group>

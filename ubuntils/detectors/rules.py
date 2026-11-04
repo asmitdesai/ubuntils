@@ -1143,3 +1143,44 @@ def rule_kernel_module_suspicious(artifacts: dict) -> List[Finding]:
                          f"kernel taint flags '{taint}': {', '.join(reasons)}")
         findings.append(finding)
     return findings
+
+
+def rule_user_file_oversized(artifacts: dict) -> List[Finding]:
+    """authorized_keys, shell init files and per-user units over 1 MiB.
+
+    Real ones are a few KB. sshd and bash honour every line however large the
+    file is, so megabytes of padding is a way to push a key or a backdoor past
+    tools (and eyes) that skip or truncate big files. ubuntils reads them
+    anyway, up to its 64 MiB ceiling; this reports the padding itself.
+    """
+    candidates = list(artifacts.get("oversized_authorized_keys", []))
+    candidates += list(artifacts.get("oversized_user_units", []))
+    candidates += [
+        {"path": f.get("source", ""), "size": f.get("size", 0),
+         "truncated": f.get("truncated", False), "kind": "shell init file"}
+        for f in artifacts.get("shell_init_files", [])
+        if f.get("oversized") and f.get("owner") != "system"
+    ]
+    findings = []
+    for entry in candidates:
+        path, size = entry.get("path", ""), entry.get("size", 0)
+        unread = (" ubuntils stopped reading at 64 MiB, so anything past that was not "
+                  "checked." if entry.get("truncated") else "")
+        findings.append(Finding(
+            rule_id="USER_FILE_OVERSIZED",
+            severity=Severity.MEDIUM,
+            title=f"Oversized {entry.get('kind', 'user file')}",
+            description=(
+                f"{path} is {size:,} bytes; files like it are normally a few KB. It is "
+                f"still honoured in full, so padding may be hiding an entry.{unread}"
+            ),
+            artifact_path=path,
+            raw_value=f"{size} bytes",
+            remediation_available=False,
+            remediation_description=None,
+            guided_remediation=(
+                f"Look past the padding: `grep -nv '^\\s*\\(#\\|$\\)' {path} | head`, "
+                "then restore the file from a known-good copy."
+            ),
+        ))
+    return findings

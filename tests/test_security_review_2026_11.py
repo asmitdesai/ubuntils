@@ -480,3 +480,81 @@ def test_F01_cli_rollback(tmp_path, monkeypatch):
     assert "Restored" in ok.output
     refused = CliRunner().invoke(main, ["rollback", backup])  # content changed now
     assert refused.exit_code != 0 and "Rollback refused" in refused.output
+
+
+# ─── F-05: oversized user-controlled files become findings ──────────────────
+
+def _padded(n_bytes: int, tail: str) -> str:
+    line = "# " + "x" * 98 + "\n"
+    return line * (n_bytes // len(line)) + tail
+
+
+def test_F05_padded_authorized_keys_still_yields_the_key_and_a_finding(tmp_path):
+    from ubuntils.collectors.ssh import SSHCollector
+    from ubuntils.detectors.engine import DetectionEngine
+    root = _tree(tmp_path, {
+        "/etc/passwd": "eve:x:1000:1000::/home/eve:/bin/bash\n",
+        "/home/eve/.ssh/authorized_keys": _padded(
+            1536 * 1024, f"ssh-ed25519 {_ATTACKER_KEY} hidden\n"),
+    })
+    artifacts = SSHCollector(source=LiveSource(root=root, offline=True)).collect()
+    assert [k["key_data"] for k in artifacts["authorized_keys"]] == [_ATTACKER_KEY]
+    assert artifacts["authorized_keys"][0]["oversized"] is True
+
+    findings = DetectionEngine().run(artifacts)
+    rule_ids = {f.rule_id for f in findings}
+    assert {"SSH_UNAUTHORIZED_KEY", "USER_FILE_OVERSIZED"} <= rule_ids
+    [oversized] = [f for f in findings if f.rule_id == "USER_FILE_OVERSIZED"]
+    assert oversized.artifact_path == "/home/eve/.ssh/authorized_keys"
+    assert oversized.remediation_available is False
+
+
+def test_F05_padded_bashrc_and_user_unit_are_read_and_flagged(tmp_path):
+    from ubuntils.collectors.environment import EnvironmentCollector
+    from ubuntils.collectors.systemd import SystemdCollector
+    from ubuntils.detectors.rules import rule_ld_preload_inject, rule_user_file_oversized
+    root = _tree(tmp_path, {
+        "/etc/passwd": "eve:x:1000:1000::/home/eve:/bin/bash\n",
+        "/home/eve/.bashrc": _padded(1100 * 1024, "export LD_PRELOAD=/tmp/evil.so\n"),
+        "/home/eve/.config/systemd/user/x.service": _padded(
+            1100 * 1024, "[Service]\nExecStart=/tmp/x\n"),
+    })
+    source = LiveSource(root=root, offline=True)
+    artifacts = EnvironmentCollector(source=source).collect()
+    artifacts.update(SystemdCollector(source=source).collect())
+    assert rule_ld_preload_inject(artifacts)  # the line past the padding was seen
+    assert any(s["exec_start"] == "/tmp/x" for s in artifacts["services"])
+    paths = {f.artifact_path for f in rule_user_file_oversized(artifacts)}
+    assert paths == {"/home/eve/.bashrc", "/home/eve/.config/systemd/user/x.service"}
+
+
+def test_F05_normal_files_and_system_files_are_not_flagged(tmp_path):
+    from ubuntils.collectors.environment import EnvironmentCollector
+    from ubuntils.detectors.rules import rule_user_file_oversized
+    root = _tree(tmp_path, {
+        "/etc/passwd": "eve:x:1000:1000::/home/eve:/bin/bash\n",
+        "/etc/bash.bashrc": _padded(1100 * 1024, ""),  # root's own file
+        "/home/eve/.bashrc": "alias ll='ls -l'\n",
+    })
+    artifacts = EnvironmentCollector(source=LiveSource(root=root, offline=True)).collect()
+    assert rule_user_file_oversized(artifacts) == []
+
+
+def test_F05_reading_stops_at_the_hard_ceiling(tmp_path, monkeypatch):
+    from ubuntils.collectors import source as source_mod
+    monkeypatch.setattr(source_mod, "USER_FILE_HARD_MAX_BYTES", 4096)
+    big = tmp_path / "f"
+    big.write_text("y" * 10_000)
+    user_file = LiveSource().read_user_file(str(big))
+    assert len(user_file.text) == 4096
+    assert user_file.truncated and user_file.oversized is False  # 10 KB < 1 MiB
+    assert user_file.size == 10_000
+
+
+def test_F05_wazuh_forwards_oversized_findings():
+    from ubuntils.detectors.rules import rule_user_file_oversized
+    from ubuntils.integrations.wazuh import _finding_to_dict
+    [finding] = rule_user_file_oversized({"oversized_authorized_keys": [
+        {"path": "/home/eve/.ssh/authorized_keys", "size": 2_000_000,
+         "kind": "authorized_keys"}]})
+    assert _finding_to_dict(finding, "h")["rule_id"] == "USER_FILE_OVERSIZED"

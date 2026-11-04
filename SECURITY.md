@@ -45,10 +45,13 @@ what it reads there as hostile input:
   on a fixed, root-owned `PATH`, never the caller's.
 - **Files users control are read defensively.** Shell init files, SSH key files
   and per-user systemd units are opened non-blocking and must be regular files
-  of at most 1 MiB — a FIFO, `/dev/zero` symlink or 100 GB sparse file is
-  skipped and reported as a degraded collector instead of hanging the scan.
-  Lines that aren't SSH keys are discarded, so a symlink to `/etc/shadow` can't
-  copy hashes into the report.
+  — a FIFO or `/dev/zero` symlink is skipped and reported as a degraded
+  collector instead of hanging the scan. Reading stops at 64 MiB, so a 100 GB
+  sparse file can't exhaust memory. A file over 1 MiB is still read, since
+  sshd and bash honour every line of it, and is reported as
+  `USER_FILE_OVERSIZED`: padding can't hide a key or backdoor. Lines that
+  aren't SSH keys are discarded, so a symlink to `/etc/shadow` can't copy
+  hashes into the report.
 - **Attacker text is never interpreted.** Findings render in the TUI as plain
   text, so markup in a cron line or log message can't restyle or crash it.
 - **Every root-run write refuses symlinks** (`O_NOFOLLOW`, `O_EXCL` for backups,

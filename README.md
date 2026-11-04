@@ -30,7 +30,7 @@ The gap is a tool that runs on the live system right now, covers the most common
 ubuntils runs in four sequential stages:
 
 1. **Collection** — Eleven collectors gather forensic artifacts concurrently from `/proc`, cron tables, systemd units, SSH keys, sudoers files, environment definitions, package integrity (`dpkg --verify`), PAM/NSS config, and loaded kernel modules. Most collectors finish in a second or two; `dpkg --verify`, which re-checks every installed package file, dominates — a full scan took 29–68 seconds on an Ubuntu 26.04 arm64 desktop VM.
-2. **Detection** — A detection engine runs all sixteen built-in rules — plus any custom rules loaded with `--rules` — over the collected artifacts, producing a ranked, confidence-scored findings list in about one second.
+2. **Detection** — A detection engine runs all seventeen built-in rules — plus any custom rules loaded with `--rules` — over the collected artifacts, producing a ranked, confidence-scored findings list in about one second.
 3. **Timeline** — A timeline builder reads syslog, journald, and auditd in parallel and correlates events chronologically, adding roughly 0.3 seconds. Each finding is then auto-correlated against the timeline, so it carries the nearby events that relate to it.
 4. **Output** — Results appear either in an interactive four-tab TUI (default) or as structured JSON on stdout (`--json`).
 
@@ -469,6 +469,7 @@ A summary view of the scan: detected Ubuntu version, architecture, scan duration
 | PAM_BACKDOOR | HIGH | No | A `pam_permit.so` line in an /etc/pam.d/* auth/account stack that can grant access on its own (`sufficient`/`success=done`, or no `pam_deny`-style gate in that stack), or an NSS module in /etc/nsswitch.conf outside an allowlist (files/sss/ldap/winbind/...) |
 | KERNEL_MODULE_SUSPICIOUS | MEDIUM / LOW | No | Loaded kernel modules the kernel marks as out-of-tree, unsigned, proprietary or force-loaded (MEDIUM), unless allowlisted; modules shipped with the running kernel are not reported. Without taint data (offline, older bundles) any module outside an allowlist of common built-ins is reported LOW |
 | SETUID_INVENTORY | LOW | No | Unexpected setuid or setgid binaries outside a known baseline set (the two bits are checked and reported separately) |
+| USER_FILE_OVERSIZED | MEDIUM | No | An `authorized_keys` file, per-user shell init file or per-user systemd unit larger than 1 MiB (real ones are a few KB) |
 
 ### Why each rule exists
 
@@ -570,6 +571,8 @@ Artifact:      /etc/shadow
 Raw value:     eve::
 Remediation:   not available
 ```
+
+**USER_FILE_OVERSIZED** — sshd honours a key on any line of `authorized_keys`, and bash runs every line of `~/.bashrc`, however big the file is. Megabytes of padding in front of one malicious line is a cheap way to slip past tools, and people, that skip or truncate large files. ubuntils reads these files anyway, up to a 64 MiB ceiling, so the key or backdoor past the padding is still reported by its own rule. This rule reports the padding itself. Flag-only: look past the padding (`grep -nv '^\s*\(#\|$\)' FILE`) and restore the file from a known-good copy. The example Wazuh rules raise it to level 10 (rule 100105).
 
 **PROCESS_SUSPICIOUS_CONNECTION** — Persistence is only half the picture; a foothold that never talks to anything is rarely the one you care about. This rule joins the process and network collectors by PID so a flagged process arrives with its current connections attached. An executable staged in `/tmp` holding an established outbound socket is HIGH; a legitimate binary reaching a non-standard remote port is MEDIUM and worth a look. Connections accepted on a local listening port are treated as inbound: their "remote port" is the client's ephemeral port, so they only count toward the executable-location check (a bind shell in `/tmp` is still HIGH, your own SSH session is not flagged). Loopback traffic, including IPv4-mapped `::ffff:127.0.0.1`, is ignored. This is a snapshot of current state, not continuous monitoring — a beacon that is sleeping when you scan will not appear. Flag-only.
 
@@ -758,7 +761,7 @@ A `LOW`-band finding is not dismissed or hidden — it still appears in the find
 
 ## Remediation
 
-Five of the sixteen detection rules have automated remediation: `CRON_ROOT_EXEC`, `CRON_TMP_PATH`, `LD_PRELOAD_INJECT`, `SSH_UNAUTHORIZED_KEY`, and `SUDOERS_NOPASSWD`. The rest are flag-only and will never be auto-remediated, because acting on them safely needs a human to look first.
+Five of the seventeen detection rules have automated remediation: `CRON_ROOT_EXEC`, `CRON_TMP_PATH`, `LD_PRELOAD_INJECT`, `SSH_UNAUTHORIZED_KEY`, and `SUDOERS_NOPASSWD`. The rest are flag-only and will never be auto-remediated, because acting on them safely needs a human to look first.
 
 ### Guided remediation
 
@@ -871,7 +874,7 @@ non-production environment before relying on them.
 | `raw_value` | string | The raw line/value that triggered the rule |
 | `remediation_available` | bool | Whether ubuntils has a remediator for this rule |
 | `confidence` | int (0–100) | Confidence score — see [Confidence scoring](#confidence-scoring) |
-| `confidence_band` | string | `HIGH` \| `MEDIUM` \| `LOW`; rule 100104 in the example escalates HIGH-severity findings with a HIGH band |
+| `confidence_band` | string | `HIGH` \| `MEDIUM` \| `LOW`; rule 100104 in the example escalates HIGH-severity findings with a HIGH band, and rule 100105 raises `USER_FILE_OVERSIZED` |
 | `related_events` | array (optional) | Correlated timeline events (`timestamp`, `source`, `program`, `description`), if any |
 
 ---
@@ -928,7 +931,7 @@ sudo tools/lab/seed-lab.sh clean      # removes everything it planted
 | `PACKAGE_TAMPERED` | one comment line appended to `base-files`' `/usr/share/base-files/dot.bashrc` (restored on `clean`) |
 | `KERNEL_MODULE_SUSPICIOUS` | the harmless `dummy` network module |
 
-Nothing it plants can run or let anyone in: cron entries never fire, units are never enabled, the lab accounts are locked, no private key exists, and URLs use the reserved `.invalid` domain. Every action is recorded in `/var/lib/ubuntils-lab/actions`, and `clean` undoes them in reverse. `PROCESS_SUSPICIOUS_CONNECTION` is left out because it needs a live outbound connection; `USER_EMPTY_PASSWORD` needs a genuinely passwordless login, so it's only planted with `plant --with-empty-password`.
+Nothing it plants can run or let anyone in: cron entries never fire, units are never enabled, the lab accounts are locked, no private key exists, and URLs use the reserved `.invalid` domain. Every action is recorded in `/var/lib/ubuntils-lab/actions`, and `clean` undoes them in reverse. `PROCESS_SUSPICIOUS_CONNECTION` is left out because it needs a live outbound connection; `USER_EMPTY_PASSWORD` needs a genuinely passwordless login, so it's only planted with `plant --with-empty-password`. `USER_FILE_OVERSIZED` isn't planted: it needs a multi-megabyte padded file in a user's home.
 
 The remediable findings make a good in-TUI remediation demo: press **R** on the cron, sudoers, SSH or `LD_PRELOAD` finding. Backups from those fixes stay in `/var/backups/ubuntils/` after `clean`.
 

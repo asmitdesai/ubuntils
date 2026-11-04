@@ -63,7 +63,9 @@ class SystemdCollector(BaseCollector):
                 "exec_owner_uid": self._owner_uid(exec_binary(exec_start)),
             })
 
-        return {"timers": result, "services": self._service_units()}
+        services = self._service_units()
+        return {"timers": result, "services": services,
+                "oversized_user_units": self.oversized_units}
 
     def _owner_uid(self, path: str):
         """UID owning ``path`` on the analyzed host, or None if unknown."""
@@ -77,6 +79,7 @@ class SystemdCollector(BaseCollector):
     def _service_units(self) -> list:
         units = []
         seen: set = set()
+        self.oversized_units = []
         for pattern in UNIT_GLOBS + DROPIN_GLOBS:
             try:
                 paths = self.source.glob(pattern)
@@ -85,9 +88,16 @@ class SystemdCollector(BaseCollector):
             for path in paths:
                 try:
                     # Masked units are symlinks to /dev/null: read_text gives "".
-                    text = (self.source.read_user_text(path)
-                            if path.startswith(_USER_UNIT_PREFIXES)
-                            else self.source.read_text(path))
+                    if path.startswith(_USER_UNIT_PREFIXES):
+                        user_file = self.source.read_user_file(path)
+                        text = user_file.text
+                        if user_file.oversized:
+                            self.oversized_units.append({
+                                "path": path, "size": user_file.size,
+                                "truncated": user_file.truncated, "kind": "systemd user unit",
+                            })
+                    else:
+                        text = self.source.read_text(path)
                 except Exception:
                     continue
                 is_dropin = path.endswith(".conf")
