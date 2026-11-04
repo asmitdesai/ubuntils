@@ -349,3 +349,40 @@ def test_N09_user_files_past_the_read_ceiling_mark_collectors_degraded(tmp_path,
         collector.collect()
         notes = [d for d in collector.degraded if name in d]
         assert notes and source_mod.UNREAD_TAIL_NOTE in notes[0], collector.degraded
+
+
+# ── N-08: writable code inside a root-owned prefix ───────────────────────────
+
+def test_N08_group_writable_dependency_file_is_refused(tmp_path):
+    dep = tmp_path / "site-packages" / "click"
+    dep.mkdir(parents=True)
+    core = dep / "core.py"
+    core.write_text("# would run as root\n")
+    core.chmod(0o666)
+    problems = cli.install_trust_problems(paths=[], files=[str(core)])
+    assert any(str(core) in p for p in problems), problems
+
+
+def test_N08_writable_pth_file_is_refused(tmp_path, monkeypatch):
+    pth = tmp_path / "evil.pth"
+    pth.write_text("import os\n")
+    pth.chmod(0o666)
+    monkeypatch.setattr(cli, "_pth_files", lambda: [str(pth)])
+    monkeypatch.setattr(cli, "_untrusted", lambda path: [])  # isolate the file check
+    assert any(str(pth) in p for p in cli.install_trust_problems())
+
+
+def test_N08_running_install_checks_loaded_modules_and_the_whole_package():
+    files = cli._code_files()
+    assert cli.__file__ in files or os.path.realpath(cli.__file__) in files
+    assert any(f.endswith(os.path.join("ubuntils", "data", "rule_meta.yaml")) for f in files)
+    import click
+    assert os.path.realpath(click.__file__) in files
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="needs root-owned files")
+def test_N08_root_owned_read_only_file_passes(tmp_path):
+    f = tmp_path / "ok.py"
+    f.write_text("")
+    f.chmod(0o644)
+    assert cli._file_problem(str(f)) == []

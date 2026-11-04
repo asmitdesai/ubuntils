@@ -62,8 +62,13 @@ what it reads there as hostile input:
   caller's. What root *does* run is ubuntils' own code and its interpreter.
   If those are installed where a non-root user can write (pipx's default
   `~/.local`, a venv in a home directory, an editable checkout), that user
-  can change them and get root. ubuntils checks for this before escalating
-  and refuses unless you pass `--allow-user-install`. Install it root-owned
+  can change them and get root. ubuntils checks for this before escalating:
+  the interpreter, `sys.prefix` and its own package and every directory above
+  them, and every file root would run code from (each module already loaded,
+  so its dependencies too, every file in the ubuntils package, and every
+  `.pth` file in site-packages, which Python executes at start-up). Any of
+  them owned by another user or writable by group or others makes it refuse,
+  unless you pass `--allow-user-install`. Install it root-owned
   instead (see the README).
 - **Files users control are read defensively.** Shell init files, SSH key files
   and per-user systemd units are opened non-blocking and must be regular files

@@ -40,7 +40,7 @@ ubuntils itself makes no network calls, and every feature — custom rules and c
 
 ## Installation
 
-ubuntils runs as root on a host that may be compromised, so install it where only root can change it. If the code lives somewhere your user can write (pipx's default `~/.local`, a venv in your home directory, an editable checkout), then anything running as your user, possibly the attacker, can modify ubuntils and get root the next time you run it. Before escalating, `scan`, `collect` and `rollback` check that the interpreter, `sys.prefix` and the ubuntils package, plus every directory above them, are root-owned and not writable by group or others. If any of them fails the check, ubuntils refuses to escalate unless you pass `--allow-user-install` (see below).
+ubuntils runs as root on a host that may be compromised, so install it where only root can change it. If the code lives somewhere your user can write (pipx's default `~/.local`, a venv in your home directory, an editable checkout), then anything running as your user, possibly the attacker, can modify ubuntils and get root the next time you run it. Before escalating, `scan`, `collect` and `rollback` check that the interpreter, `sys.prefix` and the ubuntils package, plus every directory above them, are root-owned and not writable by group or others, and so is every file root would run code from: the modules already loaded (its dependencies included), every file in the ubuntils package, and the `.pth` files in site-packages. If any of them fails the check, ubuntils refuses to escalate unless you pass `--allow-user-install` (see below).
 
 Install a release, not `main`. Replace `vX.Y.Z` below with the latest tag from the [Releases](https://github.com/asmitdesai/ubuntils/releases) page.
 

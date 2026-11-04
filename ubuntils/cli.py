@@ -1,6 +1,7 @@
 import os
 import secrets
 import socket
+import stat
 import sys
 import tarfile
 import warnings
@@ -125,19 +126,85 @@ def _untrusted(path: str) -> list:
     return problems
 
 
-def install_trust_problems(paths=None) -> list:
+def _file_problem(path: str) -> list:
+    """Why root shouldn't execute the file at ``path`` itself (its directories
+    are checked by _untrusted)."""
+    try:
+        st = os.lstat(path)
+        if stat.S_ISLNK(st.st_mode):
+            st = os.stat(path)
+    except OSError as exc:
+        return [f"{path}: cannot stat ({exc.strerror})"]
+    if st.st_uid != 0:
+        return [f"{path} is owned by uid {st.st_uid}"]
+    if st.st_mode & 0o022:
+        return [f"{path} is writable by group or others"]
+    return []
+
+
+def _pth_files() -> list:
+    """.pth files in the interpreter's site-packages: Python runs their
+    `import` lines at every start-up, before any ubuntils code."""
+    import site
+    import sysconfig
+    dirs = set(getattr(site, "getsitepackages", lambda: [])())
+    dirs.update(sysconfig.get_paths().get(k, "") for k in ("purelib", "platlib"))
+    found = []
+    for d in sorted(x for x in dirs if x and os.path.isdir(x)):
+        try:
+            found += [os.path.join(d, n) for n in sorted(os.listdir(d)) if n.endswith(".pth")]
+        except OSError:
+            continue
+    return found
+
+
+def _code_files() -> list:
+    """Every file root will run code from: the modules already imported (the
+    re-exec imports the same ones from the same paths), all of the ubuntils
+    package, and the .pth files."""
+    import ubuntils
+    files = set()
+    for module in list(sys.modules.values()):
+        path = getattr(module, "__file__", None)
+        if path and os.path.isfile(path):
+            files.add(os.path.realpath(path))
+    pkg = os.path.dirname(os.path.realpath(ubuntils.__file__))
+    for dirpath, dirnames, filenames in os.walk(pkg):
+        dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+        files.update(os.path.join(dirpath, f) for f in filenames if f.endswith((".py", ".yaml")))
+    files.update(_pth_files())
+    return sorted(files)
+
+
+def install_trust_problems(paths=None, files=None) -> list:
     """Reasons the code `sudo` is about to run as root could be changed by
     someone other than root: the interpreter, sys.prefix and the ubuntils
-    package directory, and every directory above them."""
+    package directory, and every directory above them; and, when checking
+    the running install, every module file loaded so far, every file in the
+    ubuntils package and every .pth file (a writable dependency or .pth file
+    under a root-owned prefix is as good as a writable ubuntils)."""
     if paths is None:
         import ubuntils
         paths = [sys.executable, sys.prefix, os.path.dirname(ubuntils.__file__)]
+        if files is None:
+            files = _code_files()
     seen, problems = set(), []
-    for path in paths:
-        for problem in _untrusted(path):
+
+    def _add(found):
+        for problem in found:
             if problem not in seen:
                 seen.add(problem)
                 problems.append(problem)
+
+    for path in paths:
+        _add(_untrusted(path))
+    checked_dirs = set()
+    for path in files or []:
+        _add(_file_problem(path))
+        parent = os.path.dirname(path)
+        if parent not in checked_dirs:
+            checked_dirs.add(parent)
+            _add(_untrusted(parent))
     return problems
 
 

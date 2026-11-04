@@ -11,6 +11,10 @@ Work toward 3.0.0 ([PRD](docs/plans/v3.0.0-prd.md), [plan](docs/plans/v3.0.0-pla
 - `scan_metadata.collector_durations_s`: wall time per collector.
 - Every finding, in the JSON report and on the Wazuh line, carries `category` (`persistence` or `hygiene`) and `attack`, the rule's MITRE ATT&CK technique IDs, from `ubuntils/data/rule_meta.yaml`. A test checks that every built-in rule is mapped.
 
+### Security
+- **N-08** The install-trust check before the `sudo` re-exec covered the interpreter, `sys.prefix` and the ubuntils package directory and the directories above them, but not the files inside: a group-writable `site-packages/click/core.py` or `.pth` file under a root-owned prefix let another user change code root was about to run. It now also checks every loaded module file, every file in the ubuntils package, and every `.pth` file in site-packages (about 0.2 s).
+- **N-09** A user file read only up to the 64 MiB ceiling now marks its collector degraded, so the scan reads as incomplete, not just the `USER_FILE_OVERSIZED` finding.
+
 ## 2.3.0 — not yet released
 
 The bridge to 3.0: it ships every fix from the 2026-11 external review, two more security fixes, and a warning for everything 3.0 will change. The plan is in [`docs/plans/`](docs/plans/v3.0.0-plan.md).
