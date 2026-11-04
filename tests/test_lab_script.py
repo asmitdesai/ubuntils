@@ -56,3 +56,15 @@ def test_lab_decoys_are_not_multicall_binaries():
     # Renamed uutils binaries (sleep, true, …) exit immediately: they dispatch
     # on their own name. Seen live on 26.04.
     assert '"$(type -P bash)" "$1"' in open(LAB).read()
+
+
+def test_lab_skips_what_the_host_cannot_take_instead_of_aborting():
+    # Under `set -e`, a bare `chattr +a` in an unprivileged container aborted
+    # `plant` halfway: the package-tamper and module steps never ran, and a
+    # missing PACKAGE_TAMPERED then looked like a detection miss (N-12).
+    script = open(LAB).read()
+    assert "if ! chattr +a /var/log/btmp" in script
+    assert re.search(r"^skip\(\) \{", script, re.MULTILINE)
+    assert "print_skipped" in script.split("cmd_plant()", 1)[1]
+    for rule in ("IMMUTABLE_FLAG_SET", "KERNEL_MODULE_SUSPICIOUS", "PACKAGE_TAMPERED"):
+        assert re.search(rf"skip {rule} ", script), rule
