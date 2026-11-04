@@ -1,0 +1,9 @@
+# Test-only dependencies, compiled with the runtime lock as a constraint so
+# CI tests exactly the runtime pins users install. Regenerate with
+# `make lock-dev`.
+-c requirements.lock
+setuptools>=77
+wheel
+pytest>=7.0
+pytest-cov>=4.0
+pytest-asyncio>=0.21

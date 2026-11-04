@@ -153,3 +153,30 @@ def test_N14_unknown_baseline_version_is_refused(tmp_path):
     p.write_text("version: 2\nbaseline: []\n")
     with pytest.raises(ValueError, match="version 2"):
         load_baseline(str(p))
+
+
+# ── N-05: CI tests the pins users install ────────────────────────────────────
+
+import os  # noqa: E402
+import re  # noqa: E402
+
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _pins(path):
+    text = open(os.path.join(_REPO, path)).read()
+    return {m.group(1).lower(): m.group(2)
+            for m in re.finditer(r"^([A-Za-z0-9_.-]+)(?:\[[^\]]*\])?==(\S+)", text, re.M)}
+
+
+def test_N05_ci_installs_the_hash_pinned_dev_lock():
+    ci = open(os.path.join(_REPO, ".github", "workflows", "ci.yml")).read()
+    assert "pip install --require-hashes -r requirements-dev.lock" in ci
+    assert "pip-audit --require-hashes --disable-pip -r requirements-dev.lock" in ci
+
+
+def test_N05_dev_lock_uses_exactly_the_runtime_pins():
+    runtime, dev = _pins("requirements.lock"), _pins("requirements-dev.lock")
+    assert runtime
+    for name, version in runtime.items():
+        assert dev.get(name) == version, f"{name}: runtime {version}, dev {dev.get(name)}"
