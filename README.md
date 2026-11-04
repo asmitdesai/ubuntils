@@ -258,7 +258,7 @@ ubuntils scan --json --rules custom_rules.yaml
 | `process` | The process cmdline (path: the exe path) |
 | `network` | The connection description (path: `remote_addr:remote_port`) |
 
-`regex` and `substring` match the text column; `glob` matches the path column — so a `network` glob such as `203.0.113.*:*` targets the remote endpoint. Custom-rule findings are flag-only (never auto-remediated) and are still subject to `--config` suppression. A sample lives at [`examples/custom_rules.yaml`](examples/custom_rules.yaml).
+`regex` and `substring` match the text column; `glob` matches the path column — so a `network` glob such as `203.0.113.*:*` targets the remote endpoint. A `substring` rule searches the whole text. A `regex` rule searches only the first 4,096 characters, and patterns with nested quantifiers such as `(a+)+` are rejected at load time. Both guard against catastrophic backtracking on attacker-controlled text, since Python's `re` has no timeout. So prefer `substring` for anything an attacker could push past 4,096 characters with padding. Custom-rule findings are flag-only (never auto-remediated) and are still subject to `--config` suppression. A sample lives at [`examples/custom_rules.yaml`](examples/custom_rules.yaml).
 
 ### Report integrity
 
