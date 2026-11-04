@@ -4,6 +4,7 @@ import structlog
 
 from ubuntils.detectors.custom_rules import apply_custom_rules
 from ubuntils.detectors.finding import Finding
+from ubuntils.detectors.rule_meta import annotate
 from ubuntils.detectors.rules import (
     rule_cron_root_exec,
     rule_cron_tmp_path,
@@ -78,6 +79,8 @@ class DetectionEngine:
             except Exception as exc:
                 logger.exception("custom_rules_failed", error=str(exc))
                 self.rules_failed.append("custom_rules")
+        for finding in findings:
+            annotate(finding)
         self.baseline_suppressed_findings = []
         if self.baseline is not None:
             findings, self.baseline_suppressed_findings = self.baseline.filter(findings)

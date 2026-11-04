@@ -55,6 +55,9 @@ version = { attr = "ubuntils.__version__" }
 [tool.setuptools.packages.find]
 include = ["ubuntils*"]
 
+[tool.setuptools.package-data]
+ubuntils = ["data/*.yaml"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 addopts = "--cov=ubuntils --cov-fail-under=90 --cov-report=term-missing"

@@ -51,6 +51,10 @@ class Finding:
     # Every hard block, as {code, detail}; auto_remediation_blocked is kept as
     # the first one's detail for 2.x report consumers.
     blocked_reasons: List[BlockedReason] = field(default_factory=list)
+    # "persistence" or "hygiene", and MITRE ATT&CK technique IDs; set by the
+    # engine from ubuntils/data/rule_meta.yaml.
+    category: str = "persistence"
+    attack: List[str] = field(default_factory=list)
     # (st_dev, st_ino, st_uid) of the artifact's parent directory when it was
     # collected. Remediation refuses if the directory there now is another
     # one — e.g. ~/.ssh swapped for a symlink or a different directory.

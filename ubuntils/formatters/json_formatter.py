@@ -58,6 +58,8 @@ class JSONFormatter:
             "remediation_available": f.remediation_available,
             "confidence": f.confidence,
             "confidence_band": f.confidence_band,
+            "category": f.category,
+            "attack": f.attack,
             "signals": f.signals,
         }
         if f.remediation_description is not None:

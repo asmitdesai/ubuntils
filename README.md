@@ -500,6 +500,8 @@ A summary view of the scan: detected Ubuntu version, architecture, scan duration
 | SETUID_INVENTORY | LOW | No | Unexpected setuid or setgid binaries outside a known baseline set (the two bits are checked and reported separately) |
 | USER_FILE_OVERSIZED | MEDIUM | No | An `authorized_keys` file, per-user shell init file or per-user systemd unit larger than 1 MiB (real ones are a few KB) |
 
+Every finding also carries a `category` and the rule's MITRE ATT&CK technique IDs (`attack`), from [`ubuntils/data/rule_meta.yaml`](ubuntils/data/rule_meta.yaml). `PACKAGE_TAMPERED`, `IMMUTABLE_FLAG_SET`, `KERNEL_MODULE_SUSPICIOUS` and `SETUID_INVENTORY` are **hygiene**: integrity and inventory drift that can hide persistence but usually isn't a foothold itself. Every other rule is **persistence**. Custom (`--rules`) findings count as persistence.
+
 ### Why each rule exists
 
 **CRON_ROOT_EXEC** — User crontabs run as the crontab owner. An entry invoking sudo or a root-owned interpreter means the user has arranged for code to run with root privileges on a schedule, without needing persistent sudo access. This survives password changes.
@@ -755,6 +757,8 @@ TODO: flag-only rules for `AuthorizedKeysCommand` and `pam_exec.so`. Both are ea
       ],
       "confidence": 75,
       "confidence_band": "HIGH",
+      "category": "persistence",
+      "attack": ["T1053.003"],
       "signals": [
         {"name": "timeline_corroboration", "weight": 25, "detail": "1 timeline event(s) name this artifact alongside related activity"}
       ]
@@ -919,6 +923,8 @@ non-production environment before relying on them.
 | `confidence` | int (0–100) | Confidence score — see [Confidence scoring](#confidence-scoring) |
 | `confidence_band` | string | `HIGH` \| `MEDIUM` \| `LOW`; rule 100104 in the example escalates HIGH-severity findings with a HIGH band, and rule 100105 raises `USER_FILE_OVERSIZED` |
 | `related_events` | array (optional) | Correlated timeline events (`timestamp`, `source`, `program`, `description`), if any |
+| `category` | string | `persistence` or `hygiene` (see [What it detects](#what-it-detects)) |
+| `attack` | array of string | MITRE ATT&CK technique IDs for the rule |
 | `schema_version` | string | Layout of the line (`"3"`) |
 | `truncated` | bool (optional) | `true` if anything in this line was cut to keep it bounded (see below) |
 

@@ -9,6 +9,7 @@ Work toward 3.0.0 ([PRD](docs/plans/v3.0.0-prd.md), [plan](docs/plans/v3.0.0-pla
 ### Added
 - Version fields, so consumers can tell layouts apart from tool versions: the JSON report has `schema_version` (`"3.0"`), each Wazuh line has `schema_version` (`"3"`), and bundles record `format_version: 1` in `manifest.json`. `analyze` refuses a bundle format newer than it knows, instead of misreading it; bundles from 2.x have no `format_version` and verify exactly as before.
 - `scan_metadata.collector_durations_s`: wall time per collector.
+- Every finding, in the JSON report and on the Wazuh line, carries `category` (`persistence` or `hygiene`) and `attack`, the rule's MITRE ATT&CK technique IDs, from `ubuntils/data/rule_meta.yaml`. A test checks that every built-in rule is mapped.
 
 ## 2.3.0 — not yet released
 

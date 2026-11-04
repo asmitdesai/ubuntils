@@ -1,0 +1,64 @@
+# Metadata for every built-in detection rule, applied to each finding.
+#
+# category: what kind of answer the finding is.
+#   persistence  - a likely foothold: something that runs, logs in or
+#                  escalates for an attacker.
+#   hygiene      - integrity and configuration drift (package files,
+#                  setuid inventory, kernel taint, file flags) that can hide
+#                  persistence but is usually not one itself. Shown after
+#                  persistence, never hidden.
+# attack: MITRE ATT&CK (Enterprise) technique IDs. An empty list needs a
+#   `reason`. tests/test_rule_meta.py checks every rule is listed here.
+version: 1
+rules:
+  CRON_ROOT_EXEC:
+    category: persistence
+    attack: [T1053.003]           # Scheduled Task/Job: Cron
+  CRON_TMP_PATH:
+    category: persistence
+    attack: [T1053.003]
+  LD_PRELOAD_INJECT:
+    category: persistence
+    attack: [T1574.006]           # Hijack Execution Flow: Dynamic Linker Hijacking
+  SUSPICIOUS_SYSTEMD_TIMER:
+    category: persistence
+    attack: [T1053.006, T1543.002]  # Systemd Timers; Systemd Service
+  SSH_UNAUTHORIZED_KEY:
+    category: persistence
+    attack: [T1098.004]           # Account Manipulation: SSH Authorized Keys
+  USER_UID_ZERO:
+    category: persistence
+    attack: [T1136.001]           # Create Account: Local Account
+  USER_EMPTY_PASSWORD:
+    category: persistence
+    attack: [T1078.003]           # Valid Accounts: Local Accounts
+  SUDOERS_NOPASSWD:
+    category: persistence
+    attack: [T1548.003]           # Abuse Elevation Control Mechanism: Sudo and Sudo Caching
+  PROCESS_MASQUERADE:
+    category: persistence
+    attack: [T1036.004, T1036.005]  # Masquerade Task or Service; Match Legitimate Name or Location
+  PROCESS_SUSPICIOUS_CONNECTION:
+    category: persistence
+    attack: [T1571]               # Non-Standard Port
+  SHELL_RC_MODIFICATION:
+    category: persistence
+    attack: [T1546.004]           # Event Triggered Execution: Unix Shell Configuration Modification
+  PAM_BACKDOOR:
+    category: persistence
+    attack: [T1556.003]           # Modify Authentication Process: Pluggable Authentication Modules
+  USER_FILE_OVERSIZED:
+    category: persistence
+    attack: [T1027.001]           # Obfuscated Files or Information: Binary Padding
+  PACKAGE_TAMPERED:
+    category: hygiene
+    attack: [T1554]               # Compromise Host Software Binary
+  IMMUTABLE_FLAG_SET:
+    category: hygiene
+    attack: [T1222.002]           # File and Directory Permissions Modification: Linux and Mac
+  KERNEL_MODULE_SUSPICIOUS:
+    category: hygiene
+    attack: [T1547.006]           # Boot or Logon Autostart Execution: Kernel Modules and Extensions
+  SETUID_INVENTORY:
+    category: hygiene
+    attack: [T1548.001]           # Abuse Elevation Control Mechanism: Setuid and Setgid
