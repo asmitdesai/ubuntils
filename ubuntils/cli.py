@@ -287,13 +287,31 @@ def _emit_report(report: str, output_path) -> None:
         click.echo(report)
 
 
-@click.group()
+# Shown on stderr by every command, so scripts and humans see what 3.0 changes
+# before it lands. Each returns a message, or None when it doesn't apply.
+def _deprecation_notices() -> list:
+    notices = []
+    if sys.version_info < (3, 10):
+        notices.append(
+            f"Python {sys.version_info[0]}.{sys.version_info[1]} support ends with "
+            "ubuntils 2.3.x; ubuntils 3.0 requires Python 3.10 or newer.")
+    return notices
+
+
+@click.group(epilog="ubuntils 3.0 makes the interactive TUI an optional extra: "
+                    "install 'ubuntils[tui]' to keep it.")
 @click.option("--allow-user-install", is_flag=True,
               help="Escalate to root even though ubuntils or its interpreter is installed "
                    "where a non-root user can modify it")
-def main(allow_user_install):
+@click.pass_context
+def main(ctx, allow_user_install):
     """ubuntils - Ubuntu incident response tool."""
-    pass
+    # The non-root half of scan/collect/rollback re-executes itself under
+    # sudo, and the root half would repeat the notice; print it once.
+    escalating = ctx.invoked_subcommand in ("scan", "collect", "rollback") and os.geteuid() != 0
+    if not escalating:
+        for notice in _deprecation_notices():
+            click.echo(f"deprecation: {notice}", err=True)
 
 
 @main.command()
@@ -327,6 +345,10 @@ def scan(output_json, remediate, confirm, config_path, baseline_path, output_pat
     since, allowlist, baseline, custom_rules = _load_inputs(
         config_path, baseline_path, rules_path, since_value
     )
+    if remediate and confirm:
+        click.echo("deprecation: from ubuntils 3.0, --remediate --confirm first keeps a "
+                   "hashed copy of every file it is about to change (evidence), then "
+                   "changes them.", err=True)
 
     if output_json or remediate:
         findings, timeline, stats, scan_metadata, artifact_counts, remediation_results = \
