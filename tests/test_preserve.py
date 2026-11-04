@@ -1,4 +1,4 @@
-"""Targeted preserve-then-fix (E1-S4, docs/plans/v3.0.0-prd.md)."""
+"""Targeted preserve-then-fix: evidence copies before remediation changes anything."""
 import hashlib
 import json
 import os
@@ -121,7 +121,7 @@ def test_no_preserve_opt_out(tmp_path):
 
 
 def test_preserve_meets_its_time_budget(tmp_path):
-    # PRD E1-S4: 50 files of 1 MiB in at most 2 s.
+    # Budget: 50 files of 1 MiB in at most 2 s.
     d = tmp_path / "many"
     d.mkdir()
     findings = []

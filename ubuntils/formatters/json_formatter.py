@@ -6,8 +6,8 @@ from ubuntils.detectors.finding import Finding, RemediationResult
 from ubuntils.timeline.builder import TimelineEvent
 
 # The report's layout, independent of the tool version. Minor bumps only add
-# fields; a major bump may remove or rename them (docs/plans/v3.0.0-plan.md
-# §2.2.9). Reports from 2.x have no schema_version.
+# fields; a major bump may remove or rename them, and only with a major
+# ubuntils release. Reports from 2.x have no schema_version.
 REPORT_SCHEMA_VERSION = "3.0"
 
 

@@ -179,7 +179,7 @@ def run_scan(
     failures = 0
     collectors_degraded: dict = {}
     # Per-collector wall time: the measurement behind any decision to run
-    # collectors in parallel (docs/plans/v3.0.0-plan.md §2.2.10).
+    # collectors in parallel.
     collector_durations: dict = {}
     collectors = [C(source=source) for C in ALL_COLLECTORS]
 

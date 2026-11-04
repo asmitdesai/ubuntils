@@ -1078,7 +1078,7 @@ VirusTotal hash lookups and MISP IOC export were dropped from this release. Viru
 - [x] `tools/lab/seed-lab.sh` demo lab that trips 14 of 16 rules with inert artifacts
 - [x] 509 tests at 94.65% coverage
 
-**v3.0.0 (planned)** — see the [PRD](docs/plans/v3.0.0-prd.md) and [engineering plan](docs/plans/v3.0.0-plan.md)
+**v3.0.0 (planned)**
 - A signed single-file build that runs offline with the system `python3`
 - Likely-persistence vs hygiene grouping, ATT&CK IDs, a Markdown report
 - Preserve-then-fix remediation, an independent PANIX coverage benchmark

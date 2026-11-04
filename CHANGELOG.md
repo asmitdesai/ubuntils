@@ -4,7 +4,7 @@ Notable changes per release. Earlier releases (1.0.0 through 2.1.0) are summaris
 
 ## Unreleased — 3.0.0 in development
 
-Work toward 3.0.0 ([PRD](docs/plans/v3.0.0-prd.md), [plan](docs/plans/v3.0.0-plan.md)). Everything here is additive unless it says otherwise.
+Work toward 3.0.0. Everything here is additive unless it says otherwise.
 
 ### Added
 - Version fields, so consumers can tell layouts apart from tool versions: the JSON report has `schema_version` (`"3.0"`), each Wazuh line has `schema_version` (`"3"`), and bundles record `format_version: 1` in `manifest.json`. `analyze` refuses a bundle format newer than it knows, instead of misreading it; bundles from 2.x have no `format_version` and verify exactly as before.
@@ -19,7 +19,7 @@ Work toward 3.0.0 ([PRD](docs/plans/v3.0.0-prd.md), [plan](docs/plans/v3.0.0-pla
 
 ## 2.3.0 — not yet released
 
-The bridge to 3.0: it ships every fix from the 2026-11 external review, two more security fixes, and a warning for everything 3.0 will change. The plan is in [`docs/plans/`](docs/plans/v3.0.0-plan.md).
+The bridge to 3.0: it ships every fix from the 2026-11 external review, two more security fixes, and a warning for everything 3.0 will change.
 
 ### Security — found while planning 3.0
 - **N-01** A failure in the detection stage outside an individual rule (an allowlist or baseline that raised while filtering) produced an empty findings list with nothing in `rules_failed`, which read as a clean host. It's now recorded as `rules_failed: ["DetectionEngine"]` with the error in `scan_metadata.detection_error`, the TUI says detection failed, and `scan`/`analyze` exit 1.

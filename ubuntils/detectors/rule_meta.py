@@ -1,8 +1,7 @@
 """Per-rule metadata (category, ATT&CK) from ubuntils/data/rule_meta.yaml.
 
-Kept as data, not code, so grouping and ATT&CK mapping work before the rule
-package refactor (docs/plans/v3.0.0-plan.md §2.2.2) and so the mapping can be
-reviewed on its own. Read with importlib.resources, which also works when
+Kept as data, not code, so grouping and ATT&CK mapping don't depend on how the
+rules are organised, and so the mapping can be reviewed on its own. Read with importlib.resources, which also works when
 ubuntils runs from a zip file.
 """
 from functools import lru_cache

@@ -1,4 +1,4 @@
-"""Version fields on every output format (ARCH-SV, docs/plans/v3.0.0-plan.md §2.2.9)."""
+"""Version fields on every output format: report, Wazuh line, bundle manifest."""
 import io
 import json
 import os
