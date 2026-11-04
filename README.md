@@ -876,6 +876,11 @@ non-production environment before relying on them.
 | `confidence` | int (0–100) | Confidence score — see [Confidence scoring](#confidence-scoring) |
 | `confidence_band` | string | `HIGH` \| `MEDIUM` \| `LOW`; rule 100104 in the example escalates HIGH-severity findings with a HIGH band, and rule 100105 raises `USER_FILE_OVERSIZED` |
 | `related_events` | array (optional) | Correlated timeline events (`timestamp`, `source`, `program`, `description`), if any |
+| `truncated` | bool (optional) | `true` if anything in this line was cut to keep it bounded (see below) |
+
+Every string field can carry attacker text, such as a forged log line or a padded file's path, so each line is bounded. String fields are cut to 2,048 characters, related event descriptions to 1,024, and if the line is still over 32 KiB its `related_events` are dropped. The full finding is always in the JSON report.
+
+If any collector was degraded (a file it couldn't read, a command that failed), the scan also forwards one summary event with `rule_id` `UBUNTILS_SCAN_DEGRADED`, severity `MEDIUM`, the reasons in `description` and the collector names in `collectors_degraded`, so a partial scan doesn't look clean in the SIEM.
 
 ---
 

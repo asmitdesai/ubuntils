@@ -558,3 +558,75 @@ def test_F05_wazuh_forwards_oversized_findings():
         {"path": "/home/eve/.ssh/authorized_keys", "size": 2_000_000,
          "kind": "authorized_keys"}]})
     assert _finding_to_dict(finding, "h")["rule_id"] == "USER_FILE_OVERSIZED"
+
+
+# ─── F-09: bounded Wazuh events ─────────────────────────────────────────────
+
+def _wazuh_finding(**overrides):
+    from ubuntils.detectors.finding import Finding, Severity
+    fields = dict(rule_id="SHELL_RC_MODIFICATION", severity=Severity.MEDIUM, title="t",
+                  description="d", artifact_path="/home/eve/.bashrc", raw_value="r",
+                  remediation_available=False)
+    fields.update(overrides)
+    return Finding(**fields)
+
+
+def _event(description):
+    import datetime
+    from ubuntils.timeline.builder import TimelineEvent
+    return TimelineEvent(timestamp=datetime.datetime.now(datetime.timezone.utc),
+                         source="journald", description=description, program="logger")
+
+
+def test_F09_huge_related_events_are_cut_to_a_bounded_line():
+    from ubuntils.integrations.wazuh import MAX_LINE_BYTES, finding_line
+    finding = _wazuh_finding(related_events=[_event("A" * 48 * 1024) for _ in range(5)])
+    line = finding_line(finding, "host1")
+    assert len(line.encode()) < MAX_LINE_BYTES
+    event = json.loads(line)
+    assert event["truncated"] is True
+    assert all(len(e["description"]) <= 1024 for e in event["related_events"])
+
+
+def test_F09_string_fields_are_capped_and_untouched_events_are_not_marked():
+    from ubuntils.integrations.wazuh import finding_line
+    assert "truncated" not in json.loads(finding_line(_wazuh_finding(), "h"))
+    event = json.loads(finding_line(_wazuh_finding(raw_value="x" * 10_000), "h"))
+    assert len(event["raw_value"]) == 2048 and event["truncated"] is True
+
+
+def test_F09_escaping_blowup_drops_related_events_and_stays_bounded():
+    # A NUL serialises as \u0000 (six bytes): capped fields can still blow
+    # past the line limit.
+    from ubuntils.integrations.wazuh import MAX_LINE_BYTES, finding_line
+    nul = "\x00" * 5000
+    finding = _wazuh_finding(description=nul, raw_value=nul, artifact_path=nul, title=nul,
+                             related_events=[_event(nul) for _ in range(5)])
+    line = finding_line(finding, "h")
+    assert len(line.encode()) <= MAX_LINE_BYTES
+    event = json.loads(line)
+    assert event["truncated"] is True and "related_events" not in event
+
+
+def test_F09_degraded_collectors_are_forwarded_as_a_summary_event(tmp_path):
+    from ubuntils.integrations.wazuh import DEGRADED_RULE_ID, write_wazuh_alerts
+    log = tmp_path / "alerts.json"
+    written = write_wazuh_alerts([], "host1", log_path=str(log), collectors_degraded={
+        "SSHCollector": ["skipped /home/eve/.ssh/authorized_keys: not a regular file"]})
+    assert written == str(log)
+    [event] = [json.loads(line) for line in log.read_text().splitlines()]
+    assert event["rule_id"] == DEGRADED_RULE_ID
+    assert event["collectors_degraded"] == ["SSHCollector"]
+    assert "not a regular file" in event["description"]
+
+
+def test_F09_pipeline_passes_degraded_collectors_to_wazuh(monkeypatch, tmp_path):
+    from unittest.mock import patch
+    from ubuntils.pipeline import run_scan
+    root = _tree(tmp_path, {"/etc/passwd": "x:broken\n"})
+    with patch("ubuntils.pipeline.is_wazuh_agent_present", return_value=True), \
+            patch("ubuntils.pipeline.write_wazuh_alerts") as write:
+        result = run_scan(_FakeHost(root))
+    assert result.scan_metadata["collectors_degraded"]
+    assert write.call_args.kwargs["collectors_degraded"] == \
+        result.scan_metadata["collectors_degraded"]

@@ -222,7 +222,7 @@ def run_scan(
     # Only a genuinely live scan describes the host the local Wazuh agent is
     # watching; offline analysis must never forward findings here.
     if forward_wazuh and live and is_wazuh_agent_present():
-        write_wazuh_alerts(findings, report_hostname)
+        write_wazuh_alerts(findings, report_hostname, collectors_degraded=collectors_degraded)
 
     bundle_integrity = (bundle_info or {}).get("bundle_integrity", "live")
     rules_failed = list(engine.rules_failed) if engine else ["DetectionEngine"]
