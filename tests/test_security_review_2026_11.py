@@ -848,3 +848,40 @@ def test_F07_isolated_bootstrap_still_imports_ubuntils_and_ignores_cwd(tmp_path)
                          cwd=tmp_path, capture_output=True, text=True, timeout=60)
     assert "HIJACKED" not in out.stdout + out.stderr
     assert out.stdout.strip() == __version__
+
+
+# ─── F-11: supply chain ─────────────────────────────────────────────────────
+
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def test_F11_every_action_is_pinned_to_a_commit_sha():
+    import glob
+    import re
+    uses = []
+    for wf in glob.glob(os.path.join(_REPO, ".github", "workflows", "*.yml")):
+        uses += re.findall(r"uses:\s*(\S+)(.*)", open(wf).read())
+    assert uses
+    for ref, comment in uses:
+        assert re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", ref), ref
+        assert re.search(r"#\s*v\d", comment), f"{ref}: no tag comment"
+
+
+def test_F11_lock_pins_every_package_by_hash():
+    import re
+    text = open(os.path.join(_REPO, "requirements.lock")).read()
+    blocks = re.split(r"\n(?=[A-Za-z])", text.split("\n", 1)[1])
+    pins = [b for b in blocks if not b.startswith("#") and b.strip()]
+    assert len(pins) > 5
+    for block in pins:
+        assert re.match(r"[\w.-]+(\[[\w,-]+\])?==\S+", block), block.splitlines()[0]
+        assert "--hash=sha256:" in block, block.splitlines()[0]
+    assert re.search(r"^setuptools==", text, re.MULTILINE)  # the build backend too
+
+
+def test_F11_ci_audits_the_lock_and_dependabot_watches_both_ecosystems():
+    import yaml
+    ci = open(os.path.join(_REPO, ".github", "workflows", "ci.yml")).read()
+    assert "pip-audit --require-hashes --disable-pip -r requirements.lock" in ci
+    bot = yaml.safe_load(open(os.path.join(_REPO, ".github", "dependabot.yml")))
+    assert {u["package-ecosystem"] for u in bot["updates"]} == {"pip", "github-actions"}

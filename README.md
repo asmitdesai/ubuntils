@@ -53,6 +53,8 @@ sudo pipx install --global "git+https://github.com/asmitdesai/ubuntils.git@vX.Y.
 ubuntils scan              # run as your user; it re-invokes itself with sudo
 ```
 
+From PyPI, pin the same release: `sudo pipx install --global "ubuntils==X.Y.Z"`.
+
 **Root-owned virtual environment** (any Ubuntu; the `pipx` in Ubuntu 24.04's apt is older than 1.5):
 
 ```bash
@@ -62,7 +64,7 @@ sudo ln -s /opt/ubuntils/bin/ubuntils /usr/local/bin/ubuntils
 ubuntils scan
 ```
 
-Both put the command on sudo's `secure_path` (`/usr/local/bin`), so `sudo ubuntils …` from a root shell works too.
+Both put the command on sudo's `secure_path` (`/usr/local/bin`), so `sudo ubuntils …` from a root shell works too. To pin every dependency by hash as well, see [Verified dependencies](#verified-dependencies).
 
 **Per-user install (development, or a lab VM you don't mind trusting):**
 
@@ -79,6 +81,20 @@ ubuntils --allow-user-install scan
 ubuntils will refuse to escalate from this install until you pass `--allow-user-install` (before the subcommand), and it lists the user-writable paths it found. Typing `sudo ubuntils …` yourself fails with `command not found`, because sudo's `secure_path` doesn't include `~/.local/bin` where pipx puts the command.
 
 ubuntils requires root for full artifact access. If you run `ubuntils scan` as a non-root user it will automatically re-invoke itself with `sudo` using the same Python interpreter (by absolute path, in isolated mode `-I`), so the correct environment is used without forwarding your `PATH`, `PYTHON*` variables or working directory into the root process. Every external command (`ss`, `dpkg`, `systemctl`, …) is resolved on a fixed, root-owned search path, never your `PATH`. Running without root will skip `/etc/shadow`, some `/proc` entries, and protected cron files, and will log warnings for each. A report that `scan --output FILE` creates after re-invoking itself through `sudo` is owned by you (still mode `0600`), so you can open it without `sudo`; an existing file is overwritten only if it belongs to you (or root) and isn't a hard link, and it keeps its owner. `collect` bundles stay root-only because they contain `/etc/shadow`, and are never written into a file that already exists.
+
+### Verified dependencies
+
+`requirements.lock` pins every runtime dependency, plus the build backend, to an exact version and SHA-256. With `--require-hashes`, pip refuses anything that doesn't match, including a compromised or substituted package on the index. Take the lock from the same release tag you install:
+
+```bash
+git clone --branch vX.Y.Z https://github.com/asmitdesai/ubuntils.git ubuntils-src
+sudo python3 -m venv /opt/ubuntils
+sudo /opt/ubuntils/bin/pip install --require-hashes -r ubuntils-src/requirements.lock
+sudo /opt/ubuntils/bin/pip install --no-deps --no-build-isolation ./ubuntils-src
+sudo ln -s /opt/ubuntils/bin/ubuntils /usr/local/bin/ubuntils
+```
+
+`--no-deps --no-build-isolation` installs ubuntils itself using only the hash-checked packages from the first step. The lock targets Python 3.10+ (Ubuntu 22.04 and later). It's regenerated with `make lock` and audited by `pip-audit` in CI.
 
 ---
 
