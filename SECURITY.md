@@ -32,6 +32,11 @@ that may already be compromised:
   `/var/backups/ubuntils/` on the same system. If you need a forensically pure
   image, capture it *before* running any remediation. Every report carries a
   `report_sha256` so a collected artifact can be verified later.
+- **`--remediate --confirm` won't act on what it can't attribute.** A key in an
+  `authorized_keys` file holding several keys is `auto_remediation_blocked`:
+  timestamps can't say which key was added, and no score (a forgeable
+  `Accepted publickey` log line included) lifts the block. Timeline evidence
+  counts for a key only when the log line names that key's fingerprint.
 
 ## How ubuntils protects itself on a hostile host
 
@@ -61,15 +66,41 @@ what it reads there as hostile input:
   hashes into the report.
 - **Attacker text is never interpreted.** Findings render in the TUI as plain
   text, so markup in a cron line or log message can't restyle or crash it.
-- **Every root-run write refuses symlinks** (`O_NOFOLLOW`, `O_EXCL` for backups,
-  atomic rename for edits), and sudoers changes are `visudo`-checked on a copy
-  before the real file is touched.
+- **Every root-run write refuses symlinks, in any path component.**
+  Remediation reaches the artifact's directory by walking from `/` with
+  `O_NOFOLLOW` on each component. It then reads, backs up, writes a random
+  `O_EXCL` temp file, `fchown`s/`fchmod`s and renames, all relative to that
+  directory handle, so swapping `~/.ssh` (or anything above it) for a symlink
+  is refused. It also refuses if the directory isn't the one, by device,
+  inode and owner, that the finding was made on. Sudoers changes are
+  `visudo`-checked on a copy before the real file is touched.
+- **Rollback never trusts the destination.** `ubuntils rollback BACKUP` reads
+  the backup's root-owned sidecar and restores through the same symlink-free
+  path, with the original owner and mode. It refuses if the file changed
+  after remediation or its directory was replaced (unless `--force`), and
+  always refuses a symlink or a non-regular file. ubuntils never suggests
+  `cp backup original`, which as root follows a symlink planted at the
+  destination.
+- **Output files can't be pre-planted.** Bundles are created `O_EXCL` and
+  fail if the path exists. By default they go to a random name in
+  `/var/lib/ubuntils/bundles/`, which must be a root-owned `0700` directory
+  and not a symlink. A report reuses an existing file only if it belongs to
+  root or the user who ran `sudo` and has a single link; a file someone else
+  pre-created, or a hard link to another file, is refused.
 - **Bundles are untrusted input.** `analyze` rejects bundles with path-traversal
   members, links or devices, refuses manifest entries that point outside the
   bundle, and never follows a path from the bundle's own files out of the
-  extraction directory. Bundle and report digests are unkeyed SHA-256: they
-  catch corruption and naive edits, not a forger who recomputes them — record
+  extraction directory. It refuses bundles with more than 10,000 members, a
+  member over 512 MiB or more than 2 GiB in total, checked from the tar
+  headers before extraction. A file in the bundle that the manifest doesn't
+  list, or that it recorded as absent on the host, marks the bundle
+  `mismatch`. Bundle and report digests are unkeyed SHA-256: they catch
+  corruption and naive edits, not a forger who recomputes them — record
   digests out-of-band for chain of custody.
+- **SIEM output is bounded.** Each line forwarded to a Wazuh agent is capped at
+  32 KiB, with long fields cut and marked `"truncated": true`, so attacker
+  text in a finding or log line can't produce an oversized alert. A scan
+  with degraded collectors forwards a summary event saying so.
 
 ## Reporting a vulnerability
 
