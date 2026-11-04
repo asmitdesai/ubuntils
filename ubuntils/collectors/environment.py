@@ -1,4 +1,5 @@
 from ubuntils.collectors.base import BaseCollector
+from ubuntils.collectors.source import UNREAD_TAIL_NOTE
 from ubuntils.utils.validators import is_login_shell
 
 # System-wide files every login or interactive shell sources (MITRE
@@ -51,6 +52,8 @@ class EnvironmentCollector(BaseCollector):
         except Exception as exc:
             self.degraded.append(f"skipped {path}: {exc}")
             return
+        if user_file and user_file.truncated:
+            self.degraded.append(f"{path}: {UNREAD_TAIL_NOTE}")
         definitions.extend(self._shell_init_definitions(content, path, owner))
         shell_init_files.append({
             "owner": owner,

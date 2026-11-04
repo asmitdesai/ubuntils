@@ -2,6 +2,7 @@ import json
 import os
 
 from ubuntils.collectors.base import BaseCollector
+from ubuntils.collectors.source import UNREAD_TAIL_NOTE
 
 # Where enabled/installable units live. Read as files through the source, so
 # this also works for offline bundle/--root analysis where `systemctl` can't run.
@@ -96,6 +97,8 @@ class SystemdCollector(BaseCollector):
                                 "path": path, "size": user_file.size,
                                 "truncated": user_file.truncated, "kind": "systemd user unit",
                             })
+                        if user_file.truncated:
+                            self.degraded.append(f"{path}: {UNREAD_TAIL_NOTE}")
                     else:
                         text = self.source.read_text(path)
                 except Exception:

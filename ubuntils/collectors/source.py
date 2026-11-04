@@ -17,6 +17,8 @@ from ubuntils.utils.shell import run_command
 # memory; the oversized marker says the rest went unread.
 USER_FILE_MAX_BYTES = 1024 * 1024
 USER_FILE_HARD_MAX_BYTES = 64 * 1024 * 1024
+# What a collector records when it hits that ceiling: the scan is incomplete.
+UNREAD_TAIL_NOTE = "only the first 64 MiB was read; the rest was not checked"
 # Ceiling for any single file or command output read back from a bundle
 # (bundle/reader.py refuses to extract larger members in the first place).
 BUNDLE_READ_MAX_BYTES = 512 * 1024 * 1024

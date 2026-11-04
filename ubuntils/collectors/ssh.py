@@ -4,6 +4,7 @@ import hashlib
 from typing import Optional
 
 from ubuntils.collectors.base import BaseCollector
+from ubuntils.collectors.source import UNREAD_TAIL_NOTE
 
 _KEY_TYPE_PREFIXES = (
     "ssh-rsa", "ssh-dss", "ssh-ed25519", "ecdsa-sha2-",
@@ -151,6 +152,8 @@ class SSHCollector(BaseCollector):
             self.oversized.append({"path": path, "username": username, "size": user_file.size,
                                    "truncated": user_file.truncated,
                                    "kind": "authorized_keys"})
+        if user_file.truncated:
+            self.degraded.append(f"{path}: {UNREAD_TAIL_NOTE}")
         entries = []
         for key_line in content.splitlines():
             stripped = key_line.strip()
