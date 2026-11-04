@@ -630,3 +630,59 @@ def test_F09_pipeline_passes_degraded_collectors_to_wazuh(monkeypatch, tmp_path)
     assert result.scan_metadata["collectors_degraded"]
     assert write.call_args.kwargs["collectors_degraded"] == \
         result.scan_metadata["collectors_degraded"]
+
+
+# ─── F-10: capped bundle extraction ─────────────────────────────────────────
+
+def _tar_with_headers(path, members):
+    """A gzip tarball of (name, declared_size, data) members. A member can
+    declare far more than it holds: the header is all the reader may check."""
+    import gzip
+    import tarfile
+    with gzip.open(path, "wb") as gz:
+        for name, size, data in members:
+            info = tarfile.TarInfo(name)
+            info.size = size
+            gz.write(info.tobuf(format=tarfile.GNU_FORMAT))
+            gz.write(data + b"\0" * (-len(data) % 512))
+        gz.write(b"\0" * 1024)
+
+
+def test_F10_member_declaring_more_than_the_cap_is_refused(tmp_path):
+    import pytest
+    from ubuntils.bundle import BundleError, read_bundle
+    from ubuntils.bundle.reader import MAX_MEMBER_BYTES
+    bomb = tmp_path / "bomb.tar.gz"
+    _tar_with_headers(bomb, [("bundle/files/var/log/syslog", MAX_MEMBER_BYTES + 1, b"")])
+    with pytest.raises(BundleError, match="declares"):
+        read_bundle(str(bomb))
+
+
+def test_F10_too_many_members_or_too_many_bytes_is_refused(tmp_path, monkeypatch):
+    import pytest
+    from ubuntils.bundle import BundleError, read_bundle
+    from ubuntils.bundle import reader
+    small = tmp_path / "many.tar.gz"
+    _tar_with_headers(small, [(f"bundle/files/f{i}", 4, b"data") for i in range(6)])
+    monkeypatch.setattr(reader, "MAX_BUNDLE_MEMBERS", 5)
+    with pytest.raises(BundleError, match="more than 5 members"):
+        read_bundle(str(small))
+    monkeypatch.setattr(reader, "MAX_BUNDLE_MEMBERS", 10_000)
+    monkeypatch.setattr(reader, "MAX_BUNDLE_BYTES", 20)
+    with pytest.raises(BundleError, match="exceed"):
+        read_bundle(str(small))
+
+
+def test_F10_bundle_source_reads_are_capped(tmp_path, monkeypatch):
+    import pytest
+    from ubuntils.collectors import source as source_mod
+    from ubuntils.collectors.source import BundleSource, UnsafeFileError
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "big").write_bytes(b"z" * 100)
+    (tmp_path / "out.txt").write_bytes(b"z" * 100)
+    monkeypatch.setattr(source_mod, "BUNDLE_READ_MAX_BYTES", 50)
+    src = BundleSource(root_dir=str(tmp_path), command_index={"ss": str(tmp_path / "out.txt")})
+    with pytest.raises(UnsafeFileError):
+        src.read_text("/etc/big")
+    with pytest.raises(UnsafeFileError):
+        src.run("ss", ["ss"])

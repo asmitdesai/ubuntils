@@ -9,7 +9,14 @@ import tempfile
 
 from ubuntils.bundle.manifest import Manifest, FileEntry, CommandEntry
 from ubuntils.bundle import BundleError
-from ubuntils.collectors.source import BundleSource
+from ubuntils.collectors.source import BUNDLE_READ_MAX_BYTES, BundleSource
+
+# A bundle is untrusted input: a few KB of gzip can declare millions of
+# members or terabytes of zeros. Real bundles hold a few dozen files and
+# well under 1 GiB (journalctl output is the big one).
+MAX_BUNDLE_MEMBERS = 10_000
+MAX_MEMBER_BYTES = BUNDLE_READ_MAX_BYTES  # 512 MiB
+MAX_BUNDLE_BYTES = 2 * 1024 * 1024 * 1024
 
 
 def _sha256_file(path: str) -> str:
@@ -29,7 +36,19 @@ def _safe_extract(tf: tarfile.TarFile, work: str) -> None:
     forensic bundle should never legitimately contain those.
     """
     work_real = os.path.realpath(work)
-    for member in tf.getmembers():
+    # Iterate rather than getmembers(): each header is checked before
+    # tarfile decompresses its way past that member's data to the next one.
+    count = total = 0
+    for member in tf:
+        count += 1
+        total += max(member.size, 0)
+        if count > MAX_BUNDLE_MEMBERS:
+            raise BundleError(f"bundle has more than {MAX_BUNDLE_MEMBERS} members — refusing")
+        if member.size > MAX_MEMBER_BYTES:
+            raise BundleError(f"bundle member {member.name!r} declares {member.size} bytes "
+                              f"(limit {MAX_MEMBER_BYTES}) — refusing")
+        if total > MAX_BUNDLE_BYTES:
+            raise BundleError(f"bundle contents exceed {MAX_BUNDLE_BYTES} bytes — refusing")
         dest = os.path.realpath(os.path.join(work, member.name))
         if dest != work_real and not dest.startswith(work_real + os.sep):
             raise BundleError(

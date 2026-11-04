@@ -17,6 +17,9 @@ from ubuntils.utils.shell import run_command
 # memory; the oversized marker says the rest went unread.
 USER_FILE_MAX_BYTES = 1024 * 1024
 USER_FILE_HARD_MAX_BYTES = 64 * 1024 * 1024
+# Ceiling for any single file or command output read back from a bundle
+# (bundle/reader.py refuses to extract larger members in the first place).
+BUNDLE_READ_MAX_BYTES = 512 * 1024 * 1024
 
 
 class UnsafeFileError(OSError):
@@ -208,6 +211,17 @@ def _with_times(st: os.stat_result, mtime: float, ctime: float) -> os.stat_resul
     return os.stat_result(seq, extra)
 
 
+def _read_capped(path: str) -> bytes:
+    """Read a file from an extracted bundle, refusing one over
+    BUNDLE_READ_MAX_BYTES."""
+    limit = BUNDLE_READ_MAX_BYTES
+    with open(path, "rb") as f:
+        data = f.read(limit + 1)
+    if len(data) > limit:
+        raise UnsafeFileError(f"{path}: larger than {limit} bytes — not read")
+    return data
+
+
 class BundleSource(ArtifactSource):
     """Reads files captured into a bundle and replays captured command output.
     Never touches the live host or runs a command — pure offline replay."""
@@ -244,12 +258,10 @@ class BundleSource(ArtifactSource):
         return resolved
 
     def read_text(self, path: str) -> str:
-        with open(self._resolve(path), encoding="utf-8", errors="replace") as f:
-            return f.read()
+        return self.read_bytes(path).decode("utf-8", errors="replace")
 
     def read_bytes(self, path: str) -> bytes:
-        with open(self._resolve(path), "rb") as f:
-            return f.read()
+        return _read_capped(self._resolve(path))
 
     def exists(self, path: str) -> bool:
         try:
@@ -285,7 +297,6 @@ class BundleSource(ArtifactSource):
         exit_code = 0
         if isinstance(captured, (tuple, list)):
             captured, exit_code = captured
-        with open(captured, encoding="utf-8", errors="replace") as f:
-            # Replay the recorded exit code: a command that timed out during
-            # `collect` (-1) must not replay as a successful empty result.
-            return f.read(), "", exit_code
+        # Replay the recorded exit code: a command that timed out during
+        # `collect` (-1) must not replay as a successful empty result.
+        return _read_capped(captured).decode("utf-8", errors="replace"), "", exit_code
