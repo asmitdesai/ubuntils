@@ -30,6 +30,10 @@ class Finding:
     confidence: int = 50
     confidence_band: str = "MEDIUM"
     signals: List[dict] = field(default_factory=list)
+    # Why `--remediate --confirm` must never apply this fix on its own, however
+    # high the confidence climbs (e.g. which of several keys was added is
+    # unknowable). Manual remediation in the TUI stays possible, with a warning.
+    auto_remediation_blocked: Optional[str] = None
 
 
 @dataclass

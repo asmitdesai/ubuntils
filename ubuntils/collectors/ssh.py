@@ -1,3 +1,8 @@
+import base64
+import binascii
+import hashlib
+from typing import Optional
+
 from ubuntils.collectors.base import BaseCollector
 
 _KEY_TYPE_PREFIXES = (
@@ -33,6 +38,18 @@ def _parse_key_line(key_line: str) -> dict:
         "key_data": parts[1] if len(parts) > 1 else "",
         "comment": parts[2] if len(parts) > 2 else "",
     }
+
+
+def key_fingerprint(key_data: str) -> Optional[str]:
+    """The key's fingerprint as sshd logs it ("SHA256:<unpadded base64>"),
+    or None if ``key_data`` isn't valid base64."""
+    try:
+        blob = base64.b64decode(key_data, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if not blob:
+        return None
+    return "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("=")
 
 
 # OpenSSH's built-in default: authorized_keys2 is still honoured, which makes

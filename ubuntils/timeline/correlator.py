@@ -7,7 +7,11 @@ matched as whole words: identifying tokens from the finding (a path basename, a
 of per-rule activity keywords (program names like sshd/cron/dpkg).
 
 Only an event that names the finding's artifact AND shows the rule's kind of
-activity corroborates it and earns the timeline_corroboration signal. When a
+activity corroborates it and earns the timeline_corroboration signal. For an
+SSH key the artifact is the key itself: only a login naming the key's
+fingerprint corroborates it. "Accepted publickey for alice" says nothing about
+*which* of alice's keys was used (and any user can write that line with
+`logger -t sshd`), so events naming just the user are attached as context. When a
 finding has no identifying token (PROCESS_* rules), keyword matches are still
 attached for context but never scored — on a real host common words like
 "exec" or "connect" match thousands of unrelated lines.
@@ -21,6 +25,7 @@ import os
 import re
 from typing import List, Optional, Set
 
+from ubuntils.collectors.ssh import _parse_key_line, key_fingerprint
 from ubuntils.detectors.finding import Finding
 from ubuntils.detectors.scoring import apply_signal
 from ubuntils.timeline.builder import TimelineEvent
@@ -76,6 +81,15 @@ def _path_tokens(finding: Finding) -> Set[str]:
     return tokens
 
 
+# Rules whose artifact is a key: corroborated by its fingerprint only.
+_FINGERPRINT_RULES = frozenset({"SSH_UNAUTHORIZED_KEY"})
+
+
+def _fingerprint_tokens(finding: Finding) -> Set[str]:
+    fingerprint = key_fingerprint(_parse_key_line(finding.raw_value or "")["key_data"])
+    return {fingerprint.lower()} if fingerprint else set()
+
+
 def _whole_word_pattern(needles) -> Optional[re.Pattern]:
     """Match any needle as a whole word. Hyphens count as word characters, as
     in package names: "apt" must not match "apt-daily". A needle that ends in
@@ -101,6 +115,11 @@ def correlate(findings: List[Finding], timeline: List[TimelineEvent]) -> List[Fi
     for finding in findings:
         tokens = _path_tokens(finding)
         keywords = _RULE_KEYWORDS.get(finding.rule_id, ())
+        # Events that only name the artifact's owner: shown, never scored.
+        context_re = None
+        if finding.rule_id in _FINGERPRINT_RULES:
+            context_re = _whole_word_pattern(sorted(tokens))
+            tokens = _fingerprint_tokens(finding)
         token_re = _whole_word_pattern(sorted(tokens))
         keyword_re = _whole_word_pattern(keywords)
         if token_re is None and keyword_re is None:
@@ -112,7 +131,8 @@ def correlate(findings: List[Finding], timeline: List[TimelineEvent]) -> List[Fi
             shows_activity = keyword_re is not None and keyword_re.search(text)
             if names_artifact and (shows_activity or keyword_re is None):
                 corroborating.append(event)
-            elif shows_activity and token_re is None:
+            elif shows_activity and (context_re.search(text) if context_re is not None
+                                     else token_re is None):
                 context.append(event)
         corroborating.sort(key=lambda e: e.timestamp, reverse=True)
         context.sort(key=lambda e: e.timestamp, reverse=True)

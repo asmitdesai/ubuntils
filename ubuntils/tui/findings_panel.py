@@ -79,6 +79,8 @@ def _detail_text(finding: Finding | None, result: RemediationResult | None = Non
     elif finding.remediation_available:
         desc = finding.remediation_description or "Automated remediation available."
         lines.append(f"Fix:       {desc}")
+        if finding.auto_remediation_blocked:
+            lines.append(f"Warning:   never auto-remediated — {finding.auto_remediation_blocked}")
         lines += ["", "R: remediate    PgUp/PgDn: scroll this detail"]
     else:
         lines += ["", "No automated remediation available for this finding."]

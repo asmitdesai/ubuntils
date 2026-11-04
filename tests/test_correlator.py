@@ -69,10 +69,27 @@ def _signal_names(finding):
 
 
 def test_correlate_scores_events_naming_the_artifact_and_rule_activity():
+    # An SSH key's artifact is the key itself: the login must name its
+    # fingerprint (the way sshd logs it) to corroborate.
+    import base64
+    import hashlib
+    key_data = base64.b64encode(b"\x00\x00\x00\x0bssh-ed25519" + b"k" * 36).decode()
+    fp = "SHA256:" + base64.b64encode(
+        hashlib.sha256(base64.b64decode(key_data)).digest()).decode().rstrip("=")
     finding = _finding("SSH_UNAUTHORIZED_KEY", "/home/alice/.ssh/authorized_keys")
-    correlate([finding], [_ev_prog("Accepted publickey for alice from 1.2.3.4", "sshd")])
+    finding.raw_value = f"ssh-ed25519 {key_data} alice@laptop"
+    correlate([finding], [_ev_prog(f"Accepted publickey for alice from 1.2.3.4 ssh2: "
+                                   f"ED25519 {fp}", "sshd")])
     assert "timeline_corroboration" in _signal_names(finding)
     assert finding.confidence == 75
+
+    # Naming only the user (a line any user can forge with `logger -t sshd`)
+    # is context, not corroboration.
+    by_user = _finding("SSH_UNAUTHORIZED_KEY", "/home/alice/.ssh/authorized_keys")
+    by_user.raw_value = f"ssh-ed25519 {key_data} alice@laptop"
+    correlate([by_user], [_ev_prog("Accepted publickey for alice from 1.2.3.4", "sshd")])
+    assert "timeline_corroboration" not in _signal_names(by_user)
+    assert len(by_user.related_events) == 1
 
 
 def test_correlate_keywords_match_whole_words_only():

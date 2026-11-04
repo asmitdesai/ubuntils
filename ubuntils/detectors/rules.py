@@ -325,10 +325,13 @@ def rule_ssh_unauthorized_key(artifacts: dict) -> List[Finding]:
         if n_keys > 1 and not (has_dangerous_option or legacy_file):
             # File timestamps say *that* the file changed, not which key was
             # added — every key in it would otherwise be auto-removed, the
-            # admin's own included. Keep these below the remediation gate.
-            apply_signal(finding, "ambiguous_key", -40,
-                         f"{path} holds {n_keys} keys; its timestamps can't tell "
-                         "which one was added")
+            # admin's own included. The signal ranks it; the block is what
+            # keeps it out of --remediate --confirm, since other signals
+            # (a login line any user can forge) could lift the score back up.
+            reason = (f"{path} holds {n_keys} keys; its timestamps can't tell "
+                      "which one was added")
+            apply_signal(finding, "ambiguous_key", -40, reason)
+            finding.auto_remediation_blocked = reason
         findings.append(finding)
     return findings
 
