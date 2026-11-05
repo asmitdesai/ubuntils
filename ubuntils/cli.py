@@ -3,6 +3,7 @@ import secrets
 import socket
 import sys
 import tarfile
+import warnings
 from datetime import datetime, timezone
 
 import click
@@ -27,6 +28,9 @@ from ubuntils.utils.since_parser import parse_since
 
 # Exit status for `analyze` when the bundle fails integrity verification.
 EXIT_BUNDLE_TAMPERED = 3
+# Exit status when the detection stage itself failed: the (empty) findings
+# list says nothing about the host.
+EXIT_DETECTION_FAILED = 1
 
 # Where `collect` writes when no --output is given. A bundle holds
 # /etc/shadow; the working directory may belong to the attacker, and a name
@@ -219,9 +223,13 @@ def _load_inputs(config_path, baseline_path, rules_path, since_value) -> tuple:
     baseline = None
     if baseline_path:
         try:
-            baseline = load_baseline(baseline_path)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", FutureWarning)
+                baseline = load_baseline(baseline_path)
         except (ValueError, OSError) as exc:
             raise click.ClickException(f"Invalid baseline {baseline_path}: {exc}")
+        for w in caught:
+            click.echo(f"warning: {w.message}", err=True)
 
     custom_rules = None
     if rules_path:
@@ -257,6 +265,14 @@ def _default_bundle_path() -> str:
                         f"ubuntils-bundle-{stamp}-{secrets.token_hex(4)}.tar.gz")
 
 
+def _detection_failed(scan_metadata: dict) -> bool:
+    error = scan_metadata.get("detection_error")
+    if error:
+        click.secho(f"ERROR: detection failed ({error}). The report has no findings, "
+                    "which says nothing about this host.", err=True, fg="red", bold=True)
+    return bool(error)
+
+
 def _emit_report(report: str, output_path) -> None:
     if output_path:
         try:
@@ -271,13 +287,31 @@ def _emit_report(report: str, output_path) -> None:
         click.echo(report)
 
 
-@click.group()
+# Shown on stderr by every command, so scripts and humans see what 3.0 changes
+# before it lands. Each returns a message, or None when it doesn't apply.
+def _deprecation_notices() -> list:
+    notices = []
+    if sys.version_info < (3, 10):
+        notices.append(
+            f"Python {sys.version_info[0]}.{sys.version_info[1]} support ends with "
+            "ubuntils 2.3.x; ubuntils 3.0 requires Python 3.10 or newer.")
+    return notices
+
+
+@click.group(epilog="ubuntils 3.0 makes the interactive TUI an optional extra: "
+                    "install 'ubuntils[tui]' to keep it.")
 @click.option("--allow-user-install", is_flag=True,
               help="Escalate to root even though ubuntils or its interpreter is installed "
                    "where a non-root user can modify it")
-def main(allow_user_install):
+@click.pass_context
+def main(ctx, allow_user_install):
     """ubuntils - Ubuntu incident response tool."""
-    pass
+    # The non-root half of scan/collect/rollback re-executes itself under
+    # sudo, and the root half would repeat the notice; print it once.
+    escalating = ctx.invoked_subcommand in ("scan", "collect", "rollback") and os.geteuid() != 0
+    if not escalating:
+        for notice in _deprecation_notices():
+            click.echo(f"deprecation: {notice}", err=True)
 
 
 @main.command()
@@ -311,6 +345,10 @@ def scan(output_json, remediate, confirm, config_path, baseline_path, output_pat
     since, allowlist, baseline, custom_rules = _load_inputs(
         config_path, baseline_path, rules_path, since_value
     )
+    if remediate and confirm:
+        click.echo("deprecation: from ubuntils 3.0, --remediate --confirm first keeps a "
+                   "hashed copy of every file it is about to change (evidence), then "
+                   "changes them.", err=True)
 
     if output_json or remediate:
         findings, timeline, stats, scan_metadata, artifact_counts, remediation_results = \
@@ -324,6 +362,8 @@ def scan(output_json, remediate, confirm, config_path, baseline_path, output_pat
                 scan_metadata, artifact_counts, findings, timeline, remediation_results
             )
             _emit_report(report, output_path)
+            if _detection_failed(scan_metadata):
+                sys.exit(EXIT_DETECTION_FAILED)
             return
 
         # --remediate without --json: launch TUI with pre-computed results,
@@ -332,6 +372,8 @@ def scan(output_json, remediate, confirm, config_path, baseline_path, output_pat
             return (findings, timeline, stats, remediation_results)
 
         UbuntilsApp(verbose=verbose, _scan_override=_override).run()
+        if _detection_failed(scan_metadata):
+            sys.exit(EXIT_DETECTION_FAILED)
         return
 
     # Plain TUI mode: let the app run its own scan with live progress
@@ -455,8 +497,11 @@ def analyze(bundle, root_path, output_json, output_path, config_path, baseline_p
 
         UbuntilsApp(verbose=verbose, _scan_override=_override).run()
 
+    detection_failed = _detection_failed(scan_metadata)
     if tampered:
         sys.exit(EXIT_BUNDLE_TAMPERED)
+    if detection_failed:
+        sys.exit(EXIT_DETECTION_FAILED)
 
 
 @main.command()

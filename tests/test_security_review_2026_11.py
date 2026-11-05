@@ -142,15 +142,27 @@ def test_F03_login_with_the_keys_fingerprint_corroborates_only_that_key(tmp_path
     assert by_key[_ATTACKER_KEY].auto_remediation_blocked
 
 
-def test_F03_lone_key_is_not_blocked():
+def _lone_key(options=""):
     from ubuntils.detectors.rules import rule_ssh_unauthorized_key
     now = time.time()
+    line = " ".join(filter(None, [options, "ssh-ed25519", _ATTACKER_KEY, "x"]))
     [finding] = rule_ssh_unauthorized_key({"authorized_keys": [{
         "username": "alice", "home": "/home/alice", "path": "/home/alice/.ssh/authorized_keys",
-        "key_type": "ssh-ed25519", "key_data": _ATTACKER_KEY, "comment": "x", "options": "",
-        "raw_line": f"ssh-ed25519 {_ATTACKER_KEY} x", "file_mtime": now, "file_ctime": now,
+        "key_type": "ssh-ed25519", "key_data": _ATTACKER_KEY, "comment": "x",
+        "options": options, "raw_line": line, "file_mtime": now, "file_ctime": now,
     }]})
-    assert finding.auto_remediation_blocked is None
+    return finding
+
+
+def test_F03_lone_key_is_not_ambiguous():
+    assert "AMBIGUOUS_KEY" not in [r.code for r in _lone_key().blocked_reasons]
+
+
+def test_F03_lone_key_with_a_dangerous_option_is_not_blocked():
+    # Content evidence (a forced command), not just a timestamp: still
+    # eligible for --remediate --confirm. (A lone key with only a recent
+    # timestamp is blocked as RECENCY_ONLY: see N-15 in test_bridge_2_3.py.)
+    assert _lone_key('command="/tmp/x"').auto_remediation_blocked is None
 
 
 def test_F03_confirm_modal_and_report_show_the_block_reason():

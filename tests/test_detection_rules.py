@@ -663,7 +663,8 @@ def test_engine_applies_baseline_before_allowlist_and_counts_suppressed():
         "authorized_keys": [_ssh_key_entry()],
         "users": [_user_entry(username="ghost", uid=0, shell="/bin/bash")],
     }
-    baseline = Baseline(entries=[{"rule_id": "SSH_UNAUTHORIZED_KEY", "fingerprint": "test@host"}])
+    baseline = Baseline(entries=[{"rule_id": "SSH_UNAUTHORIZED_KEY",
+                                   "fingerprint": "AAAAB3NzaC1yc2EAAAA"}])
     allowlist = Allowlist(rules=["USER_UID_ZERO"])
     engine = DetectionEngine(baseline=baseline, allowlist=allowlist)
     findings = engine.run(artifacts)

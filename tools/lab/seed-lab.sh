@@ -58,6 +58,23 @@ EOF
 
 record() { printf '%s\n' "$*" >> "$STATE/actions"; }
 
+# skip RULE REASON: this host can't take an artifact (no chattr capability,
+# a noexec /dev/shm, no module support). Recorded, never fatal, and listed at
+# the end, so a rule that doesn't fire reads as "not planted", not as a miss.
+skip() {
+    warn "not planting $1: $2"
+    printf '%s\t%s\n' "$1" "$2" >> "$STATE/skipped"
+}
+
+print_skipped() {
+    [[ -s $STATE/skipped ]] || return 0
+    echo
+    echo "Not planted on this host (expect no finding for these):"
+    while IFS=$'\t' read -r rule reason; do
+        printf '  %-30s %s\n' "$rule" "$reason"
+    done < "$STATE/skipped"
+}
+
 # ─── plant ────────────────────────────────────────────────────────────────────
 
 plant_users() {
@@ -105,7 +122,7 @@ plant_sudoers() {
 }
 
 plant_ssh() {
-    command -v ssh-keygen >/dev/null || { warn "ssh-keygen missing — skipping SSH artifacts"; return; }
+    command -v ssh-keygen >/dev/null || { skip SSH_UNAUTHORIZED_KEY "ssh-keygen is not installed"; return; }
     local home keydir pub
     home=$(getent passwd "$LAB_USER" | cut -d: -f6)
     keydir=$(mktemp -d)
@@ -195,11 +212,12 @@ start_decoy() {
 }
 
 plant_processes() {
-    say PROCESS_MASQUERADE "'kworker' running from /dev/shm (fake kernel thread)"
     if findmnt -no OPTIONS /dev/shm 2>/dev/null | grep -qw noexec; then
-        warn "/dev/shm is mounted noexec — the kworker decoy can't start"
+        skip "PROCESS_MASQUERADE" "kworker decoy: /dev/shm is mounted noexec (HIGH variant)"
+    else
+        say PROCESS_MASQUERADE "'kworker' running from /dev/shm (fake kernel thread)"
+        start_decoy /dev/shm/kworker
     fi
-    start_decoy /dev/shm/kworker
     say PROCESS_MASQUERADE "'sshd' running from /var/tmp"
     start_decoy /var/tmp/sshd
 }
@@ -223,19 +241,22 @@ exit 0
 
 plant_immutable() {
     if [[ ! -e /var/log/btmp ]] || ! command -v chattr >/dev/null; then
-        warn "no /var/log/btmp or chattr — skipping IMMUTABLE_FLAG_SET"; return
+        skip IMMUTABLE_FLAG_SET "no /var/log/btmp or no chattr"; return
     fi
     if lsattr -d /var/log/btmp 2>/dev/null | cut -d' ' -f1 | grep -q a; then
         warn "/var/log/btmp is already append-only — leaving it alone"; return
     fi
+    if ! chattr +a /var/log/btmp 2>/dev/null; then
+        # An unprivileged container has no CAP_LINUX_IMMUTABLE.
+        skip IMMUTABLE_FLAG_SET "chattr +a was refused (unprivileged container?)"; return
+    fi
     say IMMUTABLE_FLAG_SET "append-only flag on /var/log/btmp"
-    chattr +a /var/log/btmp
     record "chattr /var/log/btmp"
 }
 
 plant_package_tamper() {
     if [[ ! -f $TAMPER_FILE ]] || ! dpkg -S "$TAMPER_FILE" >/dev/null 2>&1; then
-        warn "$TAMPER_FILE not found or not package-owned — skipping PACKAGE_TAMPERED"; return
+        skip PACKAGE_TAMPERED "$TAMPER_FILE is missing or not package-owned"; return
     fi
     say PACKAGE_TAMPERED "one comment line appended to $TAMPER_FILE"
     cp -p "$TAMPER_FILE" "$STATE/dot.bashrc.orig"
@@ -244,14 +265,14 @@ plant_package_tamper() {
 }
 
 plant_module() {
-    if grep -q '^dummy ' /proc/modules; then
+    if grep -q '^dummy ' /proc/modules 2>/dev/null; then
         warn "'dummy' module already loaded — leaving it alone"; return
     fi
     if modprobe dummy 2>/dev/null; then
         say KERNEL_MODULE_SUSPICIOUS "loaded the harmless 'dummy' network module"
         record "module dummy"
     else
-        warn "could not load 'dummy' — skipping KERNEL_MODULE_SUSPICIOUS"
+        skip KERNEL_MODULE_SUSPICIOUS "could not load the 'dummy' module (container or no module support)"
     fi
 }
 
@@ -268,6 +289,7 @@ cmd_plant() {
     confirm
     install -d -m 700 "$STATE"
     : > "$STATE/actions"
+    : > "$STATE/skipped"
     echo "Planting (rule it should trip → artifact):"
     plant_users
     (( with_empty_password )) && plant_empty_password
@@ -282,6 +304,7 @@ cmd_plant() {
     plant_immutable
     plant_package_tamper
     plant_module
+    print_skipped
     cat <<EOF
 
 Done. Not planted on purpose:
@@ -358,6 +381,7 @@ cmd_clean() {
 cmd_status() {
     if [[ -f $STATE/actions ]]; then
         echo "Lab planted ($(wc -l < "$STATE/actions") recorded actions in $STATE/actions)."
+        print_skipped
     else
         echo "No lab planted."
     fi

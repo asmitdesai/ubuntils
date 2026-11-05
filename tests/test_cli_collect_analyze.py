@@ -274,7 +274,9 @@ def test_analyze_bundle_with_baseline_suppresses_finding(tmp_path, monkeypatch):
         main, ["analyze", str(out), "--json", "--baseline", str(baseline_file)]
     )
     assert result.exit_code == 0, result.output
-    report = _json.loads(result.output)
+    # stderr carries the v1-baseline deprecation warning; the report is stdout.
+    report = _json.loads(result.stdout)
+    assert "warning:" in result.stderr
     assert not any(f["rule_id"] == "USER_UID_ZERO" for f in report["findings"])
     meta = report["scan_metadata"]
     assert meta["suppressed_by_baseline"] == 1

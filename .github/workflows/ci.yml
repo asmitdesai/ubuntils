@@ -32,7 +32,17 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
 
-      - name: Install dependencies
+      # Test against the same hash-pinned versions the README tells users to
+      # install. The lock targets Python 3.10+, so 3.9 (dropped in 3.0) keeps
+      # the unpinned requirements until then.
+      - name: Install dependencies (hash-pinned)
+        if: matrix.python != '3.9'
+        run: |
+          pip install --require-hashes -r requirements-dev.lock
+          pip install --no-deps --no-build-isolation -e .
+
+      - name: Install dependencies (Python 3.9, unpinned)
+        if: matrix.python == '3.9'
         run: pip install -r requirements.txt -e .
 
       - name: Run tests
@@ -54,6 +64,9 @@ jobs:
 
       - name: Audit the hash-pinned runtime dependencies
         run: pip-audit --require-hashes --disable-pip -r requirements.lock
+
+      - name: Audit the hash-pinned test dependencies
+        run: pip-audit --require-hashes --disable-pip -r requirements-dev.lock
 
       - name: Install the lock exactly as documented
         run: |

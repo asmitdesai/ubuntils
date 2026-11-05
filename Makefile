@@ -1,4 +1,4 @@
-.PHONY: install scan scan-json test lock clean
+.PHONY: install scan scan-json test lock lock-dev clean
 
 install:
 	pip install -e '.[dev]'
@@ -21,6 +21,12 @@ test:
 lock:
 	pip-compile --generate-hashes --allow-unsafe --no-strip-extras --build-deps-for wheel \
 		--output-file requirements.lock pyproject.toml
+
+# Regenerate requirements-dev.lock: test dependencies, constrained to the
+# runtime pins in requirements.lock, so CI tests what users install.
+lock-dev:
+	uv pip compile pyproject.toml requirements-dev.in --python-version 3.10 \
+		--generate-hashes --no-strip-extras --universal --output-file requirements-dev.lock
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; \

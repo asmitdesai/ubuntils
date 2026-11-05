@@ -4,10 +4,15 @@ on:
   push:
     tags: ["v*"]
 
+# Nothing by default; each job asks for exactly what it needs.
+permissions: {}
+
 jobs:
   build:
     name: Build distribution
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -69,6 +74,15 @@ jobs:
         with:
           name: dist
           path: dist/
+
+      # Not in dist/ before publishing: PyPI accepts only distributions.
+      # Responders verify a download with `sha256sum -c SHA256SUMS
+      # --ignore-missing`, against a digest they carried over separately.
+      - name: Write SHA256SUMS
+        run: |
+          cd dist
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
 
       - name: Create release with artifacts
         env:

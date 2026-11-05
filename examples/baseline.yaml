@@ -10,7 +10,9 @@
 
 baseline:
   - rule_id: SSH_UNAUTHORIZED_KEY
-    fingerprint: ci@ci-runner      # substring match against the finding's raw_value
+    # The key itself: its SHA256 fingerprint (`ssh-keygen -lf key.pub`) or its
+    # base64 data. Never its comment: whoever adds a key chooses the comment.
+    fingerprint: SHA256:REPLACE_WITH_THE_KEYS_FINGERPRINT
 
   - rule_id: SHELL_RC_MODIFICATION
-    fingerprint: /home/deploy/.bashrc  # exact match against the finding's artifact_path
+    fingerprint: /home/deploy/.bashrc  # exact artifact_path; never hides suspicious content

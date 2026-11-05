@@ -4,13 +4,11 @@ Forensic triage for live Ubuntu systems — automated artifact collection, persi
 
 [![CI](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml/badge.svg)](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
-![Tests](https://img.shields.io/badge/tests-546%20passing-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-94.69%25-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Arch](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-lightgrey)
-![Ubuntu](https://img.shields.io/badge/ubuntu-20.04%20%7C%2022.04%20%7C%2024.04%20%7C%2026.04-orange)
+![Ubuntu](https://img.shields.io/badge/ubuntu-22.04%20%7C%2024.04%20%7C%2026.04-orange)
 ![Offline analysis](https://img.shields.io/badge/offline%20analysis-collect%20%2B%20analyze-blueviolet)
-![Detection rules](https://img.shields.io/badge/detection%20rules-16-informational)
+![Detection rules](https://img.shields.io/badge/detection%20rules-17-informational)
 ![SIEM](https://img.shields.io/badge/SIEM-Wazuh-yellow)
 
 ---
@@ -29,9 +27,9 @@ The gap is a tool that runs on the live system right now, covers the most common
 
 ubuntils runs in four sequential stages:
 
-1. **Collection** — Eleven collectors gather forensic artifacts concurrently from `/proc`, cron tables, systemd units, SSH keys, sudoers files, environment definitions, package integrity (`dpkg --verify`), PAM/NSS config, and loaded kernel modules. Most collectors finish in a second or two; `dpkg --verify`, which re-checks every installed package file, dominates — a full scan took 29–68 seconds on an Ubuntu 26.04 arm64 desktop VM.
+1. **Collection** — Eleven collectors, run one after another, gather forensic artifacts from `/proc`, cron tables, systemd units, SSH keys, sudoers files, environment definitions, package integrity (`dpkg --verify`), PAM/NSS config, and loaded kernel modules. Most collectors finish in a second or two; `dpkg --verify`, which re-checks every installed package file, dominates — a full scan took 29–68 seconds on an Ubuntu 26.04 arm64 desktop VM.
 2. **Detection** — A detection engine runs all seventeen built-in rules — plus any custom rules loaded with `--rules` — over the collected artifacts, producing a ranked, confidence-scored findings list in about one second.
-3. **Timeline** — A timeline builder reads syslog, journald, and auditd in parallel and correlates events chronologically, adding roughly 0.3 seconds. Each finding is then auto-correlated against the timeline, so it carries the nearby events that relate to it.
+3. **Timeline** — A timeline builder reads syslog, journald, and auditd and correlates events chronologically, adding roughly 0.3 seconds. Each finding is then auto-correlated against the timeline, so it carries the nearby events that relate to it.
 4. **Output** — Results appear either in an interactive four-tab TUI (default) or as structured JSON on stdout (`--json`).
 
 ubuntils itself makes no network calls, and every feature — custom rules and correlation included — runs against locally collected artifacts. The one way findings can leave the host is the [Wazuh integration](#wazuh-integration): if a Wazuh agent is installed, a live `scan` writes its findings to a local file that *the agent* then ships to its manager. Pass `--no-wazuh` to turn that off for a run.
@@ -217,7 +215,7 @@ Suppression is always explicit — by rule id and/or exact artifact path. There 
 # baseline.yaml
 baseline:
   - rule_id: SSH_UNAUTHORIZED_KEY
-    fingerprint: ci@ci-runner          # substring match against the finding's raw_value
+    fingerprint: SHA256:Qx4N…            # the key's fingerprint (as sshd logs it) or its base64 data
   - rule_id: SHELL_RC_MODIFICATION
     fingerprint: /home/deploy/.bashrc  # exact match against the finding's artifact_path
 ```
@@ -226,7 +224,12 @@ baseline:
 ubuntils scan --json --baseline baseline.yaml
 ```
 
-A baseline entry matches by `rule_id` plus a `fingerprint` tested as a substring of the finding's `raw_value` or an exact match against its `artifact_path`. A match drops the finding from the report entirely — suppression is never silent, though: the number of findings a baseline removed is always visible in `scan_metadata.suppressed_by_baseline`. Allowlist (`--config`) suppression still applies on top of baseline suppression. Works identically on `scan` and `analyze`. A sample lives at [`examples/baseline.yaml`](examples/baseline.yaml).
+A baseline entry matches by `rule_id` plus a `fingerprint`:
+- **SSH keys** (`SSH_UNAUTHORIZED_KEY`) match the key itself: its `SHA256:` fingerprint, or a whole word of `<key type> <key data>`. They never match the key's comment or options, which whoever adds the key chooses. A baseline on `ci@ci-runner` would otherwise hide a planted key labelled `ci@ci-runner`.
+- **An exact `artifact_path`** suppresses the routine findings for that file, but never a finding with a content signal (`content_match`, such as a download-and-execute line added to a baselined `.bashrc`).
+- **Anything else** is a whole-word match within the finding's `raw_value`.
+
+A match drops the finding from the report entirely. Suppression is never silent, though: the number of findings a baseline removed is always visible in `scan_metadata.suppressed_by_baseline`. Allowlist (`--config`) suppression still applies on top of baseline suppression. Works identically on `scan` and `analyze`. Baselines in this format print a deprecation warning: ubuntils 3.0 replaces them with hash-keyed entries generated by `ubuntils baseline create`. A sample lives at [`examples/baseline.yaml`](examples/baseline.yaml).
 
 ### Custom detection rules (`--rules`)
 
@@ -370,14 +373,17 @@ While collectors run, ubuntils shows a live checklist — one row per collector.
 ```
 Scanning system…
 
-  ✓  Process
-  ✓  Network
-  ✓  Users
-  ⠹  Cron
-     Systemd
-     SSH
-     Sudoers
-     Environment
+  ✓  ProcessCollector
+  ✓  NetworkCollector
+  ✓  UserCollector
+  ⠹  CronCollector
+     SystemdCollector
+     SSHCollector
+     SudoersCollector
+     EnvironmentCollector
+     PackageCollector
+     PamCollector
+     KernelCollector
 ```
 
 `✓` marks success, `✗` marks failure, the spinner marks the active collector, and blank rows are pending. Once all collectors finish and detection + timeline complete, the TUI switches automatically to the results screen.
@@ -400,7 +406,7 @@ Press `q` or `Ctrl+C` to exit.
 Shows scan metadata and the top findings on a single screen:
 
 ```
-Collectors:  8 run · 0 failed
+Collectors:  11 run · 0 failed
 Findings:    2 HIGH · 1 MEDIUM · 0 LOW
 Timeline:    47 events
 Duration:    2.8s
@@ -701,7 +707,7 @@ TODO: flag-only rules for `AuthorizedKeysCommand` and `pam_exec.so`. Both are ea
 ```json
 {
   "scan_metadata": {
-    "tool_version": "2.2.0",
+    "tool_version": "2.3.0",
     "hostname": "web-01",
     "generated_at": "2026-06-10T08:22:03.114523+00:00",
     "ubuntu_version": "Ubuntu 22.04.3 LTS",
@@ -712,6 +718,7 @@ TODO: flag-only rules for `AuthorizedKeysCommand` and `pam_exec.so`. Both are ea
     "command_collectors_skipped": [],
     "collectors_degraded": {},
     "rules_failed": [],
+    "detection_error": null,
     "timeline_error": null,
     "suppressed_by_baseline": 1
   },
@@ -775,7 +782,7 @@ TODO: flag-only rules for `AuthorizedKeysCommand` and `pam_exec.so`. Both are ea
 }
 ```
 
-`remediation_results` appears as an additional top-level key only when `--remediate` is passed. `report_sha256` is always present and is computed over the rest of the document. `scan_metadata.bundle_integrity` is `"live"` for `scan` and `analyze --root`, `"ok"` for a verified bundle passed to `analyze`, and `"mismatch"` if a bundle's content doesn't match its manifest — see [Bundle integrity in JSON output](#bundle-integrity-in-json-output). `scan_metadata.command_collectors_skipped` names any command-based collectors (`NetworkCollector`, `SystemdCollector`, `PackageCollector`, `KernelCollector`) skipped for a `--root` run — always empty for `scan` and `analyze BUNDLE`. `scan_metadata.suppressed_by_baseline` is the count of findings a `--baseline` file removed from this report — see [Known-good baselining](#known-good-baselining---baseline) — and `suppressed_by_allowlist` the count a `--config` allowlist removed, so a report always shows that findings were hidden. `scan_metadata.collectors_degraded` maps a collector name to the reasons its data is incomplete (a command that failed or timed out, an unreadable file, a skipped malformed line), `rules_failed` lists any detection rule that crashed, and `timeline_error` is set if the timeline couldn't be built. All three are empty on a healthy run. Check them before reading an empty findings list as "clean".
+`remediation_results` appears as an additional top-level key only when `--remediate` is passed. `report_sha256` is always present and is computed over the rest of the document. `scan_metadata.bundle_integrity` is `"live"` for `scan` and `analyze --root`, `"ok"` for a verified bundle passed to `analyze`, and `"mismatch"` if a bundle's content doesn't match its manifest — see [Bundle integrity in JSON output](#bundle-integrity-in-json-output). `scan_metadata.command_collectors_skipped` names any command-based collectors (`NetworkCollector`, `SystemdCollector`, `PackageCollector`, `KernelCollector`) skipped for a `--root` run — always empty for `scan` and `analyze BUNDLE`. `scan_metadata.suppressed_by_baseline` is the count of findings a `--baseline` file removed from this report — see [Known-good baselining](#known-good-baselining---baseline) — and `suppressed_by_allowlist` the count a `--config` allowlist removed, so a report always shows that findings were hidden. `scan_metadata.collectors_degraded` maps a collector name to the reasons its data is incomplete (a command that failed or timed out, an unreadable file, a skipped malformed line), `rules_failed` lists any detection rule that crashed (`DetectionEngine` if the whole detection stage failed, with the error in `detection_error` and exit status 1), and `timeline_error` is set if the timeline couldn't be built. All of them are empty on a healthy run. Check them before reading an empty findings list as "clean".
 
 `related_events` and `guided_remediation` appear on a finding only when they have content. `related_events` holds up to five timeline events matched to the finding, most recent first — a surfacing aid, not a causal claim. Matching is on whole words against each event's program and message: identifying tokens from the finding (a path basename, a `/home/<user>` name, a package, module or account name) and a few per-rule activity keywords (`sshd`, `cron`, `dpkg`, …). Events that name the artifact *and* show that activity come first. Findings with no identifying token (the `PROCESS_*` rules, whose artifact is `/proc/<pid>/exe`) get keyword matches only, as context. Every timeline event carries a `program` field (the syslog tag or journald `SYSLOG_IDENTIFIER`, empty for auditd). `guided_remediation` is a reviewed command sequence for you to run by hand; ubuntils never executes it.
 
@@ -808,7 +815,7 @@ Select any finding with a remediation in the Findings tab, then press `R`. A con
 
 `--remediate` without `--confirm` is a safe dry run: validation runs and each result says what would change, but nothing is written — no change and no backup. Pass both flags to actually make changes. The pipeline runs before the TUI launches in this mode, and the Summary tab lists every remediation outcome with its backup path and rollback command.
 
-`--remediate --confirm` only acts on findings with a confidence score of at least 40 (the MEDIUM band) — a low-confidence, mtime-only `SSH_UNAUTHORIZED_KEY` is reported as `SKIPPED` rather than having its key deleted. Adjust the gate with `--min-confidence N`.
+`--remediate --confirm` never applies a fix that has a hard block in `blocked_reasons`, whatever its confidence: `AMBIGUOUS_KEY` (one of several keys in a file), `RECENCY_ONLY` (a key whose only evidence is a recent timestamp, which is also what a freshly provisioned host's admin key looks like), and `SOLE_SUDO_ACCESS` (a NOPASSWD rule for an account with no usable password, such as the cloud-image default user, whose removal would leave it no sudo at all). Those are reported as `SKIPPED` with the reason and stay fixable by hand in the TUI. Of the rest, it only acts on findings with a confidence score of at least 40 (the MEDIUM band). Adjust that gate with `--min-confidence N`; it never lifts a hard block.
 
 ```bash
 ubuntils scan --remediate          # dry run
@@ -828,7 +835,7 @@ Every remediation follows the same pattern regardless of how it is triggered:
 6. Record a rollback sidecar, `<backup>.json`, holding the original path, owner, group and mode, the parent directory's device and inode, and the SHA-256 of the content remediation left behind
 7. Verify the exact line is gone
 
-If any step fails, remediation stops immediately, the system is left unchanged, and the full error is reported with the backup path. Sudo access is protected two ways: `%group` NOPASSWD rules (like `%sudo`) are flag-only and never auto-removed, and the sudoers remediator refuses to remove the last rule from the main sudoers file.
+If any step fails, remediation stops immediately, the system is left unchanged, and the full error is reported with the backup path. Sudo access is protected three ways: `%group` NOPASSWD rules (like `%sudo`) are flag-only and never auto-removed, a rule for an account with no usable password is blocked from automatic removal (`SOLE_SUDO_ACCESS`), and the sudoers remediator refuses to remove the last rule from the main sudoers file.
 
 ### Rollback
 
@@ -979,10 +986,12 @@ The remediable findings make a good in-TUI remediation demo: press **R** on the 
 
 | | Supported |
 |---|---|
-| **Ubuntu** | 20.04, 22.04, 24.04 |
+| **Ubuntu** | 22.04, 24.04, 26.04 |
 | **Architecture** | amd64, arm64 |
-| **Python** | 3.9+ |
+| **Python** | 3.9+ (3.10+ for the hash-verified install; ubuntils 3.0 will require 3.10) |
 | **Privileges** | Root required for full artifact access |
+
+Ubuntu 20.04 is no longer listed: its system Python is 3.8, below the 3.9 minimum, and its standard support has ended. CI runs on 22.04 and 24.04 (amd64 and arm64); 26.04 was validated by hand on arm64 for 2.2.0.
 
 Running without root produces a partial scan with warnings. Critical paths like `/etc/shadow`, protected crontab directories, and some `/proc` entries will be skipped.
 
@@ -1051,9 +1060,11 @@ VirusTotal hash lookups and MISP IOC export were dropped from this release. Viru
 - [x] `tools/lab/seed-lab.sh` demo lab that trips 14 of 16 rules with inert artifacts
 - [x] 509 tests at 94.65% coverage
 
-**v3.0.0 / v4.0.0 (exploratory)**
-- Web dashboard for multi-host triage
-- macOS support
+**v3.0.0 (planned)**
+- A signed single-file build that runs offline with the system `python3`
+- Likely-persistence vs hygiene grouping, ATT&CK IDs, a Markdown report
+- Preserve-then-fix remediation, an independent PANIX coverage benchmark
+- Not planned: a web dashboard, macOS, a continuous agent
 
 ---
 

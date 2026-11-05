@@ -61,10 +61,13 @@ class ConfirmModal(ModalScreen):
                 yield Static(Text(f"Remediate {self._finding.rule_id}?"), id="rule-id")
                 desc = self._finding.remediation_description or "Remove the offending entry."
                 yield Static(Text(desc), id="fix-desc")
-                if self._finding.auto_remediation_blocked:
+                reasons = [r.detail for r in self._finding.blocked_reasons] or (
+                    [self._finding.auto_remediation_blocked]
+                    if self._finding.auto_remediation_blocked else [])
+                if reasons:
                     yield Static(Text(
                         "Warning: `--remediate --confirm` never applies this fix — "
-                        f"{self._finding.auto_remediation_blocked}. "
+                        f"{'; '.join(reasons)}. "
                         "Confirm only if you have checked it yourself."
                     ), id="blocked-warning")
                 yield Static(Text("Backup will be created at /var/backups/ubuntils/…"))
