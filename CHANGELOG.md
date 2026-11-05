@@ -2,9 +2,9 @@
 
 Notable changes per release. Earlier releases (1.0.0 through 2.1.0) are summarised in the README's [Roadmap](README.md#roadmap).
 
-## 2.3.0 — not yet released
+## 2.3.0 — 2026-11-05
 
-The bridge to 3.0: it ships every fix from the 2026-11 external review, two more security fixes, and a warning for everything 3.0 will change. The plan is in [`docs/plans/`](docs/plans/v3.0.0-plan.md).
+The bridge to 3.0: it ships every fix from the 2026-11 external review, two more security fixes, and a warning for everything 3.0 will change.
 
 ### Security — found while planning 3.0
 - **N-01** A failure in the detection stage outside an individual rule (an allowlist or baseline that raised while filtering) produced an empty findings list with nothing in `rules_failed`, which read as a clean host. It's now recorded as `rules_failed: ["DetectionEngine"]` with the error in `scan_metadata.detection_error`, the TUI says detection failed, and `scan`/`analyze` exit 1.

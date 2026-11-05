@@ -1,4 +1,4 @@
-"""Regression tests for the 2.3.0 bridge release (docs/plans/v3.0.0-plan.md §3).
+"""Regression tests for the 2.3.0 bridge release.
 
 N-01: a detection-stage failure must never read as a clean host.
 N-14: baselines must not be keyed on text an attacker chooses.
