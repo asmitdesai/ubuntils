@@ -3,10 +3,35 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
 from ubuntils.detectors.finding import Finding, Severity
 from ubuntils.remediators.base import RemediationResult, RemediationStatus
 from ubuntils.timeline.builder import TimelineEvent
+
+
+@pytest.fixture(autouse=True)
+def _no_deprecation_notices(request, monkeypatch):
+    """The CLI prints version-dependent deprecation notices on stderr (the
+    Python 3.9 one fires only on 3.9). Under click 8.1, the newest click 3.9
+    can install, CliRunner folds stderr into result.output, so the notice would
+    break every test that parses JSON output. Silence it everywhere; the tests
+    that cover notices opt out with @pytest.mark.real_deprecation_notices."""
+    if request.node.get_closest_marker("real_deprecation_notices"):
+        return
+    from ubuntils import cli
+    monkeypatch.setattr(cli, "_deprecation_notices", lambda: [])
+
+
+@pytest.fixture
+def split_runner():
+    """A CliRunner whose result.stdout and result.stderr are kept apart.
+    click 8.2+ always does this; click 8.1 (the newest on Python 3.9) mixes
+    them unless mix_stderr=False, and then result.stderr raises."""
+    try:
+        return CliRunner(mix_stderr=False)
+    except TypeError:
+        return CliRunner()
 
 
 @pytest.fixture

@@ -226,20 +226,22 @@ def test_N03_ubuntu_20_04_is_not_claimed():
 
 # ── R0-5: deprecation notices ────────────────────────────────────────────────
 
+@pytest.mark.real_deprecation_notices
 def test_R05_python_3_9_gets_a_deprecation_notice(monkeypatch):
     monkeypatch.setattr(cli.sys, "version_info", (3, 9, 18, "final", 0))
     assert any("3.10" in n for n in cli._deprecation_notices())
 
 
+@pytest.mark.real_deprecation_notices
 def test_R05_supported_python_gets_no_notice():
     import sys
     if sys.version_info >= (3, 10):
         assert cli._deprecation_notices() == []
 
 
-def test_R05_notice_is_printed_once_on_stderr(monkeypatch):
+def test_R05_notice_is_printed_once_on_stderr(monkeypatch, split_runner):
     monkeypatch.setattr(cli, "_deprecation_notices", lambda: ["going away"])
-    result = CliRunner().invoke(cli.main, ["version"])
+    result = split_runner.invoke(cli.main, ["version"])
     assert result.exit_code == 0
     assert result.stderr.count("deprecation: going away") == 1
     assert "going away" not in result.stdout

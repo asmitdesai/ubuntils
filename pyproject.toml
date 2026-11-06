@@ -58,3 +58,6 @@ include = ["ubuntils*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 addopts = "--cov=ubuntils --cov-fail-under=90 --cov-report=term-missing"
+markers = [
+    "real_deprecation_notices: keep the CLI's real deprecation notices (conftest silences them by default)",
+]

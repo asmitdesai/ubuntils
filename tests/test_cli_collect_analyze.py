@@ -246,7 +246,7 @@ def test_analyze_bundle_with_bad_rules_file_errors(tmp_path, monkeypatch):
     assert result.exit_code != 0
 
 
-def test_analyze_bundle_with_baseline_suppresses_finding(tmp_path, monkeypatch):
+def test_analyze_bundle_with_baseline_suppresses_finding(tmp_path, monkeypatch, split_runner):
     """--baseline on `analyze BUNDLE` must suppress the matching finding and
     record it (rule_id/artifact_path) in scan_metadata['baseline_suppressed'],
     mirroring scan's --baseline handling."""
@@ -269,8 +269,7 @@ def test_analyze_bundle_with_baseline_suppresses_finding(tmp_path, monkeypatch):
     baseline_file = tmp_path / "baseline.yaml"
     baseline_file.write_text("baseline:\n  - rule_id: USER_UID_ZERO\n    fingerprint: ghost\n")
 
-    runner = CliRunner()
-    result = runner.invoke(
+    result = split_runner.invoke(
         main, ["analyze", str(out), "--json", "--baseline", str(baseline_file)]
     )
     assert result.exit_code == 0, result.output
