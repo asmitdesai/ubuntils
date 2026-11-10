@@ -88,10 +88,16 @@ def read_file_at(dir_fd: int, name: str) -> tuple:
         if stat.S_ISLNK(stat_at(dir_fd, name).st_mode):
             raise UnsafePathError(f"{name} is a symlink — refusing to follow it") from exc
         raise
-    with os.fdopen(fd, "rb") as f:
-        st = os.fstat(f.fileno())
+    # Check before wrapping the fd: fdopen() of a directory raises
+    # IsADirectoryError itself, which skipped this check and leaked the fd.
+    try:
+        st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             raise UnsafePathError(f"{name}: not a regular file")
+    except BaseException:
+        os.close(fd)
+        raise
+    with os.fdopen(fd, "rb") as f:
         return f.read(), st
 
 

@@ -13,6 +13,12 @@ Work toward 3.0.0. Everything here is additive unless it says otherwise.
 
 - **Preserve, then fix.** Before `--remediate --confirm` or the TUI's `R` changes anything, the files about to change are copied into `/var/lib/ubuntils/preserve/<time>-<random>/` with a manifest of their SHA-256, owner, mode, times, inode and parent directory, read through the same symlink-free path as remediation. If any file can't be preserved, nothing is changed. The manifest's SHA-256 is printed and recorded as `scan_metadata.preserve`. `--preserve-full` collects a full bundle first; `--no-preserve --yes` opts out.
 
+### Fixed
+- Remediation reading a file through its symlink-free path leaked a file descriptor, and reported a plain `IsADirectoryError`, when a directory sat where the file was expected; it now refuses with "not a regular file" and closes the descriptor.
+
+### Changed
+- Releases can be re-run safely: publishing skips files PyPI already has, and the GitHub Release step adds files to a Release that already exists. 2.3.0's run failed on both after PyPI had accepted it.
+
 ### Security
 - **N-08** The install-trust check before the `sudo` re-exec covered the interpreter, `sys.prefix` and the ubuntils package directory and the directories above them, but not the files inside: a group-writable `site-packages/click/core.py` or `.pth` file under a root-owned prefix let another user change code root was about to run. It now also checks every loaded module file, every file in the ubuntils package, and every `.pth` file in site-packages (about 0.2 s).
 - **N-09** A user file read only up to the 64 MiB ceiling now marks its collector degraded, so the scan reads as incomplete, not just the `USER_FILE_OVERSIZED` finding.
