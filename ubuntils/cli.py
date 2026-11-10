@@ -81,8 +81,19 @@ COLLECT_FILES = [
     "/proc/modules",
     "/var/log/syslog",
     "/var/log/messages",
+    "/var/log/auth.log",
     "/var/log/audit/audit.log",
 ]
+DEFAULT_JOURNAL_DAYS = 7
+
+
+def collect_commands(journal_days: int = DEFAULT_JOURNAL_DAYS) -> list:
+    """COLLECT_COMMANDS with a journal window of ``journal_days`` (QW-11)."""
+    return [(name, [f"--since={journal_days} days ago" if a.startswith("--since=") else a
+                    for a in argv] if name == "journalctl" else argv)
+            for name, argv in COLLECT_COMMANDS]
+
+
 COLLECT_COMMANDS = [
     ("ss", ["ss", "-tunap"]),
     ("netstat", ["netstat", "-tunap"]),
@@ -550,8 +561,11 @@ def scan(output_json, remediate, confirm, config_path, baseline_path, output_pat
 @click.option("--output", "output_path", type=click.Path(dir_okay=False),
               help="Bundle path to write; must not exist yet (default "
                    "/var/lib/ubuntils/bundles/ubuntils-bundle-<timestamp>-<random>.tar.gz)")
+@click.option("--journal-days", type=click.IntRange(1, 3650), default=DEFAULT_JOURNAL_DAYS,
+              show_default=True,
+              help="Days of systemd journal to capture; dwell time is often longer than a week")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging")
-def collect(output_path, verbose):
+def collect(output_path, journal_days, verbose):
     """Acquire a portable, tamper-evident artifact bundle from this host.
 
     Captures the statically-listed files/commands in COLLECT_FILES/COLLECT_COMMANDS.
@@ -570,7 +584,7 @@ def collect(output_path, verbose):
         written = write_bundle(
             source=LiveSource(root="/"),
             files_to_capture=COLLECT_FILES,
-            commands_to_capture=COLLECT_COMMANDS,
+            commands_to_capture=collect_commands(journal_days),
             out_path=output_path,
             staging_dir=STAGING_DIR,
             metadata={

@@ -45,7 +45,8 @@ class TimelineBuilder:
         # Each log source is isolated: one unreadable/escaping/garbled source
         # (e.g. SourceContainmentError, which is not an OSError) must not
         # take the rest of the timeline down with it.
-        for path in ("/var/log/syslog", "/var/log/messages"):
+        # auth.log (QW-6): sshd, sudo and su logins — the log responders read first.
+        for path in ("/var/log/syslog", "/var/log/messages", "/var/log/auth.log"):
             try:
                 if self.source.exists(path):
                     events.extend(self._parse_syslog(self.source.read_text(path),

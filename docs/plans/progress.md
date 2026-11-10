@@ -70,6 +70,14 @@
    changes part of ARCH-SV (`tests/test_schema_versions.py` expects the key), so I
    haven't done it. *Meanwhile:* nothing depends on it until the 2.4.0 release PR.
 
+## Known gaps found while working (scheduled, not hard stops)
+
+- Timeline log reads (`syslog`, `messages`, `auth.log`, `audit.log`) and bundle file
+  captures use unbounded `read_text`/`read_bytes`: logs are root-owned, but a huge one
+  costs memory. A failed timeline source is only logged, not put in `scan_metadata`.
+  Both belong to E12-S3 (bounded tail reads) and E13-S7 (failure injection); I'll fix
+  them there rather than piecemeal.
+
 ## Corrections to the brief
 
 - `3b71b86` **exists**: it's the `v2.3.0` tag, the merge of PR #32. The planning clone
