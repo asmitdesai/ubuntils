@@ -1005,6 +1005,11 @@ def rule_shell_rc_modification(artifacts: dict) -> List[Finding]:
         content_suspicious = suspicious_line is not None
         if not (recent or content_suspicious):
             continue
+        if not content_suspicious and entry.get("stock_copy"):
+            # Recent by timestamp only, and byte-identical to what the system
+            # shipped (e.g. a fresh container, where every ctime is the image
+            # unpack time): nothing was modified.
+            continue
         source = entry.get("source", "")
         owner = entry.get("owner", "")
         finding = Finding(

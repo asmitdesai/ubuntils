@@ -63,7 +63,7 @@ Fixed IDs are in **bold**. Full Given/When/Then text is in `v3.0.0-prd.md` §8.
 | E3-S2 | Allowlist and baseline suppression, counted and never silent | new (records shipped work) | done 2.2.0–2.3.0 | `utils/baseline.py`; `test_N14_*`, 2026-10 audit W2 | N-14 |
 | E3-S3 | Hash-keyed baselines created with `ubuntils baseline create` | new (announced in 2.3.0) | open | `utils/baseline.py:39` (V1_DEPRECATION) | — |
 | E3-S4 | Connection noise control: listener/exe evidence instead of a fixed port list | new | open | `detectors/rules.py:38-40` | R-07 |
-| **E3-S5** | Clean-host false-positive suite: stock images, a reviewed baseline per image, target ≤ 3 findings and 0 HIGH | lost-plan | partial | `c8734ee`; `tools/fp-suite/run.sh`, `check.py`; no baselines, no CI; known 7 LOW `SHELL_RC_MODIFICATION` on `ubuntu:24.04` from image-unpack ctime | — |
+| **E3-S5** | Clean-host false-positive suite: stock images, a reviewed baseline per image, target ≤ 3 findings and 0 HIGH | lost-plan | partial | `c8734ee`; `tools/fp-suite/run.sh`, `check.py`; no baselines, no CI; the 7 LOW `SHELL_RC_MODIFICATION` image-unpack-ctime findings on `ubuntu:24.04` fixed in code (stock-copy check), not yet re-measured in a container | — |
 | E3-S6 | Clean-host corpus on VMs and cloud images (3 clouds, Docker host, Kubernetes node, DB server) with published counts per release | new | open | — | R-07 |
 | E3-S7 | Inventory findings (category `inventory`) are reported but excluded from the noise budget | new | open | — | QW-3 interaction |
 | **E4-S1** | Persistence vs hygiene category plus ATT&CK IDs per rule (`ubuntils/data/rule_meta.yaml`), reaching JSON and Wazuh | lost-plan | done v3-dev | `b9b9529`; `detectors/rule_meta.py:28`; `tests/test_rule_meta.py` | R-10 (ATT&CK half) |

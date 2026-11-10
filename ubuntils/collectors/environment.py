@@ -1,3 +1,5 @@
+import hashlib
+
 from ubuntils.collectors.base import BaseCollector
 from ubuntils.collectors.source import UNREAD_TAIL_NOTE
 from ubuntils.utils.validators import is_login_shell
@@ -14,8 +16,106 @@ USER_SHELL_INIT_FILES = (
 )
 
 
+DPKG_STATUS = "/var/lib/dpkg/status"
+# base-files' postinst *copies* these into place (they are not conffiles), so
+# dpkg has no record of the installed copy; it does have the template's md5.
+BASE_FILES_TEMPLATES = {
+    "/etc/profile": "/usr/share/base-files/profile",
+    "/root/.bashrc": "/usr/share/base-files/dot.bashrc",
+    "/root/.profile": "/usr/share/base-files/dot.profile",
+}
+BASE_FILES_MD5SUMS_GLOB = "/var/lib/dpkg/info/base-files*.md5sums"
+
+
+def _md5(data: bytes) -> str:
+    # Compared with dpkg's own record; not a security boundary.
+    return hashlib.md5(data, usedforsecurity=False).hexdigest()
+
+
+def _is_md5(value: str) -> bool:
+    return len(value) == 32 and all(c in "0123456789abcdef" for c in value)
+
+
 class EnvironmentCollector(BaseCollector):
+    _known_md5s = None
+
+    def _dpkg_md5s(self) -> dict:
+        """path -> md5 dpkg recorded: every conffile (/var/lib/dpkg/status)
+        plus base-files' shipped files (its .md5sums)."""
+        if self._known_md5s is not None:
+            return self._known_md5s
+        known = {}
+        try:
+            status = self.source.read_text(DPKG_STATUS)
+        except Exception:
+            status = ""
+        in_block = False
+        for line in status.splitlines():
+            if line.startswith("Conffiles:"):
+                in_block = True
+                continue
+            if in_block and line.startswith(" "):
+                parts = line.split()
+                # An `obsolete` entry for a path another package now owns
+                # must not shadow the live one.
+                if (len(parts) >= 2 and parts[0].startswith("/") and _is_md5(parts[1])
+                        and not (parts[0] in known and "obsolete" in parts[2:])):
+                    known[parts[0]] = parts[1]
+                continue
+            in_block = False
+        try:
+            md5sums = self.source.glob(BASE_FILES_MD5SUMS_GLOB)
+        except Exception:
+            md5sums = []
+        for md5sums_path in md5sums:
+            try:
+                text = self.source.read_text(md5sums_path)
+            except Exception:
+                continue
+            for line in text.splitlines():
+                parts = line.split(None, 1)
+                if len(parts) == 2 and _is_md5(parts[0]):
+                    known.setdefault("/" + parts[1].strip().lstrip("/"), parts[0])
+        self._known_md5s = known
+        return known
+
+    def _matches_dpkg(self, path: str):
+        """True/False if dpkg recorded an md5 for ``path`` (unmodified or not); None if not."""
+        md5 = self._dpkg_md5s().get(path)
+        if md5 is None:
+            return None
+        try:
+            return _md5(self.source.read_bytes(path)) == md5
+        except Exception:
+            return None
+
+    def _stock_copy(self, path: str, content: str, user_controlled: bool) -> bool:
+        """The file is byte-for-byte what the system shipped: a package
+        conffile matching dpkg's md5, or a copy of a shipped template
+        (/etc/skel for user dotfiles, /usr/share/base-files for /etc/profile
+        and root's dotfiles) that is itself unmodified. In a fresh container
+        every file's ctime is the image's unpack time, so recency alone said
+        all of these were 'recently modified' (E3-S5)."""
+        if not user_controlled and self._matches_dpkg(path) is True:
+            return True
+        template = BASE_FILES_TEMPLATES.get(path)
+        if template is not None:
+            # Checked against base-files' md5sums: unverifiable is untrusted.
+            if self._matches_dpkg(template) is not True:
+                return False
+        elif user_controlled:
+            template = "/etc/skel/" + path.rsplit("/", 1)[-1]
+            if self._matches_dpkg(template) is False:
+                return False  # /etc/skel itself was changed: not a trusted reference
+        else:
+            return False
+        try:
+            return self.source.read_text(template) == content
+        except Exception:
+            return False
+
     def collect(self) -> dict:
+        self._known_md5s = None
         definitions = []
         shell_init_files = []
 
@@ -65,6 +165,7 @@ class EnvironmentCollector(BaseCollector):
             # bash sources every byte, so padding can't hide a line from it.
             "oversized": bool(user_file and user_file.oversized),
             "truncated": bool(user_file and user_file.truncated),
+            "stock_copy": self._stock_copy(path, content, user_controlled),
         })
 
     def _get_login_users(self):
