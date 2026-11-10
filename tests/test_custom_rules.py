@@ -198,4 +198,5 @@ def test_load_example_rules_file_is_valid():
     rules = load_custom_rules(str(example))
     assert {r.id for r in rules} == {
         "CUSTOM_KNOWN_MINER", "CUSTOM_SUSPICIOUS_CRON_DOWNLOAD", "CUSTOM_BEACON_SUBNET",
+        "CUSTOM_DOCKER_GROUP_MEMBER",
     }

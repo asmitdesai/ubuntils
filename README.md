@@ -246,7 +246,7 @@ rules:
     severity: HIGH                     # HIGH | MEDIUM | LOW
     title: Known cryptominer in process cmdline
     description: A running process command line matches a known miner.
-    source: process                    # cron | environment | ssh | process | network
+    source: process                    # cron | environment | ssh | process | network | systemd | users | sudoers | file
     match: substring                   # regex | substring | glob
     pattern: xmrig
 ```

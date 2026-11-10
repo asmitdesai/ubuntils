@@ -18,7 +18,8 @@ import yaml
 from ubuntils.detectors.finding import Finding, Severity
 
 _MATCH_TYPES = frozenset({"regex", "substring", "glob"})
-_VALID_SOURCES = frozenset({"cron", "environment", "ssh", "process", "network"})
+_VALID_SOURCES = frozenset({"cron", "environment", "ssh", "process", "network",
+                            "systemd", "users", "sudoers", "file"})
 _REQUIRED_FIELDS = ("id", "severity", "title", "description", "source", "match", "pattern")
 
 # Regex rules run against attacker-controlled text (cmdlines, cron commands),
@@ -98,6 +99,31 @@ def _iter_items(source: str, artifacts: dict) -> Iterator[Tuple[str, str]]:
                 f"{e.get('state', '')}"
             )
             yield path, text
+    elif source == "systemd":
+        # One item per Exec* command of each timer, service and drop-in.
+        for e in [*artifacts.get("timers", []), *artifacts.get("services", [])]:
+            path = e.get("unit_path") or e.get("unit", "")
+            yield path, e.get("exec_start", "")
+    elif source == "users":
+        # name:uid:gid:home:shell groups=a,b — one per account.
+        for u in artifacts.get("users", []):
+            yield "/etc/passwd", (
+                f"{u.get('username', '')}:{u.get('uid', '')}:{u.get('gid', '')}:"
+                f"{u.get('home', '')}:{u.get('shell', '')} groups={','.join(u.get('groups', []))}")
+    elif source == "sudoers":
+        for r in artifacts.get("sudoers_rules", []):
+            yield r.get("source", ""), r.get("raw_line", "")
+    elif source == "file":
+        # Each line of the configuration files ubuntils reads in full: shell
+        # init files, PAM files and nsswitch.conf.
+        for e in artifacts.get("shell_init_files", []):
+            for line in e.get("content", "").splitlines():
+                yield e.get("source", ""), line
+        for e in artifacts.get("pam_files", []):
+            for line in e.get("content", "").splitlines():
+                yield e.get("path", ""), line
+        for line in artifacts.get("nsswitch_content", "").splitlines():
+            yield "/etc/nsswitch.conf", line
 
 
 def apply_custom_rules(rules: List[CustomRule], artifacts: dict) -> List[Finding]:

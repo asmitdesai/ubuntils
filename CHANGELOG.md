@@ -21,6 +21,7 @@ Work toward 3.0.0. Everything here is additive unless it says otherwise.
 - **RL-01 — `/etc/anacrontab` and queued `at` jobs** are collected as cron entries. For `at` jobs only the job's own commands are read, not atd's generated preamble. Findings on both are flag-only.
 - **C8** `bash <(curl …)` and other forms of download-and-execute in a shell init file are now reported, at any age.
 - **E4-S5 / QW-9 — `--fail-on-findings[=SEVERITY]`** on `scan --json` and `analyze`: exit status 4 when a finding is at or above `low`, `medium` or `high` (the default). Opt-in, so scripts that treat any non-zero status as an error are unaffected; inventory findings never count. The README lists every exit status.
+- **QW-10 / E10-S3** Custom rules (`--rules`) can match four more sources: `systemd` (each `Exec*` command), `users` (`name:uid:gid:home:shell groups=…`), `sudoers` (rule lines) and `file` (lines of shell init, PAM and `nsswitch.conf` files). `examples/custom_rules.yaml` shows one.
 - **QW-6** `/var/log/auth.log` (sshd, sudo, su) is read into the timeline and captured by `collect`.
 - **QW-11 / E5-S3** `collect --journal-days N` (1–3650, default 7) sets how much systemd journal a bundle holds.
 - **E5-S4 / QW-12** `collect` stages the uncompressed copy (with `/etc/shadow`) in root's private `/var/lib/ubuntils/staging/` instead of the system temp directory. A planted symlink there is refused. The copy is removed even on Ctrl-C, and an interrupted collection leaves no partial bundle.

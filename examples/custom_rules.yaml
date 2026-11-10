@@ -3,7 +3,8 @@
 # Use --config (allowlist) to SUPPRESS findings — that is a separate file.
 #
 # Each rule needs: id, severity (HIGH|MEDIUM|LOW), title, description,
-# source (cron|environment|ssh|process|network), match (regex|substring|glob),
+# source (cron|environment|ssh|process|network|systemd|users|sudoers|file),
+# match (regex|substring|glob),
 # pattern.
 rules:
   - id: CUSTOM_KNOWN_MINER
@@ -29,3 +30,15 @@ rules:
     source: network
     match: glob
     pattern: "203.0.113.*:*"
+
+  # Sources added in 2.4: systemd (Exec* commands), users (name:uid:gid:home:shell
+  # groups=...), sudoers (rule lines), file (lines of shell init, PAM and
+  # nsswitch files).
+  - id: CUSTOM_DOCKER_GROUP_MEMBER
+    severity: MEDIUM
+    title: Account in the docker group
+    description: Membership of docker is root on this host; check it is expected.
+    source: users
+    match: regex
+    pattern: "groups=([^ ]*,)?docker(,|$)"
+
