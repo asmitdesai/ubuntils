@@ -1,0 +1,68 @@
+{
+ "artifact_counts": {
+  "CronCollector": 1,
+  "EnvironmentCollector": 4,
+  "KernelCollector": 0,
+  "NetworkCollector": 0,
+  "PackageCollector": 0,
+  "PamCollector": 2,
+  "ProcessCollector": 0,
+  "SSHCollector": 1,
+  "SudoersCollector": 2,
+  "SystemdCollector": 1,
+  "UserCollector": 5
+ },
+ "findings": [
+  {
+   "artifact_path": "/home/admin/.ssh/authorized_keys",
+   "artifact_sha256": "f287c2e1553c5b58e59e90f96dd0788679da90e3dabef3ee33f028f6032865cc",
+   "attack": [
+    "T1098.004"
+   ],
+   "category": "inventory",
+   "confidence": 20,
+   "confidence_band": "LOW",
+   "description": "/home/admin/.ssh/authorized_keys (user 'admin') authorizes ssh-ed25519 key SHA256:/q/ChcN+kjM/IL9fV2ANBGAj4qMMKlIfkh9w/tciaYg. Baseline it if it is known.",
+   "finding_id": "9df6797d31f93e190c3d752497f5e4ce",
+   "guided_remediation": "Check SHA256:/q/ChcN+kjM/IL9fV2ANBGAj4qMMKlIfkh9w/tciaYg against the keys you issued (`ssh-keygen -lf /home/admin/.ssh/authorized_keys`); baseline it if it is yours.",
+   "raw_value": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH7Ue8bQnB6m8bPqfV1oQ3n0lJ3m1cGx7Zt0d6s2YqkA admin@laptop",
+   "remediation_available": false,
+   "rule_aliases": [],
+   "rule_id": "SSH_KEY_INVENTORY",
+   "severity": "LOW",
+   "signals": [
+    {
+     "detail": "listed so every key is visible, not suspected",
+     "name": "inventory",
+     "weight": -30
+    }
+   ],
+   "title": "Authorized SSH key"
+  }
+ ],
+ "scan_metadata": {
+  "architecture": "unknown (offline analysis)",
+  "baseline_suppressed": [],
+  "bundle_integrity": "live",
+  "collector_failures": 0,
+  "collectors_degraded": {},
+  "command_collectors_skipped": [
+   "NetworkCollector",
+   "SystemdCollector",
+   "PackageCollector",
+   "KernelCollector"
+  ],
+  "detection_error": null,
+  "host_id": "",
+  "hostname": "fixture",
+  "preserve": null,
+  "preserve_bundle": null,
+  "rules_failed": [],
+  "suppressed_by_allowlist": 0,
+  "suppressed_by_baseline": 0,
+  "timeline_error": null,
+  "ubuntu_version": "Ubuntu 24.04.3 LTS"
+ },
+ "schema_version": "3.0",
+ "timeline": []
+}

