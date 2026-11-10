@@ -166,6 +166,7 @@ def _emulate_find_setuid(root: str, argv: list) -> str:
         if arg.startswith("-") or arg == "(":
             break
         starts.append(arg)
+    pruned = {argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "-path"}
     import json
     try:
         modes = json.load(open(os.path.join(root, ".fixture-modes.json")))
@@ -174,7 +175,9 @@ def _emulate_find_setuid(root: str, argv: list) -> str:
     lines = []
     for start in starts:
         base = os.path.join(root, start.lstrip("/"))
-        for dirpath, _dirs, files in os.walk(base):
+        for dirpath, dirs, files in os.walk(base):
+            dirs[:] = [d for d in dirs
+                       if "/" + os.path.relpath(os.path.join(dirpath, d), root) not in pruned]
             for f in files:
                 full = os.path.join(dirpath, f)
                 rel = "/" + os.path.relpath(full, root)
@@ -212,6 +215,16 @@ def set_mode(root, path: str, mode: int):
     modes = json.load(open(f)) if os.path.exists(f) else {}
     modes[path] = mode
     json.dump(modes, open(f, "w"))
+
+
+def set_capability(root, path: str, caps: str):
+    """Declare a file capability (as `getcap` prints it) for ``path``. Read by
+    the fixture source once ubuntils reads capabilities (E8-S8)."""
+    import json
+    f = os.path.join(str(root), ".fixture-caps.json")
+    data = json.load(open(f)) if os.path.exists(f) else {}
+    data[path] = caps
+    json.dump(data, open(f, "w"))
 
 
 def add_process(root, pid: int, name: str, exe: str, cmdline: str = "", uid: int = 0):

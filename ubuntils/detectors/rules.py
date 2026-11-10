@@ -935,6 +935,40 @@ def _rc_line_signals(line: str) -> list:
         s.code == "base64_decode" for s in signals) else []
 
 
+# RL-08: a shell init line that hijacks what the user types or runs.
+_HIJACK_ALIAS_RE = re.compile(
+    r"^\s*alias\s+(sudo|su|ssh|scp|passwd|gpg|doas|pkexec)=(['\"]?)(.{0,512}?)\2\s*(?:#.*)?$")
+_TRAP_RE = re.compile(r"^\s*trap\s+(['\"])(.{0,1024}?)\1\s+(?:DEBUG|EXIT|ERR|RETURN)\b")
+_PROMPT_COMMAND_RE = re.compile(r"^\s*(?:export\s+)?PROMPT_COMMAND\+?=(.{0,1024})$")
+_REACHES_OUT_RE = re.compile(
+    r"\b(?:curl|wget|nc|ncat|socat|ssh|scp|base64|python[23]?|perl)\b|/dev/(?:tcp|udp)/"
+    r"|(?:^|[\s'\";|&(=])(?:/tmp|/var/tmp|/dev/shm)(?:/|\b)")
+
+
+def _rc_hijack(line: str) -> Optional[str]:
+    """Why ``line`` hijacks the shell (alias of a credential-handling command
+    to something else; a trap or PROMPT_COMMAND that reaches the network, a
+    temp dir or a decoder), or None. `alias sudo='sudo '` (expand aliases
+    after sudo) and stock `alias ls='ls --color=auto'` are not hijacks."""
+    m = _HIJACK_ALIAS_RE.match(line)
+    if m:
+        name, value = m.group(1), m.group(3).strip()
+        first = value.split()[0] if value.split() else ""
+        # Fine: the command itself, or its real binary in a system directory.
+        # Not fine: anything else, including a same-named file elsewhere.
+        genuine = first == name or (os.path.basename(first) == name
+                                    and path_in_standard_bins(first))
+        if not genuine:
+            return f"alias replaces `{name}` with `{value[:80]}`"
+    m = _TRAP_RE.match(line)
+    if m and _REACHES_OUT_RE.search(m.group(2)):
+        return "a trap runs a network, decode or temp-dir command on every shell event"
+    m = _PROMPT_COMMAND_RE.match(line)
+    if m and _REACHES_OUT_RE.search(m.group(1)):
+        return "PROMPT_COMMAND runs a network, decode or temp-dir command before every prompt"
+    return None
+
+
 def _rc_suspicious_line(content: str) -> Optional[str]:
     """The first line of a shell init file that the shared matcher flags
     (reverse shell, download-and-execute, encoded payload, base64 decode) or
@@ -943,7 +977,7 @@ def _rc_suspicious_line(content: str) -> Optional[str]:
         stripped = line.strip()
         if stripped.startswith("#"):
             continue
-        if _rc_line_signals(stripped):
+        if _rc_line_signals(stripped) or _rc_hijack(stripped):
             return stripped
         assignment = stripped[len("export "):].strip() if stripped.startswith("export ") else stripped
         if assignment.startswith("PATH="):
@@ -980,8 +1014,8 @@ def rule_shell_rc_modification(artifacts: dict) -> List[Finding]:
                    else "Shell init file recently modified"),
             description=(
                 f"Shell init file '{source}' for user '{owner}' "
-                + ("contains a reverse-shell, download-and-execute, encoded-payload or "
-                   "writable-tmp PATH line"
+                + ("contains a reverse-shell, download-and-execute, encoded-payload, "
+                   "shell-hijack or writable-tmp PATH line"
                    if content_suspicious else "was modified within the last 48 hours")
             ),
             artifact_path=source,
@@ -1004,6 +1038,9 @@ def rule_shell_rc_modification(artifacts: dict) -> List[Finding]:
                 apply_signal(finding, "content_match", best.weight,
                              f"the line {cmdmatch.FAMILY_DESCRIPTIONS[best.family]} "
                              f"({best.code}: {best.excerpt})")
+            elif _rc_hijack(suspicious_line):
+                apply_signal(finding, "content_match", 30,
+                             f"the line hijacks the shell: {_rc_hijack(suspicious_line)}")
             else:
                 apply_signal(finding, "content_match", 30,
                              "puts a world-writable temp directory on PATH")
@@ -1077,7 +1114,8 @@ def _package_file_finding(entry: dict) -> Finding:
             severity=Severity.HIGH,
             title="Package-owned file modified since installation",
             description=(
-                f"'{path}' differs from the package manifest (dpkg --verify flags: '{flags}')"
+                f"'{path}' differs from the package manifest (dpkg --verify flags: '{flags}'). "
+                "dpkg --verify trusts checksums stored on this host, which root can edit"
             ),
             artifact_path=path,
             raw_value=flags,
@@ -1137,7 +1175,9 @@ def _package_group_finding(package: str, entries: list) -> Finding:
         severity=Severity.HIGH if modified or missing_files else Severity.LOW,
         title="Package files modified or missing since installation",
         description=f"Package '{package}' has {_count_phrase(modified, missing_files, missing_dirs)} "
-                    "compared to its dpkg manifest",
+                    "compared to its dpkg manifest. dpkg --verify compares against checksums "
+                    "stored on this host (/var/lib/dpkg/info), which an intruder with root can "
+                    "edit: a clean result here is not proof the files are original",
         artifact_path=package,
         raw_value="\n".join(lines),
         remediation_available=False,

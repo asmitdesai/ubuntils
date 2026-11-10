@@ -700,6 +700,8 @@ These persistence and access paths are known to be outside what ubuntils checks 
 - **`~/.ssh/rc` and `/etc/ssh/sshrc`**: run by sshd at every SSH login, before the user's shell.
 - **sshd `Include` directives outside `/etc/ssh/sshd_config.d/`**: `AuthorizedKeysFile` settings in other included files aren't read.
 - **`pam_exec.so`** lines in `/etc/pam.d/*`: they run an arbitrary program during authentication or session setup. `PAM_BACKDOOR` only looks at `pam_permit.so` and NSS modules.
+- **Setuid binaries inside container storage** (`/var/lib/docker`, `/var/lib/containerd`, `/var/lib/lxd`, `/var/lib/lxc`, `/var/lib/containers`, `/var/snap/lxd`): every image carries ordinary setuid binaries, so these trees are skipped. Check running containers with their own tools.
+- **File capabilities** (`setcap cap_setuid+ep`): not read yet (planned for 3.0).
 
 TODO: flag-only rules for `AuthorizedKeysCommand` and `pam_exec.so`. Both are easy to detect, but stock cloud images set `AuthorizedKeysCommand` (EC2 Instance Connect, GCE OS Login). The rules need a known-good list validated on real hosts first, or they would report every such host.
 

@@ -119,13 +119,24 @@ def test_review_c6_service_account_login_shell_and_docker_group(tmp_path):
 
 # ── C7 ───────────────────────────────────────────────────────────────────────
 
-@pytest.mark.xfail(strict=True, reason="C7 → E8-S8 wider setuid paths (alpha.1) + capabilities (beta.1)")
 def test_review_c7_setuid_bash_var_lib_and_root(tmp_path):
-    root = _host(tmp_path, {"/var/lib/.x/bash": "", "/root/.b/sh": ""},
-                 modes={"/var/lib/.x/bash": 0o4755, "/root/.b/sh": 0o4755})
+    root = _host(tmp_path, {"/var/lib/.x/bash": "", "/root/.b/sh": "",
+                            "/var/lib/docker/overlay2/l/usr/bin/su": ""},
+                 modes={"/var/lib/.x/bash": 0o4755, "/root/.b/sh": 0o4755,
+                        "/var/lib/docker/overlay2/l/usr/bin/su": 0o4755})
     found = _findings(root)
     assert [f for f in found if _mentions(f, "/var/lib/.x/bash")], "/var/lib is not searched"
     assert [f for f in found if _mentions(f, "/root/.b/sh")], "/root is not searched"
+    # Container image layers are skipped on purpose (README "Not covered").
+    assert not [f for f in found if _mentions(f, "/var/lib/docker")]
+
+
+@pytest.mark.xfail(strict=True, reason="C7 → E8-S8 file capabilities (beta.1)")
+def test_review_c7_file_capabilities(tmp_path):
+    root = _host(tmp_path, {"/usr/local/bin/helper": ""})
+    fh.set_capability(root, "/usr/local/bin/helper", "cap_setuid+ep")
+    assert [f for f in _findings(root) if _mentions(f, "cap_setuid")], \
+        "file capabilities are not checked anywhere"
 
 
 # ── C8 ───────────────────────────────────────────────────────────────────────

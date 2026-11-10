@@ -1132,7 +1132,10 @@ def test_package_tampered_package_with_only_missing_directories_is_low():
     assert f.severity == Severity.LOW
     assert "missing_directory" in [s["name"] for s in f.signals]
     assert "missing_file" not in [s["name"] for s in f.signals]
-    assert f.description == "Package 'apparmor' has 1 missing directory compared to its dpkg manifest"
+    assert f.description.startswith(
+        "Package 'apparmor' has 1 missing directory compared to its dpkg manifest. ")
+    # RL-09: the finding says what dpkg --verify can't prove.
+    assert "checksums stored on this host" in f.description
 
 
 def test_package_tampered_missing_file_still_high_alongside_missing_dirs():

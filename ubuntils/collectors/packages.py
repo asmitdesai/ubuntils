@@ -8,6 +8,12 @@ SENSITIVE_ATTR_PATHS = [
     "/etc/ld.so.preload", "/etc/crontab", "/etc/environment",
     "/etc/pam.d/common-auth", "/etc/pam.d/sshd", "/etc/nsswitch.conf",
     "/var/log/auth.log", "/var/log/syslog", "/var/log/wtmp", "/var/log/btmp",
+    # RL-10: where persistence lives, so a +i that protects an implant shows.
+    # Directories are checked themselves (lsattr -d), not their contents.
+    "/etc/sudoers.d", "/etc/cron.d", "/etc/cron.hourly", "/etc/cron.daily",
+    "/var/spool/cron/crontabs", "/etc/systemd/system", "/etc/ssh/sshd_config",
+    "/root/.ssh", "/root/.ssh/authorized_keys", "/root/.bashrc", "/etc/profile",
+    "/etc/bash.bashrc", "/etc/pam.d", "/etc/ld.so.conf.d", "/etc/rc.local",
 ]
 
 # find's start-point list for the setuid/setgid scan. Deliberately -xdev
@@ -15,6 +21,15 @@ SENSITIVE_ATTR_PATHS = [
 # most likely to drop a binary into (/opt, /home, /srv), not just system dirs.
 SETUID_FIND_PATHS = [
     "/usr", "/bin", "/sbin", "/opt", "/home", "/srv", "/tmp", "/var/tmp", "/dev/shm",
+    # RL-13 / review C7: a setuid shell dropped in /var/lib or /root went unseen.
+    "/var", "/root", "/etc", "/boot",
+]
+# Container image layers hold ordinary setuid binaries (su, passwd, mount) for
+# every image; searching them would bury real findings. Listed under "Not
+# covered" in the README.
+SETUID_FIND_PRUNE = [
+    "/var/lib/docker", "/var/lib/containerd", "/var/lib/lxd", "/var/lib/lxc",
+    "/var/lib/containers", "/var/snap/lxd",
 ]
 
 # Full find(1) argument list for the setuid/setgid scan, shared with
@@ -23,7 +38,9 @@ SETUID_FIND_PATHS = [
 # apart — both are searched for, but they are different risks.
 SETUID_FIND_ARGS = [
     *SETUID_FIND_PATHS,
-    "-xdev", "(", "-perm", "-4000", "-o", "-perm", "-2000", ")", "-type", "f",
+    "-xdev",
+    "(", *[a for p in SETUID_FIND_PRUNE for a in ("-path", p, "-o")][:-1], ")", "-prune", "-o",
+    "(", "-perm", "-4000", "-o", "-perm", "-2000", ")", "-type", "f",
     "-printf", "%m %p\\n",
 ]
 
@@ -275,7 +292,16 @@ class PackageCollector(BaseCollector):
             return [], True
         if not stdout:
             return [], False
-        return [_parse_setuid_line(line) for line in stdout.splitlines() if line.strip()], False
+        # A start point inside another (/var/tmp in /var, kept in case it is a
+        # separate mount) lists the same file twice.
+        seen, entries = set(), []
+        for line in stdout.splitlines():
+            if line.strip():
+                entry = _parse_setuid_line(line)
+                if entry["path"] not in seen:
+                    seen.add(entry["path"])
+                    entries.append(entry)
+        return entries, False
 
 
 def _parse_setuid_line(line: str) -> dict:
