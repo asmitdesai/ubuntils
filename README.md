@@ -797,6 +797,20 @@ TODO: flag-only rules for `AuthorizedKeysCommand` and `pam_exec.so`. Both are ea
 
 `related_events` and `guided_remediation` appear on a finding only when they have content. `related_events` holds up to five timeline events matched to the finding, most recent first — a surfacing aid, not a causal claim. Matching is on whole words against each event's program and message: identifying tokens from the finding (a path basename, a `/home/<user>` name, a package, module or account name) and a few per-rule activity keywords (`sshd`, `cron`, `dpkg`, …). Events that name the artifact *and* show that activity come first. Findings with no identifying token (the `PROCESS_*` rules, whose artifact is `/proc/<pid>/exe`) get keyword matches only, as context. Every timeline event carries a `program` field (the syslog tag or journald `SYSLOG_IDENTIFIER`, empty for auditd). `guided_remediation` is a reviewed command sequence for you to run by hand; ubuntils never executes it.
 
+### Exit codes
+
+Stable from 2.4: a status never changes meaning; new ones get new numbers.
+
+| Status | Meaning | Commands |
+|---|---|---|
+| 0 | Finished. No finding at or above `--fail-on-findings` (or the flag wasn't given) | all |
+| 1 | The detection stage failed: the report has no findings and says nothing about the host. Also: refusing to escalate a user-writable install | `scan`, `analyze`, `collect`, `rollback` |
+| 2 | Usage error (bad flag or value) | all |
+| 3 | The bundle failed its integrity check; every result is untrusted | `analyze` |
+| 4 | `--fail-on-findings[=low\|medium\|high]` was given and at least one finding is at or above it (inventory never counts) | `scan --json`, `analyze` |
+
+When more than one applies, 3 wins over 1, and 1 over 4.
+
 ### Confidence scoring
 
 Every finding carries a `confidence` score (0–100, default 50) and a `confidence_band` (`HIGH` ≥ 75, `MEDIUM` ≥ 40, `LOW` below that), plus a `signals` list showing exactly how that score was reached — each entry is `{"name", "weight", "detail"}`, so the score is always explainable, never a black box. Signals are additive on top of a base confidence of 50 and are applied by whichever rule or pipeline stage produced them:

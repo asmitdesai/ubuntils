@@ -32,6 +32,15 @@ EXIT_BUNDLE_TAMPERED = 3
 # Exit status when the detection stage itself failed: the (empty) findings
 # list says nothing about the host.
 EXIT_DETECTION_FAILED = 1
+# Exit status with --fail-on-findings when a finding at or above the chosen
+# severity was reported (E4-S5, QW-9). Opt-in, so existing scripts that treat
+# any non-zero status as an error are unaffected. Precedence: 3, then 1, then 4.
+EXIT_FINDINGS_PRESENT = 4
+_SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3}
+
+_FAIL_ON_FINDINGS_HELP = (
+    "Exit with status 4 if any finding is at or above SEVERITY (low, medium or high; "
+    "default high when given without a value). Inventory findings never count.")
 
 # Where `collect` writes when no --output is given. A bundle holds
 # /etc/shadow; the working directory may belong to the attacker, and a name
@@ -398,6 +407,21 @@ def _emit_report(report: str, output_path) -> None:
 
 # Shown on stderr by every command, so scripts and humans see what 3.0 changes
 # before it lands. Each returns a message, or None when it doesn't apply.
+def _findings_at_or_above(findings, threshold) -> int:
+    if not threshold:
+        return 0
+    floor = _SEVERITY_RANK[threshold]
+    return sum(1 for f in findings
+               if f.category != "inventory" and _SEVERITY_RANK[f.severity.value.lower()] >= floor)
+
+
+def _exit_for_findings(findings, threshold) -> None:
+    n = _findings_at_or_above(findings, threshold)
+    if n:
+        click.echo(f"{n} finding(s) at or above {threshold.upper()} (--fail-on-findings)", err=True)
+        sys.exit(EXIT_FINDINGS_PRESENT)
+
+
 def _deprecation_notices() -> list:
     notices = []
     if sys.version_info < (3, 10):
@@ -450,9 +474,13 @@ def main(ctx, allow_user_install):
                    "about to change (needs --yes)")
 @click.option("--yes", "assume_yes", is_flag=True,
               help="Accept the risk of --no-preserve")
+@click.option("--fail-on-findings", "fail_on", is_flag=False, flag_value="high", default=None,
+              type=click.Choice(["low", "medium", "high"], case_sensitive=False),
+              metavar="[SEVERITY]", help=_FAIL_ON_FINDINGS_HELP)
 @click.option("--verbose", is_flag=True, help="Enable verbose logging")
 def scan(output_json, remediate, confirm, config_path, baseline_path, output_path, since_value,
-         rules_path, min_confidence, no_wazuh, preserve_full, no_preserve, assume_yes, verbose):
+         rules_path, min_confidence, no_wazuh, preserve_full, no_preserve, assume_yes, fail_on,
+         verbose):
     """Scan the system for forensic artifacts and suspicious activity."""
     _ensure_root()
     if output_path:
@@ -491,6 +519,7 @@ def scan(output_json, remediate, confirm, config_path, baseline_path, output_pat
             _emit_report(report, output_path)
             if _detection_failed(scan_metadata):
                 sys.exit(EXIT_DETECTION_FAILED)
+            _exit_for_findings(findings, fail_on)
             return
 
         # --remediate without --json: launch TUI with pre-computed results,
@@ -501,8 +530,12 @@ def scan(output_json, remediate, confirm, config_path, baseline_path, output_pat
         UbuntilsApp(verbose=verbose, _scan_override=_override).run()
         if _detection_failed(scan_metadata):
             sys.exit(EXIT_DETECTION_FAILED)
+        _exit_for_findings(findings, fail_on)
         return
 
+    if fail_on:
+        raise click.UsageError("--fail-on-findings needs --json or --output (the interactive "
+                               "TUI has no exit status to report)")
     # Plain TUI mode: let the app run its own scan with live progress
     UbuntilsApp(verbose=verbose, allowlist=allowlist, since=since,
                 custom_rules=custom_rules, baseline=baseline,
@@ -562,9 +595,12 @@ def collect(output_path, verbose):
               help="YAML file of custom pattern-match detection rules (adds detections)")
 @click.option("--since", "since_value",
               help="Limit timeline to events since this time (e.g. '24h', '7d', '2026-05-20')")
+@click.option("--fail-on-findings", "fail_on", is_flag=False, flag_value="high", default=None,
+              type=click.Choice(["low", "medium", "high"], case_sensitive=False),
+              metavar="[SEVERITY]", help=_FAIL_ON_FINDINGS_HELP)
 @click.option("--verbose", is_flag=True, help="Enable verbose logging")
 def analyze(bundle, root_path, output_json, output_path, config_path, baseline_path, rules_path,
-            since_value, verbose):
+            since_value, fail_on, verbose):
     """Run detection + timeline against a collected bundle or a mounted image (--root)."""
     if not bundle and not root_path:
         raise click.UsageError("provide a BUNDLE path or --root PATH")
@@ -630,6 +666,7 @@ def analyze(bundle, root_path, output_json, output_path, config_path, baseline_p
         sys.exit(EXIT_BUNDLE_TAMPERED)
     if detection_failed:
         sys.exit(EXIT_DETECTION_FAILED)
+    _exit_for_findings(findings, fail_on)
 
 
 @main.command()
