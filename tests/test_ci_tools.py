@@ -231,3 +231,40 @@ def test_fp_reviewed_baseline_fails_on_a_new_finding(tmp_path):
     assert fp.main([_fp_report(tmp_path, [known]), "--baseline", str(base)]) == 0
     new = _f("SETUID_INVENTORY", "/opt/x", sev="LOW")
     assert fp.main([_fp_report(tmp_path, [known, new]), "--baseline", str(base)]) == 1
+
+
+cov = _load("tools/ci/check_coverage.py", "check_coverage")
+
+
+def _cov_report(line, branch, files=None):
+    return {"totals": {"covered_lines": line, "num_statements": 100,
+                       "covered_branches": branch, "num_branches": 100},
+            "files": files or {}}
+
+
+def test_coverage_gate_checks_line_and_branch_separately():
+    floors = {"overall": {"line": 95, "branch": 90}}
+    assert cov.check(_cov_report(96, 91), floors) == []
+    assert cov.check(_cov_report(96, 89), floors) == ["overall branch 89.00% < 90%"]
+    assert cov.check(_cov_report(94, 91), floors) == ["overall line 94.00% < 95%"]
+
+
+def test_coverage_gate_holds_modules_to_their_own_floor():
+    files = {"ubuntils/utils/safe_path.py": {"summary": {
+        "covered_lines": 10, "num_statements": 10, "covered_branches": 3, "num_branches": 4}}}
+    floors = {"modules": {"ubuntils/utils/safe_path.py": {"line": 100, "branch": 100},
+                          "ubuntils/gone.py": {"line": 50}}}
+    problems = cov.check(_cov_report(100, 100, files), floors)
+    assert problems == ["ubuntils/utils/safe_path.py branch 75.00% < 100%",
+                        "ubuntils/gone.py: not in the coverage report"]
+
+
+def test_coverage_gate_bad_input_is_an_error(tmp_path):
+    assert cov.main([str(tmp_path / "missing.json")]) == 2
+
+
+def test_shipped_floors_never_go_below_the_ga_targets_for_security_modules():
+    floors = json.load(open(os.path.join(_REPO, "tools/ci/coverage-floors.json")))
+    for path in ("ubuntils/utils/safe_path.py", "ubuntils/analysis/cmdmatch.py",
+                 "ubuntils/utils/validators.py"):
+        assert floors["modules"][path] == {"line": 100, "branch": 100}

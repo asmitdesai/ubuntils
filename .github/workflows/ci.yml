@@ -49,6 +49,9 @@ jobs:
       - name: Run tests
         run: pytest
 
+      - name: Coverage floors (line and branch, overall and per module)
+        run: python tools/ci/check_coverage.py coverage.json
+
   # Ubuntu 26.04 and Debian 12 have no hosted runner yet: test them in a
   # container with the distribution's own python3 (E13-S2, E9-S1).
   container:
@@ -71,6 +74,7 @@ jobs:
           /tmp/venv/bin/pip install -q --require-hashes -r requirements-dev.lock
           /tmp/venv/bin/pip install -q --no-deps --no-build-isolation -e .
           /tmp/venv/bin/pytest
+          /tmp/venv/bin/python tools/ci/check_coverage.py coverage.json
 
   audit:
     name: Dependency audit

@@ -1,0 +1,22 @@
+{
+  "_comment": "Coverage floors (E13-S9). Ratchet: raise to the measured value each milestone, never lower. GA targets: line 95, branch 90 overall; 100/100 on every security-critical module.",
+  "overall": {"line": 95, "branch": 90},
+  "modules": {
+    "ubuntils/utils/safe_path.py": {"line": 100, "branch": 100},
+    "ubuntils/analysis/cmdmatch.py": {"line": 100, "branch": 100},
+    "ubuntils/utils/validators.py": {"line": 100, "branch": 100},
+    "ubuntils/detectors/identity.py": {"line": 100, "branch": 100},
+    "ubuntils/bundle/manifest.py": {"line": 100, "branch": 100},
+    "ubuntils/bundle/reader.py": {"line": 97, "branch": 100},
+    "ubuntils/bundle/writer.py": {"line": 97, "branch": 100},
+    "ubuntils/remediators/preserve.py": {"line": 97, "branch": 100},
+    "ubuntils/utils/safe_io.py": {"line": 95, "branch": 80},
+    "ubuntils/remediators/base.py": {"line": 94, "branch": 87},
+    "ubuntils/remediators/rollback.py": {"line": 84, "branch": 81},
+    "ubuntils/remediators/sudoers.py": {"line": 88, "branch": 58},
+    "ubuntils/collectors/network.py": {"line": 95, "branch": 86},
+    "ubuntils/collectors/processes.py": {"line": 95, "branch": 87},
+    "ubuntils/collectors/source.py": {"line": 98, "branch": 96},
+    "ubuntils/cli.py": {"line": 88, "branch": 85}
+  }
+}

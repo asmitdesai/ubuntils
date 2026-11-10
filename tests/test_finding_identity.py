@@ -79,3 +79,61 @@ def test_wazuh_line_carries_finding_id_and_hash(tmp_path):
              if f.artifact_path == "/etc/cron.d/ubuntils-lab")
     line = json.loads(finding_line(f, "h"))
     assert line["finding_id"] == f.finding_id and line["artifact_sha256"] == f.artifact_sha256
+
+
+def test_a_file_larger_than_its_reported_size_is_not_hashed(tmp_path, monkeypatch):
+    # /proc and some FUSE files report st_size 0 but return data; the cap is
+    # enforced on what is actually read, not on what fstat claims.
+    from ubuntils.collectors import source as src_mod
+    (tmp_path / "f").write_bytes(b"x" * 4096)
+    real_fstat = os.fstat
+
+    def size_zero(fd):
+        st = real_fstat(fd)
+        return os.stat_result(tuple(st[:6]) + (0,) + tuple(st[7:]))
+
+    monkeypatch.setattr(src_mod.os, "fstat", size_zero)
+    assert LiveSource(root=str(tmp_path), offline=True).sha256_file("/f", max_bytes=1024) is None
+
+
+def test_a_read_error_while_hashing_gives_none(tmp_path, monkeypatch):
+    from ubuntils.collectors import source as src_mod
+    (tmp_path / "f").write_bytes(b"abc")
+
+    def eio(fd, n):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(src_mod.os, "read", eio)
+    assert LiveSource(root=str(tmp_path), offline=True).sha256_file("/f") is None
+
+
+def test_sources_that_cannot_hash_say_none():
+    from ubuntils.collectors.source import ArtifactSource
+
+    class Minimal(ArtifactSource):
+        def read_text(self, p): return ""
+        def read_bytes(self, p): return b""
+        def exists(self, p): return False
+        def lstat(self, p): raise OSError
+        def glob(self, p): return []
+        def readlink(self, p): raise OSError
+        def run(self, n, a, timeout=30): return "", "", -1
+
+    assert Minimal().sha256_file("/etc/passwd") is None
+
+
+def test_bundle_source_hashes_the_collected_copy(tmp_path):
+    from ubuntils import cli
+    from ubuntils.bundle import read_bundle
+    from ubuntils.bundle.writer import write_bundle
+    root = fh.build_host("lab", tmp_path / "h")
+    out = write_bundle(source=fh.fixture_source(root), files_to_capture=cli.COLLECT_FILES,
+                       commands_to_capture=[], out_path=str(tmp_path / "b.tar.gz"),
+                       metadata={"hostname": "h"})
+    src, _ = read_bundle(out)
+    try:
+        expected = hashlib.sha256(open(os.path.join(root, "etc/passwd"), "rb").read()).hexdigest()
+        assert src.sha256_file("/etc/passwd") == expected
+        assert src.sha256_file("/etc/not-collected") is None
+    finally:
+        src.cleanup()

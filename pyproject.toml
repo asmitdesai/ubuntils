@@ -60,7 +60,10 @@ ubuntils = ["data/*.yaml"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "--cov=ubuntils --cov-fail-under=90 --cov-report=term-missing"
+# Branch coverage on; the combined (line + branch) floor is the measured value
+# rounded down, raised every milestone, never lowered. Line and branch are also
+# gated separately, overall and per module, by tools/ci/check_coverage.py.
+addopts = "--cov=ubuntils --cov-branch --cov-fail-under=94 --cov-report=term-missing --cov-report=json"
 markers = [
     "real_deprecation_notices: keep the CLI's real deprecation notices (conftest silences them by default)",
 ]
