@@ -41,7 +41,6 @@ def _sev(f):
 
 # ── C1 ───────────────────────────────────────────────────────────────────────
 
-@pytest.mark.xfail(strict=True, reason="C1 → E8-S4 SSH_KEY_INVENTORY (alpha.1)")
 def test_review_c1_old_authorized_keys_new_key(tmp_path):
     """A key appended to an authorized_keys whose file is older than 7 days."""
     root = _host(tmp_path, {"/home/admin/.ssh/authorized_keys":
@@ -157,5 +156,31 @@ def test_review_c9_systemd_environment_ld_preload(tmp_path):
 # ── Not a miss: guard against the fixtures themselves being noisy ───────────
 
 def test_review_clean_fixture_host_has_no_findings(tmp_path):
+    # The admin's own key is listed as inventory (D-15: counted apart, never noise).
+    found = _findings(_host(tmp_path), ss="")
+    assert [f.category for f in found] == ["inventory"]
+    assert found[0].rule_id == "SSH_KEY_INVENTORY" and _sev(found[0]) == "LOW"
+
+
+def test_review_c1_inventory_lists_the_key_with_its_fingerprint_and_options(tmp_path):
+    from ubuntils.collectors.ssh import key_fingerprint
+    line = 'environment="LD_PRELOAD=/x.so",permitopen="10.0.0.1:22" ' + ATTACKER_KEY
+    root = _host(tmp_path, {"/home/admin/.ssh/authorized_keys": fh.ADMIN_KEY + "\n" + line + "\n"})
+    inv = [f for f in _findings(root) if f.rule_id == "SSH_KEY_INVENTORY"]
+    assert len(inv) == 2 and all(f.category == "inventory" for f in inv)
+    attacker = next(f for f in inv if ATTACKER_KEY.split()[1] in f.raw_value)
+    assert key_fingerprint(ATTACKER_KEY.split()[1]) in attacker.description
+    assert any(s["name"] == "key_reach_option" for s in attacker.signals)
+    assert attacker.raw_value == line  # the exact line, so it can be found and baselined
+
+
+def test_review_c1_inventory_can_be_baselined_by_fingerprint(tmp_path):
+    from ubuntils.collectors.ssh import key_fingerprint
+    from ubuntils.pipeline import run_scan
+    from ubuntils.utils.baseline import load_baseline
     root = _host(tmp_path)
-    assert _findings(root, ss="") == []
+    b = tmp_path / "b.yaml"
+    b.write_text("version: 1\nbaseline:\n  - rule_id: SSH_KEY_INVENTORY\n    fingerprint: "
+                 + key_fingerprint(fh.ADMIN_KEY.split()[1]) + "\n")
+    r = run_scan(fh.fixture_source(root), forward_wazuh=False, baseline=load_baseline(str(b)))
+    assert r.findings == [] and r.scan_metadata["suppressed_by_baseline"] == 1

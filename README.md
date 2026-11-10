@@ -8,7 +8,7 @@ Forensic triage for live Ubuntu systems — automated artifact collection, persi
 ![Arch](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-lightgrey)
 ![Ubuntu](https://img.shields.io/badge/ubuntu-22.04%20%7C%2024.04%20%7C%2026.04-orange)
 ![Offline analysis](https://img.shields.io/badge/offline%20analysis-collect%20%2B%20analyze-blueviolet)
-![Detection rules](https://img.shields.io/badge/detection%20rules-19-informational)
+![Detection rules](https://img.shields.io/badge/detection%20rules-20-informational)
 ![SIEM](https://img.shields.io/badge/SIEM-Wazuh-yellow)
 
 ---
@@ -28,7 +28,7 @@ The gap is a tool that runs on the live system right now, covers the most common
 ubuntils runs in four sequential stages:
 
 1. **Collection** — Eleven collectors, run one after another, gather forensic artifacts from `/proc`, cron tables, systemd units, SSH keys, sudoers files, environment definitions, package integrity (`dpkg --verify`), PAM/NSS config, and loaded kernel modules. Most collectors finish in a second or two; `dpkg --verify`, which re-checks every installed package file, dominates — a full scan took 29–68 seconds on an Ubuntu 26.04 arm64 desktop VM.
-2. **Detection** — A detection engine runs all nineteen built-in rules — plus any custom rules loaded with `--rules` — over the collected artifacts, producing a ranked, confidence-scored findings list in about one second.
+2. **Detection** — A detection engine runs all twenty built-in rules — plus any custom rules loaded with `--rules` — over the collected artifacts, producing a ranked, confidence-scored findings list in about one second.
 3. **Timeline** — A timeline builder reads syslog, journald, and auditd and correlates events chronologically, adding roughly 0.3 seconds. Each finding is then auto-correlated against the timeline, so it carries the nearby events that relate to it.
 4. **Output** — Results appear either in an interactive four-tab TUI (default) or as structured JSON on stdout (`--json`).
 
@@ -810,7 +810,7 @@ A `LOW`-band finding is not dismissed or hidden — it still appears in the find
 
 ## Remediation
 
-Five of the nineteen detection rules have automated remediation: `CRON_ROOT_EXEC`, `CRON_TMP_PATH`, `LD_PRELOAD_INJECT`, `SSH_UNAUTHORIZED_KEY`, and `SUDOERS_NOPASSWD`. The rest are flag-only and will never be auto-remediated, because acting on them safely needs a human to look first.
+Five of the twenty detection rules have automated remediation: `CRON_ROOT_EXEC`, `CRON_TMP_PATH`, `LD_PRELOAD_INJECT`, `SSH_UNAUTHORIZED_KEY`, and `SUDOERS_NOPASSWD`. The rest are flag-only and will never be auto-remediated, because acting on them safely needs a human to look first.
 
 ### Guided remediation
 

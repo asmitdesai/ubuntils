@@ -7,8 +7,11 @@ LAB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 # Deliberately not planted: one needs live outbound traffic, one is a real
 # passwordless login and is opt-in (--with-empty-password), and
 # USER_FILE_OVERSIZED needs a multi-megabyte padded file in a user's home.
+# SSH_KEY_INVENTORY lists keys in files that haven't changed for 7 days; a
+# planted key's ctime is always "now", so the lab can't make one (every host's
+# own keys show it instead).
 NOT_PLANTED_BY_DEFAULT = {"PROCESS_SUSPICIOUS_CONNECTION", "USER_EMPTY_PASSWORD",
-                          "USER_FILE_OVERSIZED"}
+                          "USER_FILE_OVERSIZED", "SSH_KEY_INVENTORY"}
 
 
 def _built_in_rule_ids():

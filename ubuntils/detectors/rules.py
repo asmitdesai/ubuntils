@@ -76,6 +76,9 @@ _7_DAYS_SECONDS = 7 * 24 * 3600
 _48_HOURS_SECONDS = 48 * 3600
 
 _DANGEROUS_KEY_OPTIONS = ("command=", "no-pty")
+# Options that change what a key login can reach (RL-03): extra signals only,
+# since restricted keys (backups, gitolite) use options legitimately.
+_REACH_KEY_OPTIONS = ("environment=", "permitopen=", "permitlisten=")
 
 
 def _parent_id(entry: dict):
@@ -371,6 +374,7 @@ def rule_ssh_unauthorized_key(artifacts: dict) -> List[Finding]:
         if has_dangerous_option:
             apply_signal(finding, "content_match", 30,
                          f"dangerous key option present: {options!r}")
+        _apply_reach_option_signal(finding, options)
         if legacy_file:
             apply_signal(finding, "legacy_keys_file", 20,
                          "key lives in authorized_keys2, deprecated since OpenSSH 3.0")
@@ -396,6 +400,62 @@ def rule_ssh_unauthorized_key(artifacts: dict) -> List[Finding]:
                 finding, RECENCY_ONLY,
                 f"the only evidence against this key is that {path} changed in the "
                 "last 7 days, which is also what provisioning looks like")
+        findings.append(finding)
+    return findings
+
+
+def _apply_reach_option_signal(finding: Finding, options: str) -> None:
+    reach = [o for o in _REACH_KEY_OPTIONS if o in options]
+    if reach:
+        apply_signal(finding, "key_reach_option", 15,
+                     f"key sets {', '.join(o.rstrip('=') for o in reach)}: it changes what a "
+                     "login with this key can reach")
+
+
+def _ssh_unauthorized_key_reports(entry: dict, cutoff: float) -> bool:
+    path = entry.get("path") or f"{entry.get('home', '')}/.ssh/authorized_keys"
+    return (entry.get("file_mtime", 0.0) >= cutoff or entry.get("file_ctime", 0.0) >= cutoff
+            or path.endswith("/authorized_keys2"))
+
+
+def rule_ssh_key_inventory(artifacts: dict) -> List[Finding]:
+    """Every authorized key, with its fingerprint, at LOW (review C1, QW-3).
+
+    SSH_UNAUTHORIZED_KEY only looks at recently changed files, so a key added
+    to an old file and left for a week disappears from view. Listing every
+    key closes that; baselining known fingerprints quiets it. Keys
+    SSH_UNAUTHORIZED_KEY already reports aren't listed twice.
+    """
+    from ubuntils.collectors.ssh import key_fingerprint
+    cutoff = time.time() - _7_DAYS_SECONDS
+    findings = []
+    for entry in artifacts.get("authorized_keys", []):
+        if _ssh_unauthorized_key_reports(entry, cutoff):
+            continue
+        path = entry.get("path") or f"{entry.get('home', '')}/.ssh/authorized_keys"
+        fp = key_fingerprint(entry.get("key_data", "")) or "unknown fingerprint"
+        options = entry.get("options", "")
+        finding = Finding(
+            rule_id="SSH_KEY_INVENTORY",
+            severity=Severity.LOW,
+            title="Authorized SSH key",
+            description=(f"{path} (user '{entry.get('username', '')}') authorizes "
+                         f"{entry.get('key_type', '?')} key {fp}"
+                         + (f" with options {options}" if options else "")
+                         + ". Baseline it if it is known."),
+            artifact_path=path,
+            raw_value=entry.get("raw_line") or " ".join(
+                filter(None, [entry.get("key_type", ""), entry.get("key_data", "")])),
+            remediation_available=False,
+            remediation_description=None,
+            guided_remediation=(f"Check {fp} against the keys you issued "
+                                f"(`ssh-keygen -lf {path}`); baseline it if it is yours."),
+            parent_dir_identity=_parent_id(entry),
+        )
+        apply_signal(finding, "inventory", -30, "listed so every key is visible, not suspected")
+        if any(o in options for o in _DANGEROUS_KEY_OPTIONS):
+            apply_signal(finding, "content_match", 30, f"key options present: {options!r}")
+        _apply_reach_option_signal(finding, options)
         findings.append(finding)
     return findings
 

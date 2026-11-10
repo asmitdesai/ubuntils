@@ -11,7 +11,11 @@ import yaml
 
 PERSISTENCE = "persistence"
 HYGIENE = "hygiene"
-CATEGORIES = (PERSISTENCE, HYGIENE)
+# Inventory: every instance of something worth knowing about (each SSH key),
+# reported so a responder sees the whole set and can baseline the known ones.
+# Not counted as noise in clean-host results (D-15).
+INVENTORY = "inventory"
+CATEGORIES = (PERSISTENCE, HYGIENE, INVENTORY)
 # Custom (--rules) findings: written by the responder to catch something
 # specific, so treated as likely persistence.
 CUSTOM_RULE_META = {"category": PERSISTENCE, "attack": []}

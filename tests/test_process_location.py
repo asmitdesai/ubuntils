@@ -41,7 +41,8 @@ def test_venv_python_under_opt_and_home_does_not_fire(tmp_path):
     root = fh.build(tmp_path / "h", fh.CLEAN)
     fh.add_process(root, 11, "python3", "/opt/app/venv/bin/python3")
     fh.add_process(root, 12, "python3", "/home/dev/.venv/bin/python3")
-    assert fh.scan(root, {"ss": ("", 0)}).findings == []
+    found = fh.scan(root, {"ss": ("", 0)}).findings
+    assert [f.rule_id for f in found] == ["SSH_KEY_INVENTORY"]  # the admin's key, nothing else
 
 
 def test_masquerades_are_not_reported_twice():

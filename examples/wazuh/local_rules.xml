@@ -9,7 +9,7 @@
   `data.rule_id`, which is unique to ubuntils' JSONL schema on this
   localfile path.
 
-  Rule IDs 100100-100105 are chosen from Wazuh's user-reserved custom rule
+  Rule IDs 100100-100106 are chosen from Wazuh's user-reserved custom rule
   ID range (100000+); adjust if they collide with other custom rules on
   your manager.
 -->
@@ -53,5 +53,13 @@
     <if_sid>100102</if_sid>
     <field name="data.rule_id">^USER_FILE_OVERSIZED$</field>
     <description>ubuntils: oversized user file may hide an entry: $(data.artifact_path)</description>
+  </rule>
+
+  <!-- Inventory (every authorized SSH key, category "inventory") is not a
+       detection: keep it searchable but out of the alert stream. -->
+  <rule id="100106" level="0">
+    <if_sid>100103</if_sid>
+    <field name="data.category">^inventory$</field>
+    <description>ubuntils inventory: $(data.title)</description>
   </rule>
 </group>

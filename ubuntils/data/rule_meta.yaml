@@ -29,6 +29,9 @@ rules:
   SSH_UNAUTHORIZED_KEY:
     category: persistence
     attack: [T1098.004]           # Account Manipulation: SSH Authorized Keys
+  SSH_KEY_INVENTORY:
+    category: inventory
+    attack: [T1098.004]           # Account Manipulation: SSH Authorized Keys
   USER_UID_ZERO:
     category: persistence
     attack: [T1136.001]           # Create Account: Local Account

@@ -34,7 +34,7 @@ from ubuntils.collectors.ssh import _parse_key_line, key_fingerprint
 
 # Rules whose raw_value is an authorized_keys line: only the key itself (type
 # and data) identifies it; options and comment are attacker-chosen.
-_KEY_RULES = frozenset({"SSH_UNAUTHORIZED_KEY"})
+_KEY_RULES = frozenset({"SSH_UNAUTHORIZED_KEY", "SSH_KEY_INVENTORY"})
 
 V1_DEPRECATION = (
     "baseline {path!r} uses the text-matching format that ubuntils 3.0 replaces "
