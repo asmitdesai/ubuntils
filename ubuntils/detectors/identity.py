@@ -17,6 +17,22 @@ def canonical_rule_id(rule_id: str) -> str:
     return CANONICAL_RULE_IDS.get(rule_id, rule_id)
 
 
+def rule_aliases(rule_id: str) -> list:
+    """Other names a rule answers to: its 3.0 name while it is still emitted
+    under the 2.x one (QW-13). Allowlists, baselines and the report use it."""
+    canonical = canonical_rule_id(rule_id)
+    return [canonical] if canonical != rule_id else []
+
+
+def rule_names(rule_id: str) -> set:
+    return {rule_id, *rule_aliases(rule_id)}
+
+
+def deprecated_rule_ids(names) -> list:
+    """The 2.x rule IDs among ``names`` that 3.0 renames, with their new names."""
+    return [(n, CANONICAL_RULE_IDS[n]) for n in names if n in CANONICAL_RULE_IDS]
+
+
 def finding_id(rule_id: str, artifact_path: str, raw_value: str) -> str:
     h = hashlib.sha256()
     # str(): a custom or buggy rule's odd value must not take detection down.

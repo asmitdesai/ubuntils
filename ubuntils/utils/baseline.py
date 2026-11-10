@@ -31,6 +31,7 @@ from typing import List
 import yaml
 
 from ubuntils.collectors.ssh import _parse_key_line, key_fingerprint
+from ubuntils.detectors.identity import rule_names
 
 # Rules whose raw_value is an authorized_keys line: only the key itself (type
 # and data) identifies it; options and comment are attacker-chosen.
@@ -72,7 +73,7 @@ class Baseline:
 
     def matches(self, finding) -> bool:
         for entry in self.entries:
-            if entry.get("rule_id") != finding.rule_id:
+            if entry.get("rule_id") not in rule_names(finding.rule_id):
                 continue
             fingerprint = entry.get("fingerprint", "")
             if not fingerprint:

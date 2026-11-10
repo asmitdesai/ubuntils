@@ -51,6 +51,7 @@ class JSONFormatter:
         d = {
             "finding_id": f.finding_id,
             "rule_id": f.rule_id,
+            "rule_aliases": list(f.rule_aliases),
             "severity": f.severity.value,
             "title": f.title,
             "description": f.description,

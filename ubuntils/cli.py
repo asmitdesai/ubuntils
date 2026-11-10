@@ -332,6 +332,13 @@ def _load_inputs(config_path, baseline_path, rules_path, since_value) -> tuple:
         except (ValueError, OSError) as exc:
             raise click.ClickException(f"Invalid rules file {rules_path}: {exc}")
 
+    from ubuntils.detectors.identity import deprecated_rule_ids
+    configured = list(allowlist.rules) if allowlist else []
+    configured += [e.get("rule_id", "") for e in baseline.entries] if baseline else []
+    for old, new in sorted(set(deprecated_rule_ids(configured))):
+        click.echo(f"deprecation: rule {old} is renamed {new} in ubuntils 3.0; both names "
+                   "work in allowlists and baselines through 3.x", err=True)
+
     return since, allowlist, baseline, custom_rules
 
 

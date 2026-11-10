@@ -21,6 +21,7 @@ Work toward 3.0.0. Everything here is additive unless it says otherwise.
 - **RL-01 — `/etc/anacrontab` and queued `at` jobs** are collected as cron entries. For `at` jobs only the job's own commands are read, not atd's generated preamble. Findings on both are flag-only.
 - **C8** `bash <(curl …)` and other forms of download-and-execute in a shell init file are now reported, at any age.
 - **E4-S5 / QW-9 — `--fail-on-findings[=SEVERITY]`** on `scan --json` and `analyze`: exit status 4 when a finding is at or above `low`, `medium` or `high` (the default). Opt-in, so scripts that treat any non-zero status as an error are unaffected; inventory findings never count. The README lists every exit status.
+- **QW-13** Every finding carries `rule_aliases` (JSON and Wazuh). `SUSPICIOUS_SYSTEMD_TIMER` findings list `SUSPICIOUS_SYSTEMD_UNIT`, the name 3.0 switches to, because the rule covers services and drop-ins, not just timers. Allowlists and baselines accept either name, and naming the old one prints a deprecation notice.
 - **QW-10 / E10-S3** Custom rules (`--rules`) can match four more sources: `systemd` (each `Exec*` command), `users` (`name:uid:gid:home:shell groups=…`), `sudoers` (rule lines) and `file` (lines of shell init, PAM and `nsswitch.conf` files). `examples/custom_rules.yaml` shows one.
 - **QW-6** `/var/log/auth.log` (sshd, sudo, su) is read into the timeline and captured by `collect`.
 - **QW-11 / E5-S3** `collect --journal-days N` (1–3650, default 7) sets how much systemd journal a bundle holds.
@@ -44,6 +45,9 @@ Work toward 3.0.0. Everything here is additive unless it says otherwise.
 ### Security
 - **N-08** The install-trust check before the `sudo` re-exec covered the interpreter, `sys.prefix` and the ubuntils package directory and the directories above them, but not the files inside: a group-writable `site-packages/click/core.py` or `.pth` file under a root-owned prefix let another user change code root was about to run. It now also checks every loaded module file, every file in the ubuntils package, and every `.pth` file in site-packages (about 0.2 s).
 - **N-09** A user file read only up to the 64 MiB ceiling now marks its collector degraded, so the scan reads as incomplete, not just the `USER_FILE_OVERSIZED` finding.
+
+### Deprecated — changing in 3.0
+- `SUSPICIOUS_SYSTEMD_TIMER` is renamed `SUSPICIOUS_SYSTEMD_UNIT` (QW-13). Until then it is emitted under the old ID with the new one in `rule_aliases`; allowlists and baselines accept both, through 3.x.
 
 ## 2.3.0 — 2026-11-05
 

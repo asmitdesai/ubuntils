@@ -65,6 +65,9 @@ class Finding:
     # SHA-256 of the flagged file when it is a regular file of at most
     # 64 MiB, read through the scan's source (E4-S3, QW-7); None otherwise.
     artifact_sha256: Optional[str] = None
+    # Other IDs this rule answers to (its 3.0 name while the 2.x one is
+    # emitted; QW-13). Set by the engine.
+    rule_aliases: List[str] = field(default_factory=list)
 
 
 def block_auto_remediation(finding: "Finding", code: str, detail: str) -> None:

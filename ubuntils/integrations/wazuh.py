@@ -98,6 +98,7 @@ def _finding_to_dict(finding: Finding, hostname: str, cut: list = None) -> dict:
     # Short, from our own data file (never host text), so not cut.
     d["category"] = finding.category
     d["finding_id"] = finding.finding_id
+    d["rule_aliases"] = list(finding.rule_aliases)
     d["artifact_sha256"] = finding.artifact_sha256
     d["attack"] = list(finding.attack)
     if finding.related_events:

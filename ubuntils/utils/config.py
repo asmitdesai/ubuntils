@@ -26,7 +26,8 @@ class Allowlist:
 
     def suppresses(self, finding) -> bool:
         """Return True if this finding matches an allowlist entry."""
-        if finding.rule_id in self.rules:
+        from ubuntils.detectors.identity import rule_names
+        if rule_names(finding.rule_id) & set(self.rules):
             return True
         if finding.artifact_path and finding.artifact_path in self.paths:
             return True

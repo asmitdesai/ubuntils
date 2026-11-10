@@ -55,6 +55,13 @@
     <description>ubuntils: oversized user file may hide an entry: $(data.artifact_path)</description>
   </rule>
 
+  <!-- Rule IDs: SUSPICIOUS_SYSTEMD_TIMER becomes SUSPICIOUS_SYSTEMD_UNIT in
+       ubuntils 3.0. From 2.4 every line carries data.rule_aliases with the
+       other name, so a search on either finds both before and after the
+       switch, e.g. data.rule_id:SUSPICIOUS_SYSTEMD_UNIT OR
+       data.rule_aliases:SUSPICIOUS_SYSTEMD_UNIT. data.finding_id stays the
+       same across the rename. -->
+
   <!-- Inventory (every authorized SSH key, category "inventory") is not a
        detection: keep it searchable but out of the alert stream. -->
   <rule id="100106" level="0">
