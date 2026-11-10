@@ -61,6 +61,9 @@ ubuntils = ["data/*.yaml"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Only tests/: mutmut leaves a full copy of the tree in mutants/.
+testpaths = ["tests"]
+norecursedirs = ["mutants", ".git", "*.egg-info"]
 # Branch coverage on; the combined (line + branch) floor is the measured value
 # rounded down, raised every milestone, never lowered. Line and branch are also
 # gated separately, overall and per module, by tools/ci/check_coverage.py.
