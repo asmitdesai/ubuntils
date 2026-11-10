@@ -77,3 +77,6 @@ report*.json
 
 # Hostile-host harness results (contain run outputs from the test VM)
 hh-results/
+
+# hypothesis example database
+.hypothesis/

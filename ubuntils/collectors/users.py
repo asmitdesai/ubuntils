@@ -20,6 +20,10 @@ class UserCollector(BaseCollector):
                 continue
             parts = line.split(":")
             if len(parts) < 7:
+                # Not a passwd entry. Reported, so a truncated or corrupted
+                # /etc/passwd never reads as "no suspicious accounts".
+                self.degraded.append(f"skipped malformed /etc/passwd line for {parts[0][:32]!r} "
+                                     f"({len(parts)} fields, need 7)")
                 continue
             # One malformed line must not blind every user-based rule: skip
             # just that line (an attacker could otherwise inject junk to hide
