@@ -60,6 +60,13 @@ docs/*
 # Plans, reports and review responses are public (decided 2026-11-10)
 !docs/plans/
 !docs/reviews/
+# Public user docs (the old design notes in docs/ stay private)
+!docs/writes.md
+!docs/versioning.md
+!docs/releasing.md
+!docs/production-readiness.md
+!docs/schema.md
+!docs/results/
 # ...except private notes and review documents not yet cleared for publication
 docs/plans/private/
 docs/reviews/*.pdf
