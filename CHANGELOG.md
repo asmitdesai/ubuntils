@@ -17,7 +17,7 @@ Work toward 3.0.0. Everything here is additive unless it says otherwise.
 - **N-08** The install-trust check before the `sudo` re-exec covered the interpreter, `sys.prefix` and the ubuntils package directory and the directories above them, but not the files inside: a group-writable `site-packages/click/core.py` or `.pth` file under a root-owned prefix let another user change code root was about to run. It now also checks every loaded module file, every file in the ubuntils package, and every `.pth` file in site-packages (about 0.2 s).
 - **N-09** A user file read only up to the 64 MiB ceiling now marks its collector degraded, so the scan reads as incomplete, not just the `USER_FILE_OVERSIZED` finding.
 
-## 2.3.0 — not yet released
+## 2.3.0 — 2026-11-05
 
 The bridge to 3.0: it ships every fix from the 2026-11 external review, two more security fixes, and a warning for everything 3.0 will change.
 
