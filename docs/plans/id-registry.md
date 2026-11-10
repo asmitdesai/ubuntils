@@ -199,9 +199,9 @@ tests (663 passed, 1 skipped, 2026-11-10).
 
 ## 7. 2.3.0 practitioner review
 
-The review cites commit `3b71b86` for 2.3.0. That SHA does not resolve in this
-clone (2.3.0 is `2304232`, merged as `3a02911`); it may be a GitHub-side
-object. Verdicts below are against `v3-dev`.
+The review cites commit `3b71b86` for 2.3.0. It is the `v2.3.0` tag (the merge of
+PR #32 on `main`); the first version of this registry was written from a stale
+clone that did not have it. Verdicts below are against `v3-dev`.
 
 ### Adoption blockers (R-)
 

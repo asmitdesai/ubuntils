@@ -56,6 +56,12 @@ CLAUDE.md
 # Keep only the debugging guide in docs/ on GitHub; ignore all other design/plan docs
 docs/*
 !docs/debugging-common-issues.md
+# Plans, reports and review responses are public (decided 2026-11-10)
+!docs/plans/
+!docs/reviews/
+# ...except private notes and review documents not yet cleared for publication
+docs/plans/private/
+docs/reviews/*.pdf
 .superpowers/
 
 # Scan reports (contain host details — never commit)
