@@ -80,3 +80,5 @@ hh-results/
 
 # hypothesis example database
 .hypothesis/
+# mutmut working tree
+mutants/

@@ -1,0 +1,4 @@
+# Mutation testing (scheduled CI job only). Regenerate with:
+#   uv pip compile requirements-mutation.in --python-version 3.12 --generate-hashes --universal -o requirements-mutation.lock
+-r requirements-dev.in
+mutmut>=3.2

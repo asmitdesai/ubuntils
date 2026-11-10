@@ -1,0 +1,46 @@
+name: Mutation testing
+
+# E13-S10. Weekly and on demand, never per PR: mutates the detection rules and
+# the shared command matcher and publishes how many mutants the tests kill.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 4 * * 0"
+
+permissions:
+  contents: read
+
+jobs:
+  mutmut:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Install (hash-pinned)
+        run: |
+          pip install --require-hashes -r requirements-mutation.lock
+          pip install --no-deps --no-build-isolation -e .
+      - name: Run mutmut
+        run: mutmut run --max-children 4 || true
+      - name: Score
+        run: |
+          mutmut results --all true > mutmut-results.txt || true
+          python3 - <<'PY'
+          import collections, re
+          counts = collections.Counter(re.findall(r": (\w[\w ]*)$", open("mutmut-results.txt").read(), re.M))
+          total = sum(counts.values())
+          killed = counts.get("killed", 0)
+          score = 100 * killed / total if total else 0
+          print(dict(counts))
+          print(f"::notice title=mutation::{killed}/{total} mutants killed ({score:.1f} %)")
+          open("mutation-score.txt", "w").write(f"{killed}/{total} killed ({score:.1f} %)\n{dict(counts)}\n")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mutation
+          path: |
+            mutmut-results.txt
+            mutation-score.txt

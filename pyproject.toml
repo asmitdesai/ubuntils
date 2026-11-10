@@ -68,3 +68,19 @@ addopts = "--cov=ubuntils --cov-branch --cov-fail-under=94 --cov-report=term-mis
 markers = [
     "real_deprecation_notices: keep the CLI's real deprecation notices (conftest silences them by default)",
 ]
+
+# Mutation testing (E13-S10): scheduled CI job, not per PR. See
+# .github/workflows/mutation.yml; the score is published, survivors in the
+# rules behind the review's C1-C9 cases are killed with new tests.
+[tool.mutmut]
+paths_to_mutate = ["ubuntils/analysis/cmdmatch.py", "ubuntils/detectors/rules.py"]
+# The tests that exercise rules and the matcher (the whole suite includes
+# install-location tests that can't run from mutmut's copy).
+tests_dir = ["tests/test_cmdmatch.py", "tests/test_detection_rules.py", "tests/test_review_2_3.py",
+             "tests/test_process_location.py", "tests/test_shell_rc_hijack.py",
+             "tests/test_cron_breadth.py", "tests/test_parser_properties.py",
+             "tests/test_golden_outputs.py", "tests/test_audit_2026_10_26.py",
+             "tests/test_security_review_2026_11.py",
+             "tests/fixture_hosts.py", "tests/__init__.py", "tests/conftest.py"]
+also_copy = ["ubuntils/", "tools/", "examples/", "docs/", "README.md", "CHANGELOG.md", ".github/", "requirements.lock", "requirements-dev.lock", "tests/golden/"]
+pytest_add_cli_args = ["-p", "no:cacheprovider", "-o", "addopts=", "-x", "-q"]
