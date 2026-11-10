@@ -167,3 +167,11 @@ def _preserve_in_tmp(tmp_path_factory, monkeypatch):
     from ubuntils.remediators import preserve
     monkeypatch.setattr(preserve, "PRESERVE_BASE",
                         str(tmp_path_factory.mktemp("preserve") / "p"))
+
+
+@pytest.fixture(autouse=True)
+def _staging_in_tmp(request, tmp_path_factory, monkeypatch):
+    """`collect` stages bundles under /var/lib/ubuntils (QW-12). No test may
+    write there: point it at a per-test temporary directory."""
+    from ubuntils import cli
+    monkeypatch.setattr(cli, "STAGING_DIR", str(tmp_path_factory.mktemp("staging") / "s"))

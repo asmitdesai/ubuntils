@@ -46,6 +46,9 @@ _FAIL_ON_FINDINGS_HELP = (
 # /etc/shadow; the working directory may belong to the attacker, and a name
 # predictable to the second lets them pre-create it.
 DEFAULT_BUNDLE_DIR = "/var/lib/ubuntils/bundles"
+# Where `collect` stages the uncompressed copy (with /etc/shadow) before
+# compressing it: root's own 0700 directory, never the shared temp dir (QW-12).
+STAGING_DIR = "/var/lib/ubuntils/staging"
 
 logger = structlog.get_logger()
 
@@ -362,6 +365,7 @@ def _collect_full_bundle() -> dict:
         path = write_bundle(
             source=LiveSource(root="/"), files_to_capture=COLLECT_FILES,
             commands_to_capture=COLLECT_COMMANDS, out_path=_default_bundle_path(),
+            staging_dir=STAGING_DIR,
             metadata={"hostname": socket.gethostname(),
                       "host_id": get_host_id(LiveSource(root="/")),
                       "ubuntu_version": get_ubuntu_version(), "tool_version": __version__},
@@ -568,6 +572,7 @@ def collect(output_path, verbose):
             files_to_capture=COLLECT_FILES,
             commands_to_capture=COLLECT_COMMANDS,
             out_path=output_path,
+            staging_dir=STAGING_DIR,
             metadata={
                 "hostname": socket.gethostname(),
                 "host_id": get_host_id(LiveSource(root="/")),

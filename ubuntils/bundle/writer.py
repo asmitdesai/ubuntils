@@ -14,7 +14,7 @@ from ubuntils.collectors.packages import (
     DPKG_OWNERS_TIMEOUT, DPKG_VERIFY_TIMEOUT, FIND_SETUID_TIMEOUT,
 )
 from ubuntils.collectors.source import ArtifactSource
-from ubuntils.utils.safe_io import open_private_for_write
+from ubuntils.utils.safe_io import ensure_private_dir, open_private_for_write
 
 # Per-command timeouts for `collect`'s bundle-capture step. MUST match the
 # timeouts PackageCollector uses live (see collectors/packages.py) — a bundle
@@ -47,7 +47,15 @@ def write_bundle(
     out_path: str,
     *,
     metadata: dict,
+    staging_dir: str = None,
 ) -> str:
+    """Collect into a private staging directory, then write the tarball.
+
+    ``staging_dir``: where the uncompressed copy (with /etc/shadow) is staged.
+    `collect` passes root's own /var/lib/ubuntils/staging (QW-12), never the
+    shared system temp directory; None uses the temp directory (tests, and
+    callers without root).
+    """
     start = datetime.now(timezone.utc).isoformat()
     # Create the archive first, with owner-only permissions — the default
     # umask-derived mode (typically 0644) would otherwise make a bundle
@@ -58,7 +66,14 @@ def write_bundle(
     # them) after we wrote /etc/shadow into it. Opening it before collecting
     # means a taken path fails in a second, not after minutes of dpkg --verify.
     out = os.fdopen(open_private_for_write(out_path, 0o600, exclusive=True), "wb")
-    work = tempfile.mkdtemp(prefix="ubuntils_collect_")
+    if staging_dir is not None:
+        try:
+            ensure_private_dir(staging_dir)
+        except OSError:
+            out.close()
+            os.unlink(out_path)
+            raise
+    work = tempfile.mkdtemp(prefix="ubuntils_collect_", dir=staging_dir)
     completed = False
     try:
         files_dir = os.path.join(work, "files")
@@ -131,6 +146,6 @@ def write_bundle(
                 os.unlink(out_path)
             except OSError:
                 pass
-        # Always clean up the staging directory to prevent sensitive data
-        # from persisting unencrypted in /tmp after collection.
+        # Always clean up the staging directory (also on Ctrl-C) so the
+        # unencrypted copy never outlives the collection.
         shutil.rmtree(work, ignore_errors=True)
