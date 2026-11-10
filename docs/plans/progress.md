@@ -117,3 +117,4 @@
 | 2026-11-10 | C1, QW-3, RL-03 | `SSH_KEY_INVENTORY` (category `inventory`) | `f321852` |
 | 2026-11-10 | C5, QW-4, RL-05 | `SUDOERS_NOPASSWD` evaluates every account | `d427210` |
 | 2026-11-10 | C7, RL-08/09/10/13 | setuid paths, shell hijacks, lsattr paths, dpkg wording | `2883487` |
+| 2026-11-10 | E3-S5 | Stock-copy check: unpack-ctime `SHELL_RC_MODIFICATION` FPs (needs container re-measure) | `44138b5` |
