@@ -1,4 +1,5 @@
 import os
+import re
 
 from ubuntils.collectors.base import BaseCollector
 
@@ -29,6 +30,13 @@ def _split_entry(line: str, has_user_field: bool):
     return schedule, run_as, parts[-1]
 
 
+ANACRONTAB = "/etc/anacrontab"
+AT_SPOOL_GLOB = "/var/spool/cron/atjobs/*"
+# atd writes each job as a script whose last part runs the user's commands in
+# a here-document: ${SHELL:-/bin/sh} << 'marcinDELIMITER1b2c3d4e'.
+_AT_HEREDOC_RE = re.compile(r"<<\s*'?(marcinDELIMITER[0-9a-fA-F]{1,32})'?")
+
+
 def _is_variable_assignment(line: str) -> bool:
     return "=" in line and not line[0].isdigit() and line[0] not in "*@"
 
@@ -49,6 +57,12 @@ class CronCollector(BaseCollector):
         for directory, schedule in CRON_SCRIPT_DIRS.items():
             for path in self.source.glob(f"{directory}/*"):
                 entries.extend(self._parse_script(path, schedule))
+
+        # anacron (period delay job-id command) and queued `at` jobs (RL-01)
+        if self.source.exists(ANACRONTAB):
+            entries.extend(self._parse_anacrontab(ANACRONTAB))
+        for path in self.source.glob(AT_SPOOL_GLOB):
+            entries.extend(self._parse_at_job(path))
 
         return {"cron_entries": self.tag_parent_dirs(entries, "source")}
 
@@ -99,5 +113,70 @@ class CronCollector(BaseCollector):
                 "command": line,
                 "source": path,
                 "kind": "script",
+            })
+        return entries
+
+    def _parse_anacrontab(self, path: str) -> list:
+        entries = []
+        try:
+            text = self.source.read_text(path)
+        except Exception as exc:
+            self.degraded.append(f"{path}: {exc}")
+            return entries
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or _is_variable_assignment(line):
+                continue
+            parts = line.split(None, 3)
+            if len(parts) < 4:
+                continue
+            entries.append({
+                "owner": "root",
+                "run_as": "root",
+                "schedule": f"anacron {parts[0]} (+{parts[1]} min, job {parts[2]})",
+                "command": parts[3],
+                "source": path,
+                "kind": "anacron",
+            })
+        return entries
+
+    def _parse_at_job(self, path: str) -> list:
+        """The commands of one queued `at` job.
+
+        Job files belong to the user who queued them, so they are read like
+        any user file (non-blocking, size-capped). Only the commands inside
+        atd's here-document are taken; the generated preamble (environment,
+        `cd` to wherever the job was queued from) is not the user's command.
+        """
+        try:
+            user_file = self.source.read_user_file(path)
+            st = self.source.lstat(path)
+        except Exception as exc:
+            self.degraded.append(f"{path}: {exc}")
+            return []
+        lines = user_file.text.splitlines()
+        body = None
+        for i, line in enumerate(lines):
+            m = _AT_HEREDOC_RE.search(line)
+            if m:
+                end = next((j for j in range(i + 1, len(lines)) if lines[j].strip() == m.group(1)),
+                           len(lines))
+                body = lines[i + 1:end]
+                break
+        if body is None:  # not atd's format: keep anything that isn't setup
+            body = [l for l in lines if not _is_variable_assignment(l.strip())
+                    and not l.strip().startswith(("export ", "umask "))]
+        entries = []
+        for line in body:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            entries.append({
+                "owner": f"uid {st.st_uid}" if st.st_uid != 0 else "root",
+                "run_as": "root" if st.st_uid == 0 else f"uid {st.st_uid}",
+                "schedule": "at job",
+                "command": line,
+                "source": path,
+                "kind": "at",
             })
         return entries
