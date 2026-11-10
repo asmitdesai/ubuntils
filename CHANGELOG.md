@@ -36,6 +36,7 @@ Work toward 3.0.0. Everything here is additive unless it says otherwise.
 - **Preserve, then fix.** Before `--remediate --confirm` or the TUI's `R` changes anything, the files about to change are copied into `/var/lib/ubuntils/preserve/<time>-<random>/` with a manifest of their SHA-256, owner, mode, times, inode and parent directory, read through the same symlink-free path as remediation. If any file can't be preserved, nothing is changed. The manifest's SHA-256 is printed and recorded as `scan_metadata.preserve`. `--preserve-full` collects a full bundle first; `--no-preserve --yes` opts out.
 
 ### Fixed
+- PAM configuration that couldn't be read, or wasn't there at all (an `analyze` of a bundle, which doesn't hold `/etc/pam.d`), produced no `PAM_BACKDOOR` finding and no warning, so it read as clean. The PAM collector is now reported as degraded when that happens.
 - `PROCESS_MASQUERADE` no longer reports `python3`, `perl` or `ruby` from a virtualenv, pyenv or conda install under `/opt` or `/home` (RL-06). An interpreter in a temp directory, or deleted, is still reported.
 - Remediation reading a file through its symlink-free path leaked a file descriptor, and reported a plain `IsADirectoryError`, when a directory sat where the file was expected; it now refuses with "not a regular file" and closes the descriptor.
 
