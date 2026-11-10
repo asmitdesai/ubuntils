@@ -11,7 +11,7 @@
 | Branch | `v3/alpha.1`, stacked on `v3/preflight` (both local only; Needs Asmit #1) |
 | Last commit | see `git log -1 v3/preflight` |
 | CI | **not running**: nothing can be pushed from the agent session yet (Needs Asmit #1) |
-| Coverage | 94.76 % line (local, macOS, 2026-11-10; 704 passed, 1 skipped); `safe_path.py` 100 % / 100 % |
+| Coverage | 95.11 % line (local, macOS; 811 passed, 1 skipped, 4 xfailed); `safe_path.py` and `analysis/cmdmatch.py` 100 % / 100 % |
 | Lab | last known 16/16 (RESULTS.md, `96f3c49`, 2026-10-23); no CI lab job has run yet |
 | fp-suite | not run (needs CI) |
 | PANIX | not run (needs CI) |
@@ -81,8 +81,11 @@
 1. When pushing works: push `v3/preflight`, read the CI and Measure runs, fill the
    `<BASELINE>`s they produce (lab, fp-suite per image, timings), review and commit
    fp-suite baselines, then merge preflight into `v3-dev` (reviewer agent first).
-2. alpha.1 (plan §6.2) on `v3/alpha.1`, in the order of `execution-guidance.md`
-   Workstream 2: C1–C9 tests → matcher → quick wins → small RL items.
+2. alpha.1 remaining (plan §6.2): QW-7/QW-8/E4-S4 (`artifact_sha256`, `finding_id`,
+   `host_id`), QW-9 `--fail-on-findings`, QW-12 staging, QW-11 `--journal-days`,
+   QW-6 `auth.log`, QW-10 custom-rule sources, QW-13 rename alias; then E3-S5 baselines
+   (needs CI), golden outputs, coverage ratchet, E13 scaffolding, 2.4.0 release prep.
+   C-cases: C1, C2 ×2, C3, C5, C7 (setuid), C8 pass; C4, C6, C7 (capabilities), C9 xfail (beta.1).
 
 ## Log
 
@@ -98,3 +101,11 @@
 | 2026-11-10 | E13-S2 | CI on v3 branches; 26.04/Debian 12 containers; measure + PANIX workflows | `61e9ce8` |
 | 2026-11-10 | E13-S4 | Fixture hosts; 2.3.0 vs v3 behaviour diff (bundle break found) | `b35d5dd` |
 | 2026-11-10 | E13-S9 | `safe_path.py` 100 %/100 %; fd leak in `read_file_at` fixed | `49eaaf8` |
+| 2026-11-10 | C1–C9 | Regression tests (strict xfail until fixed) | `ec56df5` |
+| 2026-11-10 | E8-S1, R-04 | Shared suspicious-command matcher | `6e45e88` |
+| 2026-11-10 | RL-01 | anacrontab and `at` jobs collected | `ba1fb3c` |
+| 2026-11-10 | C3, C8, E8-S2 | `CRON_SUSPICIOUS_COMMAND`; systemd/shell init use matcher | `0227a91` |
+| 2026-11-10 | C2, QW-1, QW-2, RL-06 | `PROCESS_SUSPICIOUS_EXE`; listeners; venv FP fixed | `b8f60be` |
+| 2026-11-10 | C1, QW-3, RL-03 | `SSH_KEY_INVENTORY` (category `inventory`) | `f321852` |
+| 2026-11-10 | C5, QW-4, RL-05 | `SUDOERS_NOPASSWD` evaluates every account | `d427210` |
+| 2026-11-10 | C7, RL-08/09/10/13 | setuid paths, shell hijacks, lsattr paths, dpkg wording | `2883487` |
