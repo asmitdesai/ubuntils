@@ -1,6 +1,6 @@
 # ubuntils
 
-Forensic triage for live Ubuntu systems — automated artifact collection, persistence detection, and guided remediation in about a minute.
+A persistence-focused second opinion for a single Ubuntu host, with explainable scoring. It checks the places intruders hide (cron, systemd, SSH keys, sudoers, shell init files, PAM, `LD_PRELOAD`, processes, package integrity…), says why each finding scored what it did, and says plainly what it could not look at. No network calls.
 
 [![CI](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml/badge.svg)](https://github.com/asmitdesai/ubuntils/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
@@ -10,6 +10,23 @@ Forensic triage for live Ubuntu systems — automated artifact collection, persi
 ![Offline analysis](https://img.shields.io/badge/offline%20analysis-collect%20%2B%20analyze-blueviolet)
 ![Detection rules](https://img.shields.io/badge/detection%20rules-20-informational)
 ![SIEM](https://img.shields.io/badge/SIEM-Wazuh-yellow)
+
+---
+
+## First run
+
+```bash
+sudo pipx install --global "ubuntils==X.Y.Z"      # root-owned install (see Installation)
+ubuntils scan --json --no-wazuh --output case.json # re-invokes itself with sudo
+ubuntils collect                                   # or: acquire a bundle, analyze elsewhere
+ubuntils analyze /var/lib/ubuntils/bundles/ubuntils-bundle-*.tar.gz --json
+```
+
+Read `scan_metadata.collectors_degraded` and `rules_failed` first: anything there is something ubuntils **could not look at**, not something it found clean.
+
+**What a clean result does not mean.** No findings means none of the checks fired. It does not mean the host is clean: a kernel rootkit can hide from any userspace tool, and the persistence locations listed under [Not covered](#not-covered) are not checked. Treat a clean report as *necessary, not sufficient*.
+
+**Don't remediate before you have scoped the intrusion.** Removing one key or cron entry tells an intruder they were seen. Remediation exists for after scoping (see [Remediation](#remediation-advanced-after-scoping)); triage never needs it.
 
 ---
 
@@ -824,7 +841,9 @@ A `LOW`-band finding is not dismissed or hidden — it still appears in the find
 
 ---
 
-## Remediation
+## Remediation (advanced: after scoping)
+
+> **Remediating changes the host you are investigating and can tip off an intruder.** Scope first, preserve evidence, then remediate if you have decided to contain on this host rather than rebuild it. `--remediate --confirm` says this once before it changes anything.
 
 Five of the twenty detection rules have automated remediation: `CRON_ROOT_EXEC`, `CRON_TMP_PATH`, `LD_PRELOAD_INJECT`, `SSH_UNAUTHORIZED_KEY`, and `SUDOERS_NOPASSWD`. The rest are flag-only and will never be auto-remediated, because acting on them safely needs a human to look first.
 

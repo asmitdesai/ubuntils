@@ -521,6 +521,11 @@ def scan(output_json, remediate, confirm, config_path, baseline_path, output_pat
     if no_preserve:
         click.echo("warning: --no-preserve: remediation will modify evidence without "
                    "keeping a copy first", err=True)
+    if remediate and confirm:
+        # E1-S5: remediation is an after-scoping step, not part of triage.
+        click.secho("WARNING: remediation changes the host you are investigating and can tip "
+                    "off an intruder. Scope first; continue only if you have decided to "
+                    "contain on this host.", err=True, fg="yellow")
     preserve_bundle = None
     if remediate and confirm and preserve_full:
         preserve_bundle = _collect_full_bundle()

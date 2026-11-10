@@ -76,3 +76,14 @@ def test_scan_json_exits_4_on_findings(split_runner, tmp_path, monkeypatch):
     assert split_runner.invoke(main, ["scan", "--json", "--no-wazuh"]).exit_code == 0
     res = split_runner.invoke(main, ["scan", "--json", "--no-wazuh", "--fail-on-findings"])
     assert res.exit_code == 4
+
+
+def test_remediate_confirm_warns_about_tipping_off_once(split_runner, tmp_path, monkeypatch):
+    r = fh.scan(fh.build_host("clean", tmp_path / "h"))
+    monkeypatch.setattr(cli, "_ensure_root", lambda: None)
+    monkeypatch.setattr(cli, "_run_pipeline", lambda **k: (
+        r.findings, r.timeline, r.stats, r.scan_metadata, r.artifact_counts, []))
+    res = split_runner.invoke(main, ["scan", "--json", "--no-wazuh", "--remediate", "--confirm"])
+    assert res.stderr.count("can tip off an intruder") == 1
+    dry = split_runner.invoke(main, ["scan", "--json", "--no-wazuh", "--remediate"])
+    assert "tip off" not in dry.stderr  # a dry run changes nothing

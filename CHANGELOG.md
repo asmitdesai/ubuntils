@@ -41,6 +41,7 @@ Work toward 3.0.0. Everything here is additive unless it says otherwise.
 - Remediation reading a file through its symlink-free path leaked a file descriptor, and reported a plain `IsADirectoryError`, when a directory sat where the file was expected; it now refuses with "not a regular file" and closes the descriptor.
 
 ### Changed
+- **E11-S2 / E1-S5** The README opens with what to run and what a clean result does not mean; remediation is presented as an advanced, after-scoping step. `--remediate --confirm` warns once that remediating can tip off an intruder.
 - Releases can be re-run safely: publishing skips files PyPI already has, and the GitHub Release step adds files to a Release that already exists. 2.3.0's run failed on both after PyPI had accepted it.
 
 ### Security
