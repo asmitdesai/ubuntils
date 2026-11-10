@@ -135,6 +135,10 @@ def fixture_source(root, live_commands: dict | None = None):
             st = super().lstat(path)
             seq = list(st)
             seq[9] = seq[8]  # st_ctime := st_mtime (int fields)
+            # A host's files are root's unless the fixture says otherwise; the
+            # files under test are owned by whoever runs the tests.
+            owner = _owners(str(root)).get("/" + path.lstrip("/"), (0, 0))
+            seq[4], seq[5] = owner
             extra = {"st_ctime": st.st_mtime, "st_ctime_ns": st.st_mtime_ns,
                      "st_mtime": st.st_mtime, "st_mtime_ns": st.st_mtime_ns,
                      "st_atime": st.st_atime, "st_atime_ns": st.st_atime_ns}
@@ -144,6 +148,84 @@ def fixture_source(root, live_commands: dict | None = None):
             if live_commands and name in live_commands:
                 out, rc = live_commands[name]
                 return out, "", rc
+            if name == "find_setuid":
+                return _emulate_find_setuid(str(root), argv), "", 0
             return super().run(name, argv, timeout=timeout)
 
     return FixtureSource(root=str(root), offline=True)
+
+
+def _emulate_find_setuid(root: str, argv: list) -> str:
+    """What `find START... -xdev ( -perm -4000 -o -perm -2000 ) -type f
+    -printf '%m %p\\n'` prints for the fixture tree: only under the start
+    paths the collector actually passes, so a test can't pass by accident."""
+    starts = []
+    for arg in argv[1:]:
+        if arg.startswith("-") or arg == "(":
+            break
+        starts.append(arg)
+    import json
+    try:
+        modes = json.load(open(os.path.join(root, ".fixture-modes.json")))
+    except FileNotFoundError:
+        modes = {}
+    lines = []
+    for start in starts:
+        base = os.path.join(root, start.lstrip("/"))
+        for dirpath, _dirs, files in os.walk(base):
+            for f in files:
+                full = os.path.join(dirpath, f)
+                rel = "/" + os.path.relpath(full, root)
+                if os.path.islink(full):
+                    continue
+                # Some filesystems (and sandboxes) silently drop the setuid
+                # bit for non-root users, so fixtures declare modes instead.
+                mode = modes.get(rel, os.lstat(full).st_mode & 0o7777)
+                if mode & 0o6000:
+                    lines.append(f"{mode:o} {rel}")
+    return "\n".join(sorted(lines)) + ("\n" if lines else "")
+
+
+def _owners(root: str) -> dict:
+    import json
+    f = os.path.join(root, ".fixture-owners.json")
+    if not os.path.exists(f):
+        return {}
+    return {k: tuple(v) for k, v in json.load(open(f)).items()}
+
+
+def set_owner(root, path: str, uid: int, gid: int):
+    """Declare ``path``'s owner as the fixture source reports it (default 0:0)."""
+    import json
+    f = os.path.join(str(root), ".fixture-owners.json")
+    owners = json.load(open(f)) if os.path.exists(f) else {}
+    owners[path] = [uid, gid]
+    json.dump(owners, open(f, "w"))
+
+
+def set_mode(root, path: str, mode: int):
+    """Declare ``path``'s permission bits (e.g. 0o4755) for the find emulation."""
+    import json
+    f = os.path.join(str(root), ".fixture-modes.json")
+    modes = json.load(open(f)) if os.path.exists(f) else {}
+    modes[path] = mode
+    json.dump(modes, open(f, "w"))
+
+
+def add_process(root, pid: int, name: str, exe: str, cmdline: str = "", uid: int = 0):
+    """A /proc/<pid> entry: status, comm, cmdline, and exe as a real symlink."""
+    d = os.path.join(str(root), "proc", str(pid))
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "status"), "w") as fh:
+        fh.write(f"Name:\t{name}\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n")
+    with open(os.path.join(d, "comm"), "w") as fh:
+        fh.write(name + "\n")
+    with open(os.path.join(d, "cmdline"), "w") as fh:
+        fh.write((cmdline or exe).replace(" ", "\x00") + "\x00")
+    os.symlink(exe, os.path.join(d, "exe"))
+
+
+def scan(root, live_commands=None):
+    """Run the real pipeline over a fixture tree; Wazuh off."""
+    from ubuntils.pipeline import run_scan
+    return run_scan(fixture_source(root, live_commands), forward_wazuh=False)
