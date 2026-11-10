@@ -62,6 +62,11 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          # Re-running a release whose upload already succeeded (2.3.0 attempts
+          # 3 and 4) must not fail on "file already exists". PyPI still refuses
+          # to replace a file with different content.
+          skip-existing: true
 
   github-release:
     name: Create GitHub Release
@@ -84,11 +89,18 @@ jobs:
           sha256sum -- * > SHA256SUMS
           cat SHA256SUMS
 
-      - name: Create release with artifacts
+      # A release created by hand first (2.3.0) made `gh release create`
+      # fail after PyPI had already published. Create it if it is missing,
+      # otherwise attach the files to the existing one.
+      - name: Create or update release with artifacts
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes
+          fi
