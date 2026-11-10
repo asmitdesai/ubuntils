@@ -461,7 +461,32 @@ def rule_ssh_key_inventory(artifacts: dict) -> List[Finding]:
 
 
 def _qualifies_for_nopasswd_check(user_info: dict) -> bool:
-    return not uid_is_system(user_info.get("uid", 0)) and is_login_shell(user_info.get("shell", ""))
+    # Every account but root itself (review C5, QW-4): a web shell running as
+    # www-data uses sudo without ever logging in, so system accounts and
+    # nologin shells count too.
+    return user_info.get("username") != "root"
+
+
+def _is_service_account(user_info: dict) -> bool:
+    return uid_is_system(user_info.get("uid", 0)) or not is_login_shell(user_info.get("shell", ""))
+
+
+_SHELL_COMMANDS = frozenset({"bash", "sh", "dash", "zsh", "ksh", "su", "sudo", "env"})
+
+
+def _grants_everything(commands: str) -> bool:
+    """ALL, or a shell (which is ALL with extra steps)."""
+    for item in re.split(r"\s*,\s*", commands or ""):
+        tokens = item.split()
+        if not tokens:
+            continue
+        if tokens[0] == "ALL" or os.path.basename(tokens[0]) in _SHELL_COMMANDS:
+            return True
+    return False
+
+
+def _member_list(members: list) -> str:
+    return ", ".join(members[:10]) + (f" and {len(members) - 10} more" if len(members) > 10 else "")
 
 
 def _sudoers_principal_members(principal: str, users: list, users_by_name: dict):
@@ -529,7 +554,7 @@ def rule_sudoers_nopasswd(artifacts: dict) -> List[Finding]:
                            f"{how} sudoers entry for a group with non-system members"),
                     description=(
                         f"{label[0].upper()}{label[1:]} has {how} sudo access; "
-                        f"members: {', '.join(members)}{how_detail}"
+                        f"members: {_member_list(members)}{how_detail}"
                     ),
                     artifact_path=source,
                     raw_value=raw_line,
@@ -545,15 +570,22 @@ def rule_sudoers_nopasswd(artifacts: dict) -> List[Finding]:
 
             username = members[0]
             uid = users_by_name[username].get("uid", 0)
+            service = _is_service_account(users_by_name[username])
+            everything = _grants_everything(rule.get("commands", ""))
             # Removing the line is only a safe fix when it grants exactly this
             # user, sits on one physical line, and NOPASSWD is the problem (with
             # only !authenticate, deleting the rule would revoke sudo outright).
             auto = (nopasswd and len(principals) == 1 and not rule.get("continued", False))
             finding = Finding(
                 rule_id="SUDOERS_NOPASSWD",
-                severity=Severity.MEDIUM,
-                title=f"{how} sudoers entry for non-system user",
-                description=f"User '{username}' (uid={uid}) has {how} sudo access{how_detail}",
+                # A service account that can run anything as root without a
+                # password is root for whoever controls the service (C5).
+                severity=Severity.HIGH if service and everything else Severity.MEDIUM,
+                title=(f"{how} sudoers entry for service account '{username}'" if service
+                       else f"{how} sudoers entry for non-system user"),
+                description=(f"User '{username}' (uid={uid}) has {how} sudo access{how_detail}"
+                             + (" — a service account: whoever runs code as it (a web shell, "
+                                "a compromised daemon) gets root" if service else "")),
                 artifact_path=source,
                 raw_value=raw_line,
                 remediation_available=auto,

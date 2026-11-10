@@ -95,11 +95,11 @@ def test_review_c4_tidy_root_unit_usr_local(tmp_path):
 
 # ── C5 ───────────────────────────────────────────────────────────────────────
 
-@pytest.mark.xfail(strict=True, reason="C5 → E8-S6 every account in SUDOERS_NOPASSWD (alpha.1)")
 def test_review_c5_www_data_nopasswd_all(tmp_path):
     root = _host(tmp_path, {"/etc/sudoers.d/www": "www-data ALL=(ALL) NOPASSWD: ALL\n"})
     hits = [f for f in _findings(root) if f.rule_id == "SUDOERS_NOPASSWD" and _mentions(f, "www-data")]
     assert hits, "SUDOERS_NOPASSWD only evaluates UID >= 1000 accounts with a login shell"
+    assert _sev(hits[0]) == "HIGH"
 
 
 # ── C6 ───────────────────────────────────────────────────────────────────────

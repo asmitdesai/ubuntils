@@ -278,22 +278,39 @@ def test_rule_sudoers_nopasswd_clean():
     assert findings == []
 
 
-def test_rule_sudoers_nopasswd_system_user_no_finding():
+def test_rule_sudoers_nopasswd_system_user_with_all_is_high():
+    # Until 3.0 system accounts weren't evaluated at all (review C5).
     artifacts = {
         "sudoers_rules": [_sudoers_rule(user="daemon", options="NOPASSWD: ALL")],
         "users": [_user_entry(username="daemon", uid=1, shell="/usr/sbin/nologin")],
     }
     findings = rule_sudoers_nopasswd(artifacts)
-    assert findings == []
+    assert len(findings) == 1 and findings[0].severity == Severity.HIGH
+    assert "service account" in findings[0].title
 
 
-def test_rule_sudoers_nopasswd_nologin_shell_no_finding():
-    artifacts = {
-        "sudoers_rules": [_sudoers_rule(user="svc", options="NOPASSWD: ALL")],
-        "users": [_user_entry(username="svc", uid=1500, shell="/sbin/nologin")],
-    }
+def test_rule_sudoers_nopasswd_service_account_restricted_command_is_medium():
+    rule = dict(_sudoers_rule(user="svc", options="NOPASSWD:"),
+                commands="/usr/lib/nagios/plugins/check_raid")
+    artifacts = {"sudoers_rules": [rule],
+                 "users": [_user_entry(username="svc", uid=1500, shell="/sbin/nologin")]}
     findings = rule_sudoers_nopasswd(artifacts)
-    assert findings == []
+    assert len(findings) == 1 and findings[0].severity == Severity.MEDIUM
+
+
+def test_rule_sudoers_nopasswd_service_account_with_a_shell_is_high():
+    rule = dict(_sudoers_rule(user="svc", options="NOPASSWD:"), commands="/usr/bin/id, /bin/bash")
+    artifacts = {"sudoers_rules": [rule],
+                 "users": [_user_entry(username="svc", uid=999, shell="/bin/bash")]}
+    assert rule_sudoers_nopasswd(artifacts)[0].severity == Severity.HIGH
+
+
+def test_rule_sudoers_nopasswd_root_is_never_reported():
+    artifacts = {
+        "sudoers_rules": [_sudoers_rule(user="root", options="NOPASSWD: ALL")],
+        "users": [_user_entry(username="root", uid=0, shell="/bin/bash")],
+    }
+    assert rule_sudoers_nopasswd(artifacts) == []
 
 
 def test_rule_sudoers_nopasswd_unknown_user_no_finding():
