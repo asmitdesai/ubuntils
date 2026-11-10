@@ -9,6 +9,8 @@ A clean reference host (a stock image with nothing planted) must show:
     false positive);
   - at most 3 findings in total (the 3.0 target; reported, and fails only
     with --enforce-target until the known noise is fixed).
+Inventory findings (category "inventory") are counted and reported on their
+own and never count toward any of the above.
 Degraded collectors are listed: in a container some collectors can't run,
 and the baseline records which, so a newly degraded one also fails.
 
@@ -32,12 +34,17 @@ def main(argv=None) -> int:
     ap.add_argument("report")
     ap.add_argument("--baseline", required=True)
     ap.add_argument("--write-baseline", action="store_true")
+    ap.add_argument("--summary", help="append a Markdown table row for this image here")
+    ap.add_argument("--image", default="", help="image name for --summary")
     ap.add_argument("--enforce-target", action="store_true",
                     help=f"also fail above {TARGET_MAX_TOTAL} findings in total")
     args = ap.parse_args(argv)
 
     report = json.load(open(args.report))
-    findings = report["findings"]
+    # Inventory (every SSH key, …) is reported but is not noise (E3-S7, D-15):
+    # it is counted on its own and never against the budget.
+    inventory = [f for f in report["findings"] if f.get("category") == "inventory"]
+    findings = [f for f in report["findings"] if f.get("category") != "inventory"]
     meta = report["scan_metadata"]
     degraded = sorted(meta.get("collectors_degraded") or {})
 
@@ -61,13 +68,21 @@ def main(argv=None) -> int:
         print(f"wrote {args.baseline} ({len(baseline['findings'])} known findings)")
         return 0
 
-    baseline = json.load(open(args.baseline))
+    try:
+        baseline = json.load(open(args.baseline))
+        reviewed = True
+    except FileNotFoundError:
+        # No reviewed baseline yet: HIGH findings and failed rules still fail;
+        # every finding is listed so a baseline can be written and reviewed.
+        baseline = {"findings": [], "collectors_degraded": degraded}
+        reviewed = False
+        print(f"no reviewed baseline at {args.baseline} yet; listing every finding")
     known = {_key(e) for e in baseline["findings"]}
     problems = []
     for f in findings:
         if f["severity"] == "HIGH":
             problems.append(f"HIGH on a clean host: {f['rule_id']} {f['artifact_path']}")
-        elif _key(f) not in known:
+        elif reviewed and _key(f) not in known:
             problems.append(f"new false positive: {f['rule_id']} {f['severity']} "
                             f"{f['artifact_path']}")
     for name in degraded:
@@ -78,9 +93,18 @@ def main(argv=None) -> int:
         problems.append(f"rules failed: {meta['rules_failed']}")
 
     total = len(findings)
-    print(f"{meta.get('ubuntu_version', '?')}: {total} findings "
-          f"({sum(f['severity'] == 'HIGH' for f in findings)} HIGH); "
+    highs = sum(f['severity'] == 'HIGH' for f in findings)
+    print(f"{meta.get('ubuntu_version', '?')}: {total} findings ({highs} HIGH), "
+          f"{len(inventory)} inventory; "
           f"target <= {TARGET_MAX_TOTAL}: {'met' if total <= TARGET_MAX_TOTAL else 'NOT met'}")
+    if not reviewed:
+        for f in findings:
+            print(f"  {f['severity']:6} {f['rule_id']} {f['artifact_path']}")
+    if args.summary:
+        with open(args.summary, "a") as fh:
+            fh.write(f"| {args.image or meta.get('ubuntu_version', '?')} | {total} | {highs} | "
+                     f"{len(inventory)} | {', '.join(degraded) or '–'} | "
+                     f"{'yes' if reviewed else 'no'} |\n")
     if args.enforce_target and total > TARGET_MAX_TOTAL:
         problems.append(f"{total} findings, target is <= {TARGET_MAX_TOTAL}")
     for p in problems:
