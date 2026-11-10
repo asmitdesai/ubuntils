@@ -524,7 +524,7 @@ def test_uid_zero_no_users_key():
 
 
 def test_engine_all_rules_registered():
-    assert len(ALL_RULES) == 17
+    assert len(ALL_RULES) == 18
 
 
 def test_engine_runs_custom_rules_and_allowlist_suppresses_them():

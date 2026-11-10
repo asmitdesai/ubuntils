@@ -22,6 +22,7 @@ ARTIFACTS = [
     ("USER_UID_ZERO", r"UID-0 alias", r"ubuntils-lab-root"),
     ("USER_EMPTY_PASSWORD", r"NO PASSWORD", r"ubuntils-lab-nopw"),
     ("CRON_TMP_PATH", r"/etc/cron\.d/", r"/etc/cron\.d/ubuntils-lab"),
+    ("CRON_SUSPICIOUS_COMMAND", r"revshell", r"/etc/cron\.d/ubuntils-lab-revshell"),
     ("CRON_ROOT_EXEC", r"crontab for", r"ubuntils-lab"),
     ("SUDOERS_NOPASSWD", r"/etc/sudoers\.d/", r"/etc/sudoers\.d/ubuntils-lab"),
     ("SSH_UNAUTHORIZED_KEY", r"command= option", r"/\.ssh/authorized_keys(?!2)"),

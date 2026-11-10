@@ -8,6 +8,7 @@ from ubuntils.detectors.rule_meta import annotate
 from ubuntils.detectors.rules import (
     rule_cron_root_exec,
     rule_cron_tmp_path,
+    rule_cron_suspicious_command,
     rule_ld_preload_inject,
     rule_process_masquerade,
     rule_process_suspicious_connection,
@@ -30,6 +31,7 @@ from ubuntils.utils.config import Allowlist
 ALL_RULES = [
     rule_cron_root_exec,
     rule_cron_tmp_path,
+    rule_cron_suspicious_command,
     rule_ld_preload_inject,
     rule_suspicious_systemd_timer,
     rule_ssh_unauthorized_key,

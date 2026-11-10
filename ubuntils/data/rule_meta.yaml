@@ -17,6 +17,9 @@ rules:
   CRON_TMP_PATH:
     category: persistence
     attack: [T1053.003]
+  CRON_SUSPICIOUS_COMMAND:
+    category: persistence
+    attack: [T1053.003, T1053.002]  # Scheduled Task/Job: Cron; At
   LD_PRELOAD_INJECT:
     category: persistence
     attack: [T1574.006]           # Hijack Execution Flow: Dynamic Linker Hijacking

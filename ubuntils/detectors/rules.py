@@ -4,6 +4,7 @@ import re
 import time
 from typing import List, Optional
 
+from ubuntils.analysis import cmdmatch
 from ubuntils.detectors.finding import (
     AMBIGUOUS_KEY, RECENCY_ONLY, SOLE_SUDO_ACCESS, block_auto_remediation,
 )
@@ -112,15 +113,58 @@ def rule_cron_root_exec(artifacts: dict) -> List[Finding]:
     return findings
 
 
+_FLAG_ONLY_CRON_KINDS = ("script", "anacron", "at")
+
+
+def rule_cron_suspicious_command(artifacts: dict) -> List[Finding]:
+    """Any scheduled command (crontab, /etc/cron.d, run-parts script,
+    anacrontab, `at` job) that the shared matcher calls malicious: a reverse
+    shell, download-and-execute or an encoded payload. Unlike CRON_ROOT_EXEC it
+    doesn't care who owns the entry — root's own crontab and /etc/cron.d are
+    where intruders with root land (review C3)."""
+    findings = []
+    for entry in artifacts.get("cron_entries", []):
+        command = entry.get("command", "")
+        signals = cmdmatch.match(command)
+        if not cmdmatch.is_suspicious(signals):
+            continue
+        source = entry.get("source", "")
+        families = [s.family for s in cmdmatch.strongest_per_family(signals)]
+        what = "; ".join(cmdmatch.FAMILY_DESCRIPTIONS[f] for f in families
+                         if f != cmdmatch.LIMITS)
+        finding = Finding(
+            rule_id="CRON_SUSPICIOUS_COMMAND",
+            severity=Severity.HIGH,
+            title="Scheduled command runs a reverse shell, download or hidden payload",
+            description=(
+                f"A {entry.get('kind', 'cron')} entry in {source} "
+                f"({entry.get('schedule', '')}, runs as {entry.get('run_as') or entry.get('owner', '?')}) "
+                f"{what}"
+            ),
+            artifact_path=source,
+            raw_value=command,
+            remediation_available=False,
+            remediation_description=None,
+            guided_remediation=(
+                f"Preserve {source} first (copy it with its timestamps), then remove the "
+                "entry by hand — or disable the job — once you have scoped the intrusion."
+            ),
+            parent_dir_identity=_parent_id(entry),
+        )
+        cmdmatch.apply_to_finding(finding, signals, "the command")
+        findings.append(finding)
+    return findings
+
+
 def rule_cron_tmp_path(artifacts: dict) -> List[Finding]:
     findings = []
     for entry in artifacts.get("cron_entries", []):
         command = entry.get("command", "")
         source = entry.get("source", "")
         if command_references_writable_tmp(command):
-            # Lines inside /etc/cron.{hourly,...} scripts are flag-only:
-            # deleting one line from a shell script isn't a safe auto-fix.
-            is_script = entry.get("kind") == "script"
+            # Lines inside /etc/cron.{hourly,...} scripts, anacrontab and `at`
+            # jobs are flag-only: the cron remediator edits crontab lines only.
+            is_script = entry.get("kind") in _FLAG_ONLY_CRON_KINDS
             findings.append(Finding(
                 rule_id="CRON_TMP_PATH",
                 severity=Severity.HIGH,
@@ -200,10 +244,9 @@ def _systemd_exec_reasons(exec_start: str, owner_uid) -> list:
     reasons = []
     if path_in_writable_tmp(exec_start) or command_references_writable_tmp(exec_start):
         reasons.append("references a world-writable temp directory")
-    if _CURL_TO_SHELL_RE.search(exec_start):
-        reasons.append("downloads and executes code (curl/wget piped to a shell)")
-    if _BASE64_DECODE_RE.search(exec_start):
-        reasons.append("decodes base64 at runtime")
+    for s in cmdmatch.strongest_per_family(cmdmatch.match(exec_start)):
+        if s.family in (cmdmatch.REVERSE_SHELL, cmdmatch.DOWNLOAD_EXEC, cmdmatch.ENCODED):
+            reasons.append(f"{cmdmatch.FAMILY_DESCRIPTIONS[s.family]} ({s.code})")
     if owner_uid is not None and owner_uid != 0:
         reasons.append(f"runs a binary owned by uid {owner_uid}, not root")
     return reasons
@@ -661,18 +704,23 @@ def rule_user_empty_password(artifacts: dict) -> List[Finding]:
     return findings
 
 
-_CURL_TO_SHELL_RE = re.compile(r"\b(curl|wget)\b[^\n|]*\|\s*(sudo\s+)?(ba)?sh\b")
-_BASE64_DECODE_RE = re.compile(r"\bbase64\b\s+(-d|--decode)\b")
+def _rc_line_signals(line: str) -> list:
+    """Matcher signals that make a shell init line suspicious on their own
+    (a bare base64 decode counts here, as it did before the shared matcher)."""
+    signals = cmdmatch.match(line)
+    return signals if cmdmatch.is_suspicious(signals) or any(
+        s.code == "base64_decode" for s in signals) else []
 
 
 def _rc_suspicious_line(content: str) -> Optional[str]:
-    """The first line of a shell init file that downloads-and-executes, decodes
-    base64, or puts a writable temp dir on PATH — or None."""
+    """The first line of a shell init file that the shared matcher flags
+    (reverse shell, download-and-execute, encoded payload, base64 decode) or
+    that puts a writable temp dir on PATH — or None. Any age (review C8)."""
     for line in content.splitlines():
         stripped = line.strip()
         if stripped.startswith("#"):
             continue
-        if _CURL_TO_SHELL_RE.search(stripped) or _BASE64_DECODE_RE.search(stripped):
+        if _rc_line_signals(stripped):
             return stripped
         assignment = stripped[len("export "):].strip() if stripped.startswith("export ") else stripped
         if assignment.startswith("PATH="):
@@ -709,7 +757,8 @@ def rule_shell_rc_modification(artifacts: dict) -> List[Finding]:
                    else "Shell init file recently modified"),
             description=(
                 f"Shell init file '{source}' for user '{owner}' "
-                + ("contains a download-and-execute, base64-decode, or writable-tmp PATH line"
+                + ("contains a reverse-shell, download-and-execute, encoded-payload or "
+                   "writable-tmp PATH line"
                    if content_suspicious else "was modified within the last 48 hours")
             ),
             artifact_path=source,
@@ -724,9 +773,17 @@ def rule_shell_rc_modification(artifacts: dict) -> List[Finding]:
             ),
         )
         if content_suspicious:
-            apply_signal(finding, "content_match", 30,
-                         "content matches a known-suspicious pattern "
-                         "(curl/wget-to-shell, base64 -d, or a writable-tmp PATH prepend)")
+            signals = _rc_line_signals(suspicious_line)
+            if signals:
+                # Kept as "content_match" (a field consumers read); the detail
+                # names the matcher family and pattern.
+                best = cmdmatch.strongest_per_family(signals)[0]
+                apply_signal(finding, "content_match", best.weight,
+                             f"the line {cmdmatch.FAMILY_DESCRIPTIONS[best.family]} "
+                             f"({best.code}: {best.excerpt})")
+            else:
+                apply_signal(finding, "content_match", 30,
+                             "puts a world-writable temp directory on PATH")
         if recent:
             _apply_timestamp_signals(finding, mtime, ctime, cutoff, content_suspicious)
         findings.append(finding)

