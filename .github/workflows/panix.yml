@@ -1,0 +1,75 @@
+name: PANIX benchmark
+
+# E11-S1. One fresh runner VM per technique: scan, plant, scan. Callbacks go
+# to TEST-NET-1 (192.0.2.1), which is never routed. Not run on pushes.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  list:
+    runs-on: ubuntu-24.04
+    outputs:
+      techniques: ${{ steps.t.outputs.techniques }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - id: t
+        run: |
+          echo "techniques=$(grep -v '^#' tools/panix/techniques.tsv | cut -f1 | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')" >> "$GITHUB_OUTPUT"
+
+  technique:
+    needs: list
+    name: ${{ matrix.technique }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        technique: ${{ fromJSON(needs.list.outputs.techniques) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install ubuntils root-owned
+        run: tools/ci/install-root-venv.sh
+      - name: Fetch PANIX at the pinned commit
+        run: |
+          git init -q panix && cd panix
+          git fetch -q --depth 1 https://github.com/Aegrah/PANIX.git "$(cat ../tools/panix/PANIX_COMMIT)"
+          git checkout -q FETCH_HEAD
+      - name: Scan, plant, scan
+        run: sudo -E env PANIX_DIR="$PWD/panix" GITHUB_ACTIONS=true tools/panix/run_one.sh "${{ matrix.technique }}" "out/${{ matrix.technique }}"
+      - name: Judge
+        if: always()
+        run: |
+          sudo chown -R "$USER" out
+          python3 tools/panix/compare.py "out/${{ matrix.technique }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: panix-${{ matrix.technique }}
+          path: out/
+
+  matrix:
+    needs: technique
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: panix-*
+          path: results
+      - name: Aggregate
+        run: |
+          python3 tools/panix/aggregate.py panix.md panix.json $(find results -name result.json)
+          cat panix.md >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=panix::$(head -1 panix.md)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: panix-matrix
+          path: |
+            panix.md
+            panix.json

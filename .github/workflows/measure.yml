@@ -1,0 +1,128 @@
+name: Measure
+
+# Measurements that need root, systemd or Docker, run on disposable GitHub
+# runner VMs (never on a developer machine): the demo lab, the hostile-host
+# harness, the clean-host false-positive suite and scan timings. Headline
+# numbers are also written as ::notice:: annotations, which the public API
+# can read without a token.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [v3-dev, v3.1-dev]
+  push:
+    branches: ["v3/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  lab:
+    name: Lab (seed-lab.sh, root, runner VM)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install ubuntils root-owned, as the README says
+        run: tools/ci/install-root-venv.sh
+      - name: Plant the lab
+        run: sudo UBUNTILS_LAB_YES=1 tools/lab/seed-lab.sh plant | tee plant.txt
+      - name: Scan
+        run: sudo /opt/ubuntils/bin/ubuntils scan --json --no-wazuh --output lab.json
+      - name: Check every planted artifact was flagged
+        run: |
+          set -o pipefail
+          python3 tools/lab/check.py plant.txt lab.json --summary "$GITHUB_STEP_SUMMARY" | tee lab.txt
+          echo "::notice title=lab::$(head -1 lab.txt)"
+      - name: Clean up
+        if: always()
+        run: sudo tools/lab/seed-lab.sh clean || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: lab
+          path: |
+            plant.txt
+            lab.json
+            lab.txt
+
+  hostile-host:
+    name: Hostile-host harness
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install ubuntils root-owned
+        run: |
+          tools/ci/install-root-venv.sh
+          ln -s /opt/ubuntils .venv
+      - name: Run every trap group against ubuntils
+        run: sudo python3 tools/hostile-host/harness.py run --tool ubuntils --yes --results hh-results
+      - name: Gate on PASS/SEEN
+        run: |
+          set -o pipefail
+          run_dir=$(ls -d hh-results/*/ | tail -1)
+          sudo chown -R "$USER" hh-results
+          python3 tools/ci/hh_gate.py "$run_dir" --summary "$GITHUB_STEP_SUMMARY" | tee hh.txt
+          echo "::notice title=hostile-host::$(head -1 hh.txt)"
+      - name: Clean up
+        if: always()
+        run: sudo python3 tools/hostile-host/harness.py clean || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: hostile-host
+          path: hh-results/
+
+  fp-suite:
+    name: Clean host / ${{ matrix.image }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:22.04", "ubuntu:24.04", "ubuntu:26.04", "debian:12"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Scan the stock image
+        run: tools/fp-suite/run.sh "${{ matrix.image }}" "out/report.json"
+      - name: Check against the reviewed baseline
+        run: |
+          set -o pipefail
+          name=$(echo "${{ matrix.image }}" | tr ':/' '__')
+          echo "| Image | Findings | HIGH | Inventory | Degraded collectors | Reviewed baseline |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          python3 tools/fp-suite/check.py out/report.json \
+            --baseline "tools/fp-suite/baselines/$name.json" \
+            --image "${{ matrix.image }}" --summary "$GITHUB_STEP_SUMMARY" | tee out/check.txt
+          echo "::notice title=fp-suite ${{ matrix.image }}::$(head -1 out/check.txt | tail -1)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: fp-suite-${{ strategy.job-index }}
+          path: out/
+
+  timings:
+    name: Timings and memory (runner VM)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install ubuntils root-owned
+        run: tools/ci/install-root-venv.sh
+      - name: Scan five times
+        run: |
+          for i in 1 2 3 4 5; do
+            mkdir -p "t/run$i"
+            sudo /usr/bin/time -v -o "t/run$i/time.txt" \
+              /opt/ubuntils/bin/ubuntils scan --json --no-wazuh --output "t/run$i/report.json"
+          done
+          sudo chown -R "$USER" t
+      - name: Summarise (budget enforced once a baseline is recorded in the plan)
+        run: |
+          python3 tools/ci/timings.py t/timings.json t/run* ${UBUNTILS_BUDGET_ARGS:-}
+          python3 - <<'PY'
+          import json
+          t = json.load(open("t/timings.json"))
+          print(f"::notice title=timings::median {t['median_duration_s']} s, peak RSS {t['peak_rss_mb']} MB over {t['runs']} runs")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: timings
+          path: t/

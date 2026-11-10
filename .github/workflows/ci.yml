@@ -2,9 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, v3-dev, "v3/**", v3.1-dev]
   pull_request:
-    branches: [main]
+    branches: [main, v3-dev, v3.1-dev]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -47,6 +48,29 @@ jobs:
 
       - name: Run tests
         run: pytest
+
+  # Ubuntu 26.04 and Debian 12 have no hosted runner yet: test them in a
+  # container with the distribution's own python3 (E13-S2, E9-S1).
+  container:
+    name: Container / ${{ matrix.image }}
+    runs-on: ubuntu-24.04
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:26.04", "debian:12"]
+    steps:
+      - name: Install python3
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -yqq python3 python3-venv git >/dev/null
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install dependencies (hash-pinned) and run the tests
+        run: |
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install -q --require-hashes -r requirements-dev.lock
+          /tmp/venv/bin/pip install -q --no-deps --no-build-isolation -e .
+          /tmp/venv/bin/pytest
 
   audit:
     name: Dependency audit
