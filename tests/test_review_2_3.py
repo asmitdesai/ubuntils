@@ -53,7 +53,6 @@ def test_review_c1_old_authorized_keys_new_key(tmp_path):
 
 # ── C2 ───────────────────────────────────────────────────────────────────────
 
-@pytest.mark.xfail(strict=True, reason="C2 → E8-S7 processes by location (alpha.1)")
 def test_review_c2_dev_shm_idle_implant(tmp_path):
     """An implant in /dev/shm with an ordinary name and no connection."""
     root = _host(tmp_path, procs=[(4242, "httpd", "/dev/shm/.cache/httpd")])
@@ -62,7 +61,6 @@ def test_review_c2_dev_shm_idle_implant(tmp_path):
         "an idle /dev/shm process is reported only if its name is a known binary"
 
 
-@pytest.mark.xfail(strict=True, reason="C2 → E8-S7 listeners (alpha.1)")
 def test_review_c2_dev_shm_listening_bind_shell(tmp_path):
     root = _host(tmp_path, procs=[(4243, "httpd", "/dev/shm/.cache/httpd")])
     ss = ('Netid State  Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n'

@@ -318,11 +318,14 @@ def _proc_entry(name="sshd", exe="/usr/sbin/sshd", pid=1234, uid=0):
 
 
 def test_rule_process_masquerade_detects_bad():
-    artifacts = {"processes": [_proc_entry(name="sshd", exe="/tmp/sshd")]}
-    findings = rule_process_masquerade(artifacts)
+    # A system name in an odd location is MEDIUM; in a temp dir it is an
+    # implant and HIGH (review C2).
+    findings = rule_process_masquerade({"processes": [_proc_entry(name="sshd", exe="/opt/sshd")]})
     assert len(findings) == 1
     assert findings[0].rule_id == "PROCESS_MASQUERADE"
     assert findings[0].severity == Severity.MEDIUM
+    findings = rule_process_masquerade({"processes": [_proc_entry(name="sshd", exe="/tmp/sshd")]})
+    assert len(findings) == 1 and findings[0].severity == Severity.HIGH
 
 
 def test_rule_process_masquerade_clean():
@@ -524,7 +527,7 @@ def test_uid_zero_no_users_key():
 
 
 def test_engine_all_rules_registered():
-    assert len(ALL_RULES) == 18
+    assert len(ALL_RULES) == 19
 
 
 def test_engine_runs_custom_rules_and_allowlist_suppresses_them():
@@ -591,12 +594,30 @@ def test_suspicious_connection_ignores_standard_exe_common_port():
     assert rule_process_suspicious_connection(artifacts) == []
 
 
-def test_suspicious_connection_ignores_listener_no_remote():
+def test_suspicious_connection_reports_a_temp_dir_bind_shell():
+    # Until 3.0 this asserted no finding: listeners were ignored (review C2,
+    # QW-2). A /tmp executable listening on every address is a bind shell.
     from ubuntils.detectors.rules import rule_process_suspicious_connection
     artifacts = {
         "processes": [{"pid": 42, "name": "x", "uid": 0, "exe": "/tmp/implant", "cmdline": "x"}],
         "connections": [{"proto": "tcp", "local_addr": "0.0.0.0", "local_port": "4444",
                          "remote_addr": "0.0.0.0", "remote_port": "*", "state": "LISTEN", "pid": "42"}],
+    }
+    findings = rule_process_suspicious_connection(artifacts)
+    assert len(findings) == 1 and findings[0].severity.value == "HIGH"
+    assert findings[0].raw_value == "tcp 0.0.0.0:4444"
+
+
+def test_suspicious_connection_ignores_standard_listeners_and_loopback():
+    from ubuntils.detectors.rules import rule_process_suspicious_connection
+    artifacts = {
+        "processes": [{"pid": 1, "name": "sshd", "uid": 0, "exe": "/usr/sbin/sshd", "cmdline": ""},
+                      {"pid": 2, "name": "x", "uid": 0, "exe": "/opt/app/x", "cmdline": ""}],
+        "connections": [
+            {"proto": "tcp", "local_addr": "0.0.0.0", "local_port": "22", "remote_addr": "0.0.0.0",
+             "remote_port": "*", "state": "LISTEN", "pid": "1"},
+            {"proto": "tcp", "local_addr": "127.0.0.1", "local_port": "9000",
+             "remote_addr": "0.0.0.0", "remote_port": "*", "state": "LISTEN", "pid": "2"}],
     }
     assert rule_process_suspicious_connection(artifacts) == []
 

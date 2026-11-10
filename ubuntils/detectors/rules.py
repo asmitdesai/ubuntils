@@ -578,9 +578,18 @@ def rule_process_masquerade(artifacts: dict) -> List[Finding]:
         if name not in KNOWN_SYSTEM_BINARIES:
             continue
         if not path_in_standard_bins(exe):
-            findings.append(Finding(
+            # A system name *and* a temp-dir, deleted or memfd executable is
+            # not an odd install location: it is an implant (review C2).
+            path, deleted, memfd = _exe_location(exe)
+            high = path_in_writable_tmp(path) or deleted or memfd
+            if name in _INTERPRETER_NAMES and not high:
+                # Virtualenvs (--copies), pyenv and conda put real interpreters
+                # under /opt and /home; by name alone that is not a masquerade
+                # (review RL-06). A temp-dir or deleted one still is.
+                continue
+            finding = Finding(
                 rule_id="PROCESS_MASQUERADE",
-                severity=Severity.MEDIUM,
+                severity=Severity.HIGH if high else Severity.MEDIUM,
                 title="Process masquerading as system binary",
                 description=(
                     f"Process '{name}' (pid={pid}) has exe path "
@@ -591,7 +600,87 @@ def rule_process_masquerade(artifacts: dict) -> List[Finding]:
                 remediation_available=False,
                 remediation_description=None,
                 guided_remediation=guided,
-            ))
+            )
+            if high:
+                apply_signal(finding, "high_risk_exe", 25,
+                             "executable is in a temp directory, deleted or a memfd")
+            findings.append(finding)
+    return findings
+
+
+_DELETED_SUFFIX = " (deleted)"
+_INTERPRETER_NAMES = frozenset({"python", "python3", "perl", "ruby"})
+
+
+def _exe_location(exe: str):
+    """(path, deleted, memfd) for a /proc/<pid>/exe link target."""
+    deleted = exe.endswith(_DELETED_SUFFIX)
+    path = exe[:-len(_DELETED_SUFFIX)] if deleted else exe
+    return path, deleted, path.startswith("/memfd:")
+
+
+def _is_masquerade(proc: dict) -> bool:
+    """True when PROCESS_MASQUERADE already reports this process."""
+    name, exe, cmdline = proc.get("name", ""), proc.get("exe", ""), proc.get("cmdline", "")
+    if not exe:
+        return False
+    if _impersonates_kernel_thread(name, cmdline):
+        return True
+    if name not in KNOWN_SYSTEM_BINARIES or path_in_standard_bins(exe):
+        return False
+    path, deleted, memfd = _exe_location(exe)
+    return name not in _INTERPRETER_NAMES or path_in_writable_tmp(path) or deleted or memfd
+
+
+def rule_process_suspicious_exe(artifacts: dict) -> List[Finding]:
+    """A process judged by where its executable is, not what it is called
+    (review C2, QW-1): a world-writable temp directory, a memfd (fileless), or
+    deleted from disk. A deleted binary in a standard directory is what a
+    package upgrade leaves behind until the service restarts, so it is LOW."""
+    findings = []
+    for proc in artifacts.get("processes", []):
+        exe = proc.get("exe", "")
+        if not exe or _is_masquerade(proc):
+            continue
+        path, deleted, memfd = _exe_location(exe)
+        pid, name = proc.get("pid", ""), proc.get("name", "")
+        in_tmp = path_in_writable_tmp(path)
+        if not (in_tmp or memfd or deleted):
+            continue
+        if memfd:
+            severity, why = Severity.HIGH, "runs from an anonymous memory file (memfd): fileless"
+        elif in_tmp:
+            severity, why = Severity.HIGH, "runs from a world-writable temp directory"
+        elif path_in_standard_bins(path):
+            severity, why = Severity.LOW, ("runs a deleted binary from a standard directory, "
+                                           "usually a package upgrade awaiting a restart")
+        else:
+            severity, why = Severity.HIGH, "runs a binary that was deleted from disk"
+        if deleted and severity is Severity.HIGH and not memfd:
+            why += " and its binary was deleted"
+        finding = Finding(
+            rule_id="PROCESS_SUSPICIOUS_EXE",
+            severity=severity,
+            title="Process running from a suspicious location",
+            description=f"Process '{name}' (pid={pid}) {why}: {exe}",
+            artifact_path=f"/proc/{pid}/exe",
+            raw_value=exe,
+            remediation_available=False,
+            remediation_description=None,
+            guided_remediation=(
+                f"Preserve it before anything else: `cp /proc/{pid}/exe /root/pid{pid}.exe` and "
+                f"`cat /proc/{pid}/maps /proc/{pid}/cmdline`; scope the intrusion, then stop it."
+            ),
+        )
+        if memfd:
+            apply_signal(finding, "memfd_exe", 40, "executable is a memfd: no file on disk")
+        if in_tmp:
+            apply_signal(finding, "writable_tmp_location", 30,
+                         "executable sits in a world-writable temp directory")
+        if deleted:
+            apply_signal(finding, "deleted_exe", 25 if severity is Severity.HIGH else -10,
+                         "the executable was deleted after the process started")
+        findings.append(finding)
     return findings
 
 
@@ -619,6 +708,9 @@ def rule_process_suspicious_connection(artifacts: dict) -> List[Finding]:
         exe = proc.get("exe", "")
         established = [c for c in conns_by_pid.get(pid, []) if _is_remote_established(c)]
         if not established:
+            listener = _listener_finding(proc, conns_by_pid.get(pid, []))
+            if listener is not None:
+                findings.append(listener)
             continue
         outbound = [c for c in established if not _is_inbound(c, listening_ports)]
         # HIGH only for exes in writable temp dirs or deleted from disk;
@@ -646,6 +738,45 @@ def rule_process_suspicious_connection(artifacts: dict) -> List[Finding]:
             remediation_description=None,
         ))
     return findings
+
+
+def _is_exposed_listener(conn: dict) -> bool:
+    state = conn.get("state", "").upper()
+    proto = conn.get("proto", "")
+    listening = state == "LISTEN" or (proto.startswith("udp") and state in ("UNCONN", ""))
+    return listening and not _is_loopback(conn.get("local_addr", ""))
+
+
+def _listener_finding(proc: dict, conns: list) -> Optional[Finding]:
+    """A listening socket owned by a process outside the standard binary
+    directories is a bind shell until shown otherwise (review C2, QW-2)."""
+    exe = proc.get("exe", "")
+    listeners = [c for c in conns if _is_exposed_listener(c)]
+    if not exe or not listeners:
+        return None
+    path, deleted, memfd = _exe_location(exe)
+    high = path_in_writable_tmp(path) or deleted or memfd
+    if not (high or not path_in_standard_bins(path)):
+        return None
+    pid = proc.get("pid", "")
+    c = listeners[0]
+    where = f"{c.get('proto', '')} {c.get('local_addr', '')}:{c.get('local_port', '')}"
+    finding = Finding(
+        rule_id="PROCESS_SUSPICIOUS_CONNECTION",
+        severity=Severity.HIGH if high else Severity.MEDIUM,
+        title="Process listening from a suspicious location",
+        description=(f"Process '{proc.get('name', '')}' (pid={pid}, exe={exe}) listens on {where}"
+                     + (f" and {len(listeners) - 1} more" if len(listeners) > 1 else "")),
+        artifact_path=f"/proc/{pid}/exe",
+        raw_value=where,
+        remediation_available=False,
+        remediation_description=None,
+    )
+    apply_signal(finding, "listener", 15, f"accepts connections on {where}")
+    if high:
+        apply_signal(finding, "high_risk_exe", 25,
+                     "listening executable is in a temp directory, deleted or a memfd")
+    return finding
 
 
 def rule_uid_zero_account(artifacts: dict) -> List[Finding]:

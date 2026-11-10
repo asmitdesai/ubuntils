@@ -227,6 +227,9 @@ plant_processes() {
     fi
     say PROCESS_MASQUERADE "'sshd' running from /var/tmp"
     start_decoy /var/tmp/sshd
+    # An ordinary name: caught by where it runs from, not what it's called.
+    say PROCESS_SUSPICIOUS_EXE "'cache-sync' running from /var/tmp (ordinary name)"
+    start_decoy /var/tmp/cache-sync
 }
 
 plant_setuid() {

@@ -34,6 +34,7 @@ ARTIFACTS = [
     ("PAM_BACKDOOR", r"/etc/pam\.d/", r"/etc/pam\.d/ubuntils-lab"),
     ("PROCESS_MASQUERADE", r"'kworker'", r"kworker"),
     ("PROCESS_MASQUERADE", r"'sshd'", r"'sshd'"),
+    ("PROCESS_SUSPICIOUS_EXE", r"'cache-sync'", r"/var/tmp/cache-sync"),
     ("SETUID_INVENTORY", r"setuid-bit script", r"/opt/ubuntils-lab/beacon"),
     ("IMMUTABLE_FLAG_SET", r"append-only flag", r"/var/log/btmp"),
     ("PACKAGE_TAMPERED", r"appended to", r"base-files"),

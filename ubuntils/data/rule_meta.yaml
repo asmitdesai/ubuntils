@@ -38,6 +38,9 @@ rules:
   SUDOERS_NOPASSWD:
     category: persistence
     attack: [T1548.003]           # Abuse Elevation Control Mechanism: Sudo and Sudo Caching
+  PROCESS_SUSPICIOUS_EXE:
+    category: persistence
+    attack: [T1036.005, T1620]  # Match Legitimate Location; Reflective Code Loading (memfd)
   PROCESS_MASQUERADE:
     category: persistence
     attack: [T1036.004, T1036.005]  # Masquerade Task or Service; Match Legitimate Name or Location
