@@ -29,6 +29,26 @@ def get_ubuntu_version(source=None) -> str:
     return "Unknown"
 
 
+MACHINE_ID_PATHS = ("/etc/machine-id", "/var/lib/dbus/machine-id")
+# Salted so the report never carries the raw machine-id, which other software
+# uses as a secret-ish identifier (it's documented as "should not be exposed").
+_HOST_ID_SALT = b"ubuntils-host-id-v1\0"
+
+
+def get_host_id(source) -> str:
+    """A stable, non-reversible host ID from the machine-id (E4-S4, R-10), or
+    "" when the host has none."""
+    import hashlib
+    for path in MACHINE_ID_PATHS:
+        try:
+            machine_id = source.read_text(path).strip()
+        except Exception:
+            continue
+        if machine_id:
+            return hashlib.sha256(_HOST_ID_SALT + machine_id.encode()).hexdigest()[:32]
+    return ""
+
+
 def get_hostname(source) -> Optional[str]:
     try:
         name = source.read_text("/etc/hostname").strip()

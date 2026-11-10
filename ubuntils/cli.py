@@ -21,7 +21,7 @@ from ubuntils.pipeline import DEFAULT_MIN_REMEDIATION_CONFIDENCE, run_scan
 from ubuntils.tui.app import UbuntilsApp
 from ubuntils.utils.baseline import load_baseline
 from ubuntils.utils.config import load_allowlist
-from ubuntils.utils.host import get_ubuntu_version
+from ubuntils.utils.host import get_host_id, get_ubuntu_version
 from ubuntils.utils.logging import configure_logging
 from ubuntils.utils.safe_io import ensure_private_dir, write_private_text
 from ubuntils.utils.shell import resolve_command
@@ -58,6 +58,8 @@ COLLECT_FILES = [
     "/usr/lib/os-release",
     "/etc/hostname",
     "/etc/timezone",
+    # host_id is a salted hash of this (E4-S4); the raw value stays in the bundle only.
+    "/etc/machine-id",
     "/var/lib/dpkg/status",
     DPKG_CFG_FILE,
     # Where Docker's and Ubuntu's minimized images put their path-exclude
@@ -352,6 +354,7 @@ def _collect_full_bundle() -> dict:
             source=LiveSource(root="/"), files_to_capture=COLLECT_FILES,
             commands_to_capture=COLLECT_COMMANDS, out_path=_default_bundle_path(),
             metadata={"hostname": socket.gethostname(),
+                      "host_id": get_host_id(LiveSource(root="/")),
                       "ubuntu_version": get_ubuntu_version(), "tool_version": __version__},
         )
     except OSError as exc:
@@ -534,6 +537,7 @@ def collect(output_path, verbose):
             out_path=output_path,
             metadata={
                 "hostname": socket.gethostname(),
+                "host_id": get_host_id(LiveSource(root="/")),
                 "ubuntu_version": get_ubuntu_version(),
                 "tool_version": __version__,
             },

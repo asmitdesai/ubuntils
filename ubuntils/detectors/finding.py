@@ -59,6 +59,12 @@ class Finding:
     # collected. Remediation refuses if the directory there now is another
     # one — e.g. ~/.ssh swapped for a symlink or a different directory.
     parent_dir_identity: Optional[tuple] = None
+    # Stable across scans of an unchanged host: rule (by its canonical, 3.0
+    # name), artifact and value (E4-S3, QW-8). Set by the engine.
+    finding_id: str = ""
+    # SHA-256 of the flagged file when it is a regular file of at most
+    # 64 MiB, read through the scan's source (E4-S3, QW-7); None otherwise.
+    artifact_sha256: Optional[str] = None
 
 
 def block_auto_remediation(finding: "Finding", code: str, detail: str) -> None:

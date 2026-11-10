@@ -49,11 +49,13 @@ class JSONFormatter:
 
     def _finding(self, f: Finding) -> dict:
         d = {
+            "finding_id": f.finding_id,
             "rule_id": f.rule_id,
             "severity": f.severity.value,
             "title": f.title,
             "description": f.description,
             "artifact_path": f.artifact_path,
+            "artifact_sha256": f.artifact_sha256,
             "raw_value": f.raw_value,
             "remediation_available": f.remediation_available,
             "confidence": f.confidence,

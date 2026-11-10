@@ -32,7 +32,7 @@ from ubuntils.remediators import REMEDIATOR_REGISTRY
 from ubuntils.remediators import preserve as preserve_mod
 from ubuntils.timeline.builder import TimelineBuilder
 from ubuntils.timeline.correlator import correlate
-from ubuntils.utils.host import get_hostname, get_ubuntu_version
+from ubuntils.utils.host import get_host_id, get_hostname, get_ubuntu_version
 
 logger = structlog.get_logger()
 
@@ -226,6 +226,15 @@ def run_scan(
         detection_error = f"{type(exc).__name__}: {exc}"
         logger.error("detection_failed", error=detection_error)
 
+    # SHA-256 of every flagged file, read through the scan's source so it is
+    # the collected host's file, never the analyst's (E4-S3, QW-7).
+    for finding in findings:
+        if finding.artifact_path.startswith("/"):
+            try:
+                finding.artifact_sha256 = source.sha256_file(finding.artifact_path)
+            except Exception:
+                finding.artifact_sha256 = None
+
     timeline: list = []
     timeline_error = None
     try:
@@ -307,9 +316,11 @@ def run_scan(
         "timeline_error": timeline_error,
     }
 
+    host_id = (manifest or {}).get("host_id") or get_host_id(source)
     scan_metadata = {
         "tool_version": __version__,
         "hostname": report_hostname,
+        "host_id": host_id,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "ubuntu_version": report_ubuntu_version,
         "architecture": arch,

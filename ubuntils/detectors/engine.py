@@ -4,6 +4,7 @@ import structlog
 
 from ubuntils.detectors.custom_rules import apply_custom_rules
 from ubuntils.detectors.finding import Finding
+from ubuntils.detectors.identity import finding_id
 from ubuntils.detectors.rule_meta import annotate
 from ubuntils.detectors.rules import (
     rule_cron_root_exec,
@@ -87,6 +88,8 @@ class DetectionEngine:
                 self.rules_failed.append("custom_rules")
         for finding in findings:
             annotate(finding)
+            finding.finding_id = finding_id(finding.rule_id, finding.artifact_path,
+                                            finding.raw_value)
         self.baseline_suppressed_findings = []
         if self.baseline is not None:
             findings, self.baseline_suppressed_findings = self.baseline.filter(findings)

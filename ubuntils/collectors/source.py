@@ -6,6 +6,7 @@ import shutil
 import stat
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Optional
 
 from ubuntils.utils.shell import run_command
 
@@ -79,6 +80,11 @@ class ArtifactSource(ABC):
     def run(self, name: str, argv: list[str], timeout: int = 30) -> tuple[str, str, int]:
         ...
 
+    def sha256_file(self, path: str, max_bytes: int = USER_FILE_HARD_MAX_BYTES) -> Optional[str]:
+        """SHA-256 of ``path`` if it is a regular file of at most ``max_bytes``,
+        else None. Never blocks on a FIFO and never raises."""
+        return None
+
     def read_user_file(self, path: str) -> UserFile:
         """Read a file a non-root user controls (anything under a home dir).
 
@@ -138,6 +144,16 @@ class LiveSource(ArtifactSource):
     def read_bytes(self, path: str) -> bytes:
         with open(self._resolve(path), "rb") as f:
             return f.read()
+
+    def sha256_file(self, path: str, max_bytes: int = USER_FILE_HARD_MAX_BYTES) -> Optional[str]:
+        # Symlinks are followed: /proc/<pid>/exe must reach the running
+        # binary (even a deleted one). O_NONBLOCK and the fstat check on the
+        # opened fd keep a FIFO or device from hanging or flooding the scan.
+        try:
+            fd = os.open(self._resolve(path), os.O_RDONLY | os.O_NONBLOCK)
+        except (OSError, ValueError):
+            return None
+        return _hash_fd(fd, max_bytes)
 
     def read_user_file(self, path: str) -> UserFile:
         # O_NONBLOCK: opening a FIFO would otherwise block forever. The type
@@ -213,6 +229,27 @@ def _with_times(st: os.stat_result, mtime: float, ctime: float) -> os.stat_resul
     return os.stat_result(seq, extra)
 
 
+def _hash_fd(fd: int, max_bytes: int) -> Optional[str]:
+    import hashlib
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > max_bytes:
+            return None
+        h, total = hashlib.sha256(), 0
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                return h.hexdigest()
+            total += len(chunk)
+            if total > max_bytes:
+                return None
+            h.update(chunk)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
 def _read_capped(path: str) -> bytes:
     """Read a file from an extracted bundle, refusing one over
     BUNDLE_READ_MAX_BYTES."""
@@ -264,6 +301,15 @@ class BundleSource(ArtifactSource):
 
     def read_bytes(self, path: str) -> bytes:
         return _read_capped(self._resolve(path))
+
+    def sha256_file(self, path: str, max_bytes: int = USER_FILE_HARD_MAX_BYTES) -> Optional[str]:
+        # The extracted copy is the collected file; bundles hold no links
+        # or devices (reader._safe_extract), but check anyway.
+        try:
+            fd = os.open(self._resolve(path), os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        except (OSError, ValueError):
+            return None
+        return _hash_fd(fd, max_bytes)
 
     def exists(self, path: str) -> bool:
         try:

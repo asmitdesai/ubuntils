@@ -97,6 +97,8 @@ def _finding_to_dict(finding: Finding, hostname: str, cut: list = None) -> dict:
     d["schema_version"] = WAZUH_SCHEMA_VERSION
     # Short, from our own data file (never host text), so not cut.
     d["category"] = finding.category
+    d["finding_id"] = finding.finding_id
+    d["artifact_sha256"] = finding.artifact_sha256
     d["attack"] = list(finding.attack)
     if finding.related_events:
         d["related_events"] = [_event_to_dict(e, cut) for e in finding.related_events]
